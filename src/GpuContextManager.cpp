@@ -21,6 +21,7 @@
 
 #include "CudaCheck.h"
 #include "GpuContext.h"
+#include "ImageSizing.h"
 
 GpuInfraConfig GpuContextManager::config;
 std::vector<GpuContext*> GpuContextManager::contexts;
@@ -351,7 +352,13 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig, const std::v
 
 bool GpuContextManager::configure(const AlgoRuntimeInfo& runtime) {
     std::lock_guard<std::mutex> guard(lock);
-    if (!initialised.load(std::memory_order_acquire) || runtime.numThreads != config.threadsPerGpu || runtime.inBytes == 0) {
+    if (!initialised.load(std::memory_order_acquire) || runtime.numThreads != config.threadsPerGpu || !ImageSizing::isValidFactor(runtime.sizeFactor)) {
+        return false;
+    }
+
+    const int expectedFrameSize = ImageSizing::scaledDimension(runtime.sizeFactor, ImageSizing::INPUT_MULTIPLIER);
+    const std::size_t expectedInputBytes = ImageSizing::squareBytes(expectedFrameSize, sizeof(std::uint8_t));
+    if (runtime.frameW != expectedFrameSize || runtime.frameH != expectedFrameSize || runtime.inBytes != expectedInputBytes) {
         return false;
     }
 

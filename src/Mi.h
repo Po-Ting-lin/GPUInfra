@@ -2,10 +2,10 @@
 
 #include "IAlgo.h"
 
-class Cel final : public IAlgo {
+class Mi final : public IAlgo {
 public:
-    Cel();
-    ~Cel() override;
+    Mi();
+    ~Mi() override;
 
     bool initStatic(const AlgoStaticInfo& info) override;
     bool configureAndAlloc(const AlgoRuntimeInfo& info) override;
@@ -16,8 +16,8 @@ public:
     bool collectResult(const ThreadSlot& slot, AlgoOutput& output) const override;
     bool close() override;
 
-    Cel(const Cel&) = delete;
-    Cel& operator=(const Cel&) = delete;
+    Mi(const Mi&) = delete;
+    Mi& operator=(const Mi&) = delete;
 
 private:
     struct Impl;

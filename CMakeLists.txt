@@ -20,6 +20,7 @@ find_package(CUDAToolkit REQUIRED)
 add_library(gpuinfra
     src/Cel.cu
     src/GpuContextManager.cpp
+    src/Mi.cu
     src/Sdd.cu
 )
 
@@ -54,4 +55,11 @@ target_link_libraries(gpuinfra_demo PRIVATE gpuinfra)
 include(CTest)
 if(BUILD_TESTING)
     add_test(NAME gpuinfra_demo_runs COMMAND gpuinfra_demo)
+    add_test(NAME gpuinfra_demo_interleaved_runs COMMAND gpuinfra_demo 2 1 interleaved)
+    add_test(NAME gpuinfra_demo_min_factor_runs COMMAND gpuinfra_demo 2 1 batched 16)
+    add_test(NAME gpuinfra_demo_max_factor_runs COMMAND gpuinfra_demo 1 0 batched 256)
+    add_test(NAME gpuinfra_demo_rejects_unaligned_factor COMMAND gpuinfra_demo 2 1 batched 17)
+    set_tests_properties(gpuinfra_demo_rejects_unaligned_factor PROPERTIES WILL_FAIL TRUE)
+    add_test(NAME gpuinfra_demo_rejects_oversized_factor COMMAND gpuinfra_demo 2 1 batched 272)
+    set_tests_properties(gpuinfra_demo_rejects_oversized_factor PROPERTIES WILL_FAIL TRUE)
 endif()

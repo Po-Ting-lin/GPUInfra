@@ -22,6 +22,7 @@ struct AlgoParams {
 struct AlgoRuntimeInfo {
     int numThreads = 0;
     std::size_t inBytes = 0;
+    int sizeFactor = 0;
     int frameW = 0;
     int frameH = 0;
     int frameDtype = 0;
@@ -56,6 +57,10 @@ public:
     // Enqueue this algorithm's output transfer after the whole kernel batch.
     virtual bool launchD2H(const ThreadSlot& slot, cudaStream_t stream) = 0;
 
-    virtual AlgoOutput collectResult(const ThreadSlot& slot) = 0;
+    // Allocate and describe one reusable output during worker setup.
+    virtual bool prepareOutput(AlgoOutput& output) const = 0;
+
+    // Copy into the prepared output without resizing or allocating.
+    virtual bool collectResult(const ThreadSlot& slot, AlgoOutput& output) const = 0;
     virtual bool close() = 0;
 };

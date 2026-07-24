@@ -8,16 +8,20 @@ It demonstrates the register-thread/own-the-slot model:
 - one `GpuContext` per discovered CUDA GPU;
 - one nonblocking CUDA stream and one fixed slot per Graph worker;
 - one shared H2D input transfer per frame;
+- one pinned host result matrix per algorithm and worker slot;
 - a compute batch for all algorithms, followed by a D2H batch;
 - exactly one `cudaStreamSynchronize()` per frame;
 - serialized algorithm configuration before workers start;
 - no internal queue, dispatcher, or GPUInfra-owned worker threads.
 
-The example currently registers two synthetic algorithms, CEL and SDD. Each
-launches a real CUDA kernel that scans the full input and performs repeated
-integer mixing plus a block reduction. These kernels create measurable GPU
-load but do not implement OCR. Real CEL/SDD kernels can replace them without
-changing the infrastructure or `IAlgo` lifecycle.
+The example currently registers three synthetic algorithms: CEL, SDD, and MI.
+Each launches a real CUDA matrix-multiplication kernel over a shared square byte
+input frame. For size factor `F`, the input is `(8F)x(8F)`, CEL operates on the
+top-left `(2F)x(2F)` region, and SDD and MI each operate on the top-left
+`(3F)x(3F)` region. Results are returned as row-major `uint32_t` matrices in
+`AlgoOutput::data`. These kernels create measurable GPU load but do not
+implement OCR. Real CEL/SDD/MI kernels can replace them without changing the
+infrastructure or `IAlgo` lifecycle.
 
 ## Requirements
 
@@ -70,17 +74,53 @@ Run the example directly:
 ./build/gpuinfra_demo
 ```
 
+The optional arguments select timed and warmup frames per GPU, followed by the
+execution model and size factor:
+
+```bash
+./build/gpuinfra_demo 200 20 batched 128
+./build/gpuinfra_demo 200 20 interleaved 128
+```
+
+The defaults are 200 timed frames, 20 warmup frames per GPU, and the `batched`
+execution model. The size factor defaults to 128, must be a multiple of 16, and
+must be between 16 and 256 inclusive. `batched` enqueues every algorithm kernel
+before enqueueing all D2H transfers. `interleaved` enqueues each algorithm
+kernel immediately followed by its D2H transfer on the same stream. All workers
+finish setup and warmup before the timer starts. Timing stops after every worker
+finishes its measured frames and before graph teardown. The report includes
+aggregate frames per second and average milliseconds per frame. Benchmark
+results are collected through the normal D2H and host-copy path but are not
+retained by the demo sink, avoiding memory growth for large frame counts.
+
 Run it through CTest:
 
 ```bash
 ctest --test-dir build --output-on-failure
 ```
 
-The verified output on the current RTX 3080 system ends with:
+Sweep every valid size factor for both execution models with five repetitions:
+
+```bash
+python3 scripts/benchmark_model_factor.py
+```
+
+The script benchmarks factors 16 through 256 in steps of 16 using 200 timed
+frames and 20 warmup frames. It alternates model order, randomizes factor order,
+stores raw and median/IQR CSV data in a timestamped `benchmark_results/`
+directory, saves linear and logarithmic PNG figures, and calls
+`matplotlib.pyplot.show()` for both figures. Use `--no-show` in a headless
+environment.
+
+The output ends with:
 
 ```text
 [GPUInfra] shutdown complete
-delivered 24 frames across 1 CUDA GPU(s), failures=0
+execution_model=batched
+size_factor=128 input=1024x1024 cel=256x256 sdd=384x384 mi=384x384
+warmup 20 frames/GPU, timed 200 frames/GPU (200 total) in ... ms
+throughput=... frames/s, average=... ms/frame
+delivered 220 frames across 1 CUDA GPU(s), failures=0
 ```
 
 The demo discovers the GPU count dynamically. It does not assume the two-GPU
@@ -99,7 +139,7 @@ deployment described in the plan.
    `cudaFree(nullptr)`;
 5. retains the GPU's primary context with
    `cuDevicePrimaryCtxRetain()`;
-6. creates one CEL and one SDD instance per GPU.
+6. creates one CEL, one SDD, and one MI instance per GPU.
 
 ### 2. Serialized configuration
 
@@ -130,6 +170,11 @@ Slot IDs come from a fixed table and are reused without renumbering active
 workers. This keeps `slot.threadId` aligned with every algorithm's
 `perThread[]` state.
 
+During `DummyGraph::load()`, each worker also creates one reusable `JobResult`,
+sizes its algorithm-output table, and allocates the CEL, SDD, and MI pageable
+result buffers. The frame-execution path only copies into this prepared storage.
+The demo sink consumes each result by reference and does not retain it.
+
 ### 4. Frame execution
 
 `DummyGraph::execute()` records this chain:
@@ -138,15 +183,19 @@ workers. This keeps `slot.threadId` aligned with every algorithm's
 caller buffer
   -> pinned input memcpy
   -> one cudaMemcpyAsync H2D
-  -> CEL synthetic CUDA kernel
-  -> SDD synthetic CUDA kernel
-  -> CEL cudaMemcpyAsync D2H
-  -> SDD cudaMemcpyAsync D2H
+  -> CEL (2F)x(2F) matrix-multiplication CUDA kernel
+  -> SDD (3F)x(3F) matrix-multiplication CUDA kernel
+  -> MI (3F)x(3F) matrix-multiplication CUDA kernel
+  -> CEL cudaMemcpyAsync D2H into a pinned result matrix
+  -> SDD cudaMemcpyAsync D2H into a pinned result matrix
+  -> MI cudaMemcpyAsync D2H into a pinned result matrix
   -> one cudaStreamSynchronize
   -> collect owned results
 ```
 
 There is no per-frame CUDA allocation and no `cudaDeviceSynchronize()`.
+There is also no per-frame host allocation, vector growth, or result ownership
+transfer.
 
 ### 5. Teardown
 
@@ -179,8 +228,9 @@ src/
   GpuContextManager.*      discovery, configuration, registration, teardown
   ThreadSlot.h             per-Graph-thread CUDA resources
   IAlgo.h                  split compute/D2H algorithm interface
-  Cel.*                    synthetic CEL CUDA kernel
-  Sdd.*                    synthetic SDD CUDA kernel
+  Cel.*                    synthetic CEL matrix-multiplication kernel
+  Mi.*                     synthetic MI matrix-multiplication kernel
+  Sdd.*                    synthetic SDD matrix-multiplication kernel
   GraphStuff.h             external Graph framework stand-ins
   main.cpp                 multi-threaded runnable example
 ```

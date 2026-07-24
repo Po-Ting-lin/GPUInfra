@@ -1,4 +1,4 @@
-#include "Cel.h"
+#include "Mi.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -13,10 +13,10 @@
 
 namespace {
 
-constexpr unsigned int CEL_BLOCK_DIM = 16;
+constexpr unsigned int MI_BLOCK_DIM = 16;
 
 // Square the top-left nx-by-nx region of the row-major input frame.
-__global__ void celMatrixMultiplicationKernel(const std::uint8_t* d_input, std::uint32_t* d_outputMatrix, int nx, int inputStride) {
+__global__ void miMatrixMultiplicationKernel(const std::uint8_t* d_input, std::uint32_t* d_outputMatrix, int nx, int inputStride) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= nx || y >= nx) return;
@@ -44,7 +44,7 @@ struct PerThreadState {
 
 }  // namespace
 
-struct Cel::Impl {
+struct Mi::Impl {
     int gpuId = -1;
     int numaNode = -1;
     int numThreads = 0;
@@ -58,15 +58,15 @@ struct Cel::Impl {
     std::vector<PerThreadState> perThread;
 };
 
-Cel::Cel() : impl(new Impl()) {}
+Mi::Mi() : impl(new Impl()) {}
 
-Cel::~Cel() {
+Mi::~Mi() {
     close();
     delete impl;
     impl = nullptr;
 }
 
-bool Cel::initStatic(const AlgoStaticInfo& info) {
+bool Mi::initStatic(const AlgoStaticInfo& info) {
     if (impl == nullptr || info.gpuId < 0 || info.numaNode < 0) {
         return false;
     }
@@ -76,11 +76,11 @@ bool Cel::initStatic(const AlgoStaticInfo& info) {
     return true;
 }
 
-bool Cel::configureAndAlloc(const AlgoRuntimeInfo& info) {
+bool Mi::configureAndAlloc(const AlgoRuntimeInfo& info) {
     if (impl == nullptr || !impl->staticReady || info.numThreads <= 0 || !ImageSizing::isValidFactor(info.sizeFactor)) {
         return false;
     }
-    const int matrixSize = ImageSizing::scaledDimension(info.sizeFactor, ImageSizing::CEL_MULTIPLIER);
+    const int matrixSize = ImageSizing::scaledDimension(info.sizeFactor, ImageSizing::MI_MULTIPLIER);
     if (info.frameW < matrixSize || info.frameH < matrixSize) {
         return false;
     }
@@ -120,25 +120,25 @@ bool Cel::configureAndAlloc(const AlgoRuntimeInfo& info) {
     return true;
 }
 
-std::size_t Cel::scratchBytesNeeded() const {
+std::size_t Mi::scratchBytesNeeded() const {
     return 0;
 }
 
-bool Cel::launchKernels(const ThreadSlot& slot, cudaStream_t stream) {
+bool Mi::launchKernels(const ThreadSlot& slot, cudaStream_t stream) {
     if (impl == nullptr || !impl->runtimeReady || slot.threadId < 0 || slot.threadId >= impl->numThreads || slot.d_in == nullptr || stream == nullptr || stream != slot.stream) {
         return false;
     }
 
     const PerThreadState& state = impl->perThread[static_cast<std::size_t>(slot.threadId)];
     const auto* d_input = static_cast<const std::uint8_t*>(slot.d_in);
-    dim3 block(CEL_BLOCK_DIM, CEL_BLOCK_DIM);
+    dim3 block(MI_BLOCK_DIM, MI_BLOCK_DIM);
     dim3 grid((impl->matrixSize + block.x - 1U) / block.x, (impl->matrixSize + block.y - 1U) / block.y);
-    celMatrixMultiplicationKernel << <grid, block, 0, stream >> > (d_input, state.d_outputMatrix, impl->matrixSize, impl->inputStride);
+    miMatrixMultiplicationKernel << <grid, block, 0, stream >> > (d_input, state.d_outputMatrix, impl->matrixSize, impl->inputStride);
     CUDA_CHECK(cudaGetLastError(), return false);
     return true;
 }
 
-bool Cel::launchD2H(const ThreadSlot& slot, cudaStream_t stream) {
+bool Mi::launchD2H(const ThreadSlot& slot, cudaStream_t stream) {
     if (impl == nullptr || !impl->runtimeReady || slot.threadId < 0 || slot.threadId >= impl->numThreads || stream == nullptr || stream != slot.stream) {
         return false;
     }
@@ -148,19 +148,19 @@ bool Cel::launchD2H(const ThreadSlot& slot, cudaStream_t stream) {
     return true;
 }
 
-bool Cel::prepareOutput(AlgoOutput& output) const {
+bool Mi::prepareOutput(AlgoOutput& output) const {
     if (impl == nullptr || !impl->runtimeReady) {
         return false;
     }
 
-    output.algoName = "cel";
+    output.algoName = "mi";
     output.width = impl->matrixSize;
     output.height = impl->matrixSize;
     output.data.resize(impl->matrixBytes);
     return true;
 }
 
-bool Cel::collectResult(const ThreadSlot& slot, AlgoOutput& output) const {
+bool Mi::collectResult(const ThreadSlot& slot, AlgoOutput& output) const {
     if (impl == nullptr || !impl->runtimeReady || slot.threadId < 0 || slot.threadId >= impl->numThreads) {
         return false;
     }
@@ -174,7 +174,7 @@ bool Cel::collectResult(const ThreadSlot& slot, AlgoOutput& output) const {
     return true;
 }
 
-bool Cel::close() {
+bool Mi::close() {
     if (impl == nullptr) {
         return true;
     }

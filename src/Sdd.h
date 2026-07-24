@@ -12,7 +12,8 @@ public:
     std::size_t scratchBytesNeeded() const override;
     bool launchKernels(const ThreadSlot& slot, cudaStream_t stream) override;
     bool launchD2H(const ThreadSlot& slot, cudaStream_t stream) override;
-    AlgoOutput collectResult(const ThreadSlot& slot) override;
+    bool prepareOutput(AlgoOutput& output) const override;
+    bool collectResult(const ThreadSlot& slot, AlgoOutput& output) const override;
     bool close() override;
 
     Sdd(const Sdd&) = delete;

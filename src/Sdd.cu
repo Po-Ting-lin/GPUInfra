@@ -1,6 +1,6 @@
 #include "Sdd.h"
 
-#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -8,60 +8,38 @@
 #include <cuda_runtime.h>
 
 #include "CudaCheck.h"
+#include "ImageSizing.h"
 #include "ThreadSlot.h"
 
 namespace {
 
-constexpr std::size_t SDD_OUT_BYTES = 256;
-constexpr int SDD_OUT_W = 256;
-constexpr int SDD_OUT_H = 1;
-constexpr unsigned int SDD_THREADS_PER_BLOCK = 256;
-constexpr int SDD_WORK_ROUNDS = 12;
+constexpr unsigned int SDD_BLOCK_DIM = 16;
 
-// Synthetic compute kernel used to create a measurable SDD-like GPU stage.
-// It intentionally uses a different mixing function and a larger grid than
-// CEL so profiling tools show two distinct kernel stages.
-__global__ void sddSimulatedLoadKernel(const std::uint8_t* d_input, std::size_t inputBytes, std::uint8_t* d_output) {
-    __shared__ std::uint32_t partial[SDD_THREADS_PER_BLOCK];
+// Square the top-left nx-by-nx region of the row-major input frame.
+__global__ void sddMatrixMultiplicationKernel(const std::uint8_t* d_input, std::uint32_t* d_outputMatrix, int nx, int inputStride) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= nx || y >= nx) return;
 
-    const unsigned int lane = threadIdx.x;
-    const std::size_t globalThread = static_cast<std::size_t>(blockIdx.x) * blockDim.x + lane;
-    const std::size_t gridStride = static_cast<std::size_t>(gridDim.x) * blockDim.x;
-    std::uint32_t accumulator = 0x6d2b79f5U + static_cast<std::uint32_t>(globalThread);
+    const std::size_t inputRowOffset = static_cast<std::size_t>(y) * inputStride;
+    const std::size_t outputRowOffset = static_cast<std::size_t>(y) * nx;
+    std::uint32_t sum = 0;
 
-    for (std::size_t index = globalThread; index < inputBytes; index += gridStride) {
-        std::uint32_t value = static_cast<std::uint32_t>(d_input[index]) | (static_cast<std::uint32_t>(index) << 8U);
-#pragma unroll
-        for (int round = 0; round < SDD_WORK_ROUNDS; ++round) {
-            value += 0x7ed55d16U + (value << 12U);
-            value ^= 0xc761c23cU ^ (value >> 19U);
-            value += static_cast<std::uint32_t>(round) * 0x165667b1U;
-            value ^= value << 5U;
+    for (int r = 0; r < 3; ++r) {
+        sum = 0;
+        for (int k = 0; k < nx; ++k) {
+            const std::uint32_t a = d_input[inputRowOffset + k];
+            const std::uint32_t b = d_input[static_cast<std::size_t>(k) * inputStride + x];
+            sum += a * b;
         }
-        accumulator += value;
-        accumulator ^= accumulator >> 15U;
-    }
-
-    partial[lane] = accumulator;
-    __syncthreads();
-    for (unsigned int offset = blockDim.x / 2U; offset > 0U; offset >>= 1U) {
-        if (lane < offset) {
-            partial[lane] += partial[lane + offset];
-            partial[lane] ^= partial[lane] >> 16U;
-        }
-        __syncthreads();
-    }
-
-    if (lane == 0U) {
-        const std::uint32_t value = partial[0];
-        d_output[blockIdx.x] = static_cast<std::uint8_t>(value ^ (value >> 8U) ^ (value >> 16U) ^ (value >> 24U));
+        d_outputMatrix[outputRowOffset + x] = sum;
     }
 }
 
 struct PerThreadState {
-    std::uint8_t* d_out = nullptr;
-    std::uint8_t* h_out = nullptr;
-    std::size_t outBytes = 0;
+    std::uint32_t* d_outputMatrix = nullptr;
+    std::uint32_t* h_outputMatrix = nullptr;
+    std::size_t matrixBytes = 0;
 };
 
 }  // namespace
@@ -70,7 +48,10 @@ struct Sdd::Impl {
     int gpuId = -1;
     int numaNode = -1;
     int numThreads = 0;
+    int inputStride = 0;
+    int matrixSize = 0;
     std::size_t inBytes = 0;
+    std::size_t matrixBytes = 0;
     bool staticReady = false;
     bool runtimeReady = false;
     AlgoParams params;
@@ -96,27 +77,39 @@ bool Sdd::initStatic(const AlgoStaticInfo& info) {
 }
 
 bool Sdd::configureAndAlloc(const AlgoRuntimeInfo& info) {
-    if (impl == nullptr || !impl->staticReady || info.numThreads <= 0 || info.inBytes == 0) {
+    if (impl == nullptr || !impl->staticReady || info.numThreads <= 0 || !ImageSizing::isValidFactor(info.sizeFactor)) {
+        return false;
+    }
+    const int matrixSize = ImageSizing::scaledDimension(info.sizeFactor, ImageSizing::SDD_MULTIPLIER);
+    if (info.frameW < matrixSize || info.frameH < matrixSize) {
+        return false;
+    }
+    const std::size_t frameBytes = static_cast<std::size_t>(info.frameW) * info.frameH;
+    if (info.inBytes < frameBytes) {
         return false;
     }
 
     close();
     impl->numThreads = info.numThreads;
+    impl->inputStride = info.frameW;
+    impl->matrixSize = matrixSize;
     impl->inBytes = info.inBytes;
+    impl->matrixBytes = ImageSizing::squareBytes(matrixSize, sizeof(std::uint32_t));
     impl->perThread.resize(static_cast<std::size_t>(info.numThreads));
 
     for (PerThreadState& state : impl->perThread) {
-        state.outBytes = SDD_OUT_BYTES;
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&state.d_out), state.outBytes), {
+        state.matrixBytes = impl->matrixBytes;
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&state.d_outputMatrix), state.matrixBytes), {
             close();
             return false;
         });
-        CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&state.h_out), state.outBytes, cudaHostAllocPortable), {
+        // The complete result matrix is copied asynchronously into this pinned buffer.
+        CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&state.h_outputMatrix), state.matrixBytes, cudaHostAllocPortable), {
             close();
             return false;
         });
-        std::memset(state.h_out, 0, state.outBytes);
-        CUDA_CHECK(cudaMemset(state.d_out, 0, state.outBytes), {
+        std::memset(state.h_outputMatrix, 0, state.matrixBytes);
+        CUDA_CHECK(cudaMemset(state.d_outputMatrix, 0, state.matrixBytes), {
             close();
             return false;
         });
@@ -136,11 +129,11 @@ bool Sdd::launchKernels(const ThreadSlot& slot, cudaStream_t stream) {
         return false;
     }
 
-    PerThreadState& state = impl->perThread[static_cast<std::size_t>(slot.threadId)];
+    const PerThreadState& state = impl->perThread[static_cast<std::size_t>(slot.threadId)];
     const auto* d_input = static_cast<const std::uint8_t*>(slot.d_in);
-    dim3 block(SDD_THREADS_PER_BLOCK);
-    dim3 grid(static_cast<unsigned int>(state.outBytes));
-    sddSimulatedLoadKernel << <grid, block, 0, stream >> > (d_input, impl->inBytes, state.d_out);
+    dim3 block(SDD_BLOCK_DIM, SDD_BLOCK_DIM);
+    dim3 grid((impl->matrixSize + block.x - 1U) / block.x, (impl->matrixSize + block.y - 1U) / block.y);
+    sddMatrixMultiplicationKernel << <grid, block, 0, stream >> > (d_input, state.d_outputMatrix, impl->matrixSize, impl->inputStride);
     CUDA_CHECK(cudaGetLastError(), return false);
     return true;
 }
@@ -150,23 +143,35 @@ bool Sdd::launchD2H(const ThreadSlot& slot, cudaStream_t stream) {
         return false;
     }
 
-    PerThreadState& state = impl->perThread[static_cast<std::size_t>(slot.threadId)];
-    CUDA_CHECK(cudaMemcpyAsync(state.h_out, state.d_out, state.outBytes, cudaMemcpyDeviceToHost, stream), return false);
+    const PerThreadState& state = impl->perThread[static_cast<std::size_t>(slot.threadId)];
+    CUDA_CHECK(cudaMemcpyAsync(state.h_outputMatrix, state.d_outputMatrix, state.matrixBytes, cudaMemcpyDeviceToHost, stream), return false);
     return true;
 }
 
-AlgoOutput Sdd::collectResult(const ThreadSlot& slot) {
-    AlgoOutput output;
+bool Sdd::prepareOutput(AlgoOutput& output) const {
+    if (impl == nullptr || !impl->runtimeReady) {
+        return false;
+    }
+
     output.algoName = "sdd";
-    output.width = SDD_OUT_W;
-    output.height = SDD_OUT_H;
+    output.width = impl->matrixSize;
+    output.height = impl->matrixSize;
+    output.data.resize(impl->matrixBytes);
+    return true;
+}
+
+bool Sdd::collectResult(const ThreadSlot& slot, AlgoOutput& output) const {
     if (impl == nullptr || !impl->runtimeReady || slot.threadId < 0 || slot.threadId >= impl->numThreads) {
-        return output;
+        return false;
     }
 
     const PerThreadState& state = impl->perThread[static_cast<std::size_t>(slot.threadId)];
-    output.data.assign(state.h_out, state.h_out + state.outBytes);
-    return output;
+    if (output.data.size() != state.matrixBytes) {
+        return false;
+    }
+
+    std::memcpy(output.data.data(), state.h_outputMatrix, state.matrixBytes);
+    return true;
 }
 
 bool Sdd::close() {
@@ -175,19 +180,22 @@ bool Sdd::close() {
     }
     bool ok = true;
     for (PerThreadState& state : impl->perThread) {
-        if (state.d_out != nullptr) {
-            CUDA_CHECK(cudaFree(state.d_out), ok = false);
-            state.d_out = nullptr;
+        if (state.d_outputMatrix != nullptr) {
+            CUDA_CHECK(cudaFree(state.d_outputMatrix), ok = false);
+            state.d_outputMatrix = nullptr;
         }
-        if (state.h_out != nullptr) {
-            CUDA_CHECK(cudaFreeHost(state.h_out), ok = false);
-            state.h_out = nullptr;
+        if (state.h_outputMatrix != nullptr) {
+            CUDA_CHECK(cudaFreeHost(state.h_outputMatrix), ok = false);
+            state.h_outputMatrix = nullptr;
         }
-        state.outBytes = 0;
+        state.matrixBytes = 0;
     }
     impl->perThread.clear();
     impl->numThreads = 0;
+    impl->inputStride = 0;
+    impl->matrixSize = 0;
     impl->inBytes = 0;
+    impl->matrixBytes = 0;
     impl->runtimeReady = false;
     return ok;
 }

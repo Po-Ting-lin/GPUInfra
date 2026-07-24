@@ -7,7 +7,6 @@
 #include <iostream>
 #include <mutex>
 #include <thread>
-#include <utility>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -67,17 +66,19 @@ private:
 
 class GraphSink {
 public:
-    void deliver(JobResult result) {
+    GraphSink() = default;
+
+    void deliver(const JobResult& result) {
         std::lock_guard<std::mutex> guard(lock);
+        ++deliveredResults;
         if (!result.ok) {
             ++failedResults;
         }
-        delivered.push_back(std::move(result));
     }
 
     std::size_t count() {
         std::lock_guard<std::mutex> guard(lock);
-        return delivered.size();
+        return deliveredResults;
     }
 
     std::size_t failureCount() {
@@ -87,19 +88,24 @@ public:
 
     GraphSink(const GraphSink&) = delete;
     GraphSink& operator=(const GraphSink&) = delete;
-    GraphSink() = default;
 
 private:
     std::mutex lock;
-    std::vector<JobResult> delivered;
+    std::size_t deliveredResults = 0;
     std::size_t failedResults = 0;
+};
+
+enum class ExecutionModel {
+    Batched,
+    Interleaved,
 };
 
 class DummyGraph {
 public:
-    DummyGraph(int numaHint, int gpuHint, GraphSink& outputSink)
+    DummyGraph(int numaHint, int gpuHint, ExecutionModel model, GraphSink& outputSink)
         : requestedNuma(numaHint),
           requestedGpu(gpuHint),
+          executionModel(model),
           sink(&outputSink) {}
 
     bool registerParameters() {
@@ -112,8 +118,21 @@ public:
             return false;
         }
         slot = GpuContextManager::registerThread(requestedNuma, requestedGpu);
-        loaded = slot != nullptr;
-        return loaded;
+        if (slot == nullptr) {
+            return false;
+        }
+
+        result.outputs.resize(slot->ctx->algos.size());
+        for (std::size_t index = 0; index < slot->ctx->algos.size(); ++index) {
+            if (!slot->ctx->algos[index]->prepareOutput(result.outputs[index])) {
+                GpuContextManager::unregisterThread(slot);
+                slot = nullptr;
+                return false;
+            }
+        }
+
+        loaded = true;
+        return true;
     }
 
     // Algorithm allocation is intentionally absent here. All algorithms are
@@ -128,49 +147,71 @@ public:
             return false;
         }
 
-        JobResult result;
         result.id = frame.id;
         result.ok = true;
 
+        // Pageable to pinned host input.
         std::memcpy(slot->h_in, frame.data, frame.bytes);
         if (frame.bytes < slot->inBytes) {
             std::memset(static_cast<std::uint8_t*>(slot->h_in) + frame.bytes, 0, slot->inBytes - frame.bytes);
         }
 
+        // Pinned host input to device.
         CUDA_CHECK(cudaMemcpyAsync(slot->d_in, slot->h_in, slot->inBytes, cudaMemcpyHostToDevice, slot->stream), result.ok = false);
 
-        // Compute batch.
-        if (result.ok) {
-            for (IAlgo* algorithm : slot->ctx->algos) {
-                if (!algorithm->launchKernels(*slot, slot->stream)) {
-                    result.ok = false;
-                    break;
+        if (executionModel == ExecutionModel::Batched) {
+            // Compute batch.
+            if (result.ok) {
+                for (IAlgo* algorithm : slot->ctx->algos) {
+                    if (!algorithm->launchKernels(*slot, slot->stream)) {
+                        result.ok = false;
+                        break;
+                    }
+                }
+            }
+
+            // D2H batch, after all algorithms' compute operations.
+            if (result.ok) {
+                for (IAlgo* algorithm : slot->ctx->algos) {
+                    if (!algorithm->launchD2H(*slot, slot->stream)) {
+                        result.ok = false;
+                        break;
+                    }
                 }
             }
         }
-
-        // D2H batch, after all algorithms' compute operations.
-        if (result.ok) {
-            for (IAlgo* algorithm : slot->ctx->algos) {
-                if (!algorithm->launchD2H(*slot, slot->stream)) {
-                    result.ok = false;
-                    break;
+        else if (executionModel == ExecutionModel::Interleaved) {
+            if (result.ok) {
+                for (IAlgo* algorithm : slot->ctx->algos) {
+                    if (!algorithm->launchKernels(*slot, slot->stream)) {
+                        result.ok = false;
+                        break;
+                    }
+                    if (!algorithm->launchD2H(*slot, slot->stream)) {
+                        result.ok = false;
+                        break;
+                    }
                 }
             }
+        }
+        else {
+            return false;
         }
 
         // The one per-frame host-side CUDA wait.
         CUDA_CHECK(cudaStreamSynchronize(slot->stream), result.ok = false);
 
         if (result.ok) {
-            result.outputs.reserve(slot->ctx->algos.size());
-            for (IAlgo* algorithm : slot->ctx->algos) {
-                result.outputs.push_back(algorithm->collectResult(*slot));
+            for (std::size_t index = 0; index < slot->ctx->algos.size(); ++index) {
+                if (!slot->ctx->algos[index]->collectResult(*slot, result.outputs[index])) {
+                    result.ok = false;
+                    break;
+                }
             }
         }
 
         const bool succeeded = result.ok;
-        sink->deliver(std::move(result));
+        sink->deliver(result);
         return succeeded;
     }
 
@@ -189,8 +230,10 @@ public:
 private:
     int requestedNuma;
     int requestedGpu;
+    ExecutionModel executionModel;
     GraphSink* sink;
     ThreadSlot* slot = nullptr;
+    JobResult result;
     bool parametersRegistered = false;
     bool loaded = false;
 };
