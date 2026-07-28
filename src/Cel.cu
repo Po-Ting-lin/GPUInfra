@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <vector>
 
 #include <cuda_runtime.h>
 
@@ -36,26 +35,22 @@ __global__ void celMatrixMultiplicationKernel(const std::uint8_t* d_input, std::
     }
 }
 
-struct PerThreadState {
-    std::uint32_t* d_outputMatrix = nullptr;
-    std::uint32_t* h_outputMatrix = nullptr;
-    std::size_t matrixBytes = 0;
-};
-
 }  // namespace
 
 struct Cel::Impl {
     int gpuId = -1;
     int numaNode = -1;
-    int numThreads = 0;
+    int threadId = -1;
     int inputStride = 0;
     int matrixSize = 0;
     std::size_t inBytes = 0;
     std::size_t matrixBytes = 0;
+    std::uint32_t* d_outputMatrix = nullptr;
+    std::uint32_t* h_outputMatrix = nullptr;
     bool staticReady = false;
     bool runtimeReady = false;
+    bool outputReady = false;
     AlgoParams params;
-    std::vector<PerThreadState> perThread;
 };
 
 Cel::Cel() : impl(new Impl()) {}
@@ -76,8 +71,8 @@ bool Cel::initStatic(const AlgoStaticInfo& info) {
     return true;
 }
 
-bool Cel::configureAndAlloc(const AlgoRuntimeInfo& info) {
-    if (impl == nullptr || !impl->staticReady || info.numThreads <= 0 || !ImageSizing::isValidFactor(info.sizeFactor)) {
+bool Cel::configure(const AlgoRuntimeInfo& info) {
+    if (impl == nullptr || !impl->staticReady || !ImageSizing::isValidFactor(info.sizeFactor)) {
         return false;
     }
     const int matrixSize = ImageSizing::scaledDimension(info.sizeFactor, ImageSizing::CEL_MULTIPLIER);
@@ -89,34 +84,33 @@ bool Cel::configureAndAlloc(const AlgoRuntimeInfo& info) {
         return false;
     }
 
-    close();
-    impl->numThreads = info.numThreads;
+    if (!close()) {
+        return false;
+    }
     impl->inputStride = info.frameW;
     impl->matrixSize = matrixSize;
     impl->inBytes = info.inBytes;
     impl->matrixBytes = ImageSizing::squareBytes(matrixSize, sizeof(std::uint32_t));
-    impl->perThread.resize(static_cast<std::size_t>(info.numThreads));
-
-    for (PerThreadState& state : impl->perThread) {
-        state.matrixBytes = impl->matrixBytes;
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&state.d_outputMatrix), state.matrixBytes), {
-            close();
-            return false;
-        });
-        // The complete result matrix is copied asynchronously into this pinned buffer.
-        CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&state.h_outputMatrix), state.matrixBytes, cudaHostAllocPortable), {
-            close();
-            return false;
-        });
-        std::memset(state.h_outputMatrix, 0, state.matrixBytes);
-        CUDA_CHECK(cudaMemset(state.d_outputMatrix, 0, state.matrixBytes), {
-            close();
-            return false;
-        });
-    }
-
     impl->params = info.params;
     impl->runtimeReady = true;
+    return true;
+}
+
+bool Cel::allocateOutputBuffers(const ThreadSlot& slot) {
+    if (impl == nullptr || !impl->runtimeReady || impl->outputReady || slot.threadId < 0 || slot.gpuId != impl->gpuId || slot.numaNode != impl->numaNode) {
+        return false;
+    }
+
+    CUDA_CHECK(cudaSetDevice(impl->gpuId), return false);
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&impl->d_outputMatrix), impl->matrixBytes), return false);
+    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&impl->h_outputMatrix), impl->matrixBytes, cudaHostAllocPortable), {
+        CUDA_CHECK(cudaFree(impl->d_outputMatrix), );
+        impl->d_outputMatrix = nullptr;
+        return false;
+    });
+
+    impl->threadId = slot.threadId;
+    impl->outputReady = true;
     return true;
 }
 
@@ -125,31 +119,29 @@ std::size_t Cel::scratchBytesNeeded() const {
 }
 
 bool Cel::launchKernels(const ThreadSlot& slot, cudaStream_t stream) {
-    if (impl == nullptr || !impl->runtimeReady || slot.threadId < 0 || slot.threadId >= impl->numThreads || slot.d_in == nullptr || stream == nullptr || stream != slot.stream) {
+    if (impl == nullptr || !impl->runtimeReady || !impl->outputReady || slot.threadId != impl->threadId || slot.gpuId != impl->gpuId || slot.d_in == nullptr || stream == nullptr || stream != slot.stream) {
         return false;
     }
 
-    const PerThreadState& state = impl->perThread[static_cast<std::size_t>(slot.threadId)];
     const auto* d_input = static_cast<const std::uint8_t*>(slot.d_in);
     dim3 block(CEL_BLOCK_DIM, CEL_BLOCK_DIM);
     dim3 grid((impl->matrixSize + block.x - 1U) / block.x, (impl->matrixSize + block.y - 1U) / block.y);
-    celMatrixMultiplicationKernel << <grid, block, 0, stream >> > (d_input, state.d_outputMatrix, impl->matrixSize, impl->inputStride);
+    celMatrixMultiplicationKernel << <grid, block, 0, stream >> > (d_input, impl->d_outputMatrix, impl->matrixSize, impl->inputStride);
     CUDA_CHECK(cudaGetLastError(), return false);
     return true;
 }
 
 bool Cel::launchD2H(const ThreadSlot& slot, cudaStream_t stream) {
-    if (impl == nullptr || !impl->runtimeReady || slot.threadId < 0 || slot.threadId >= impl->numThreads || stream == nullptr || stream != slot.stream) {
+    if (impl == nullptr || !impl->runtimeReady || !impl->outputReady || slot.threadId != impl->threadId || slot.gpuId != impl->gpuId || stream == nullptr || stream != slot.stream) {
         return false;
     }
 
-    const PerThreadState& state = impl->perThread[static_cast<std::size_t>(slot.threadId)];
-    CUDA_CHECK(cudaMemcpyAsync(state.h_outputMatrix, state.d_outputMatrix, state.matrixBytes, cudaMemcpyDeviceToHost, stream), return false);
+    CUDA_CHECK(cudaMemcpyAsync(impl->h_outputMatrix, impl->d_outputMatrix, impl->matrixBytes, cudaMemcpyDeviceToHost, stream), return false);
     return true;
 }
 
 bool Cel::prepareOutput(AlgoOutput& output) const {
-    if (impl == nullptr || !impl->runtimeReady) {
+    if (impl == nullptr || !impl->runtimeReady || !impl->outputReady) {
         return false;
     }
 
@@ -161,16 +153,15 @@ bool Cel::prepareOutput(AlgoOutput& output) const {
 }
 
 bool Cel::collectResult(const ThreadSlot& slot, AlgoOutput& output) const {
-    if (impl == nullptr || !impl->runtimeReady || slot.threadId < 0 || slot.threadId >= impl->numThreads) {
+    if (impl == nullptr || !impl->runtimeReady || !impl->outputReady || slot.threadId != impl->threadId || slot.gpuId != impl->gpuId) {
         return false;
     }
 
-    const PerThreadState& state = impl->perThread[static_cast<std::size_t>(slot.threadId)];
-    if (output.data.size() != state.matrixBytes) {
+    if (output.data.size() != impl->matrixBytes) {
         return false;
     }
 
-    std::memcpy(output.data.data(), state.h_outputMatrix, state.matrixBytes);
+    std::memcpy(output.data.data(), impl->h_outputMatrix, impl->matrixBytes);
     return true;
 }
 
@@ -179,23 +170,23 @@ bool Cel::close() {
         return true;
     }
     bool ok = true;
-    for (PerThreadState& state : impl->perThread) {
-        if (state.d_outputMatrix != nullptr) {
-            CUDA_CHECK(cudaFree(state.d_outputMatrix), ok = false);
-            state.d_outputMatrix = nullptr;
-        }
-        if (state.h_outputMatrix != nullptr) {
-            CUDA_CHECK(cudaFreeHost(state.h_outputMatrix), ok = false);
-            state.h_outputMatrix = nullptr;
-        }
-        state.matrixBytes = 0;
+    if (impl->d_outputMatrix != nullptr || impl->h_outputMatrix != nullptr) {
+        CUDA_CHECK(cudaSetDevice(impl->gpuId), return false);
     }
-    impl->perThread.clear();
-    impl->numThreads = 0;
+    if (impl->d_outputMatrix != nullptr) {
+        CUDA_CHECK(cudaFree(impl->d_outputMatrix), ok = false);
+        impl->d_outputMatrix = nullptr;
+    }
+    if (impl->h_outputMatrix != nullptr) {
+        CUDA_CHECK(cudaFreeHost(impl->h_outputMatrix), ok = false);
+        impl->h_outputMatrix = nullptr;
+    }
+    impl->threadId = -1;
     impl->inputStride = 0;
     impl->matrixSize = 0;
     impl->inBytes = 0;
     impl->matrixBytes = 0;
     impl->runtimeReady = false;
+    impl->outputReady = false;
     return ok;
 }

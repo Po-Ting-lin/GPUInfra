@@ -2,9 +2,7 @@
 
 #include <atomic>
 #include <cstddef>
-#include <functional>
 #include <mutex>
-#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -19,21 +17,16 @@ struct GpuInfraConfig {
     std::size_t inputBytes = 1024U * 1024U;
 };
 
-struct AlgoFactory {
-    std::string name;
-    std::function<IAlgo*()> make;
-};
-
 class GpuContextManager {
 public:
-    // Serialized cold path: discover GPUs, retain primary contexts, and
-    // create one instance of every algorithm per GPU.
-    static bool init(const GpuInfraConfig& config, const std::vector<AlgoFactory>& algos);
+    // Serialized cold path: discover GPUs and retain primary contexts.
+    static bool init(const GpuInfraConfig& config);
 
     // Serialized cold path. Must finish before Graph workers register.
     static bool configure(const AlgoRuntimeInfo& runtime);
 
     static ThreadSlot* registerThread(int numaHint = -1, int gpuHint = -1);
+    static bool prepareThreadScratch(ThreadSlot* slot, std::size_t scratchBytes);
     static void unregisterThread(ThreadSlot* slot);
     static void shutdown();
 

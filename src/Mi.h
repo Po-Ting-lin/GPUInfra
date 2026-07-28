@@ -8,7 +8,8 @@ public:
     ~Mi() override;
 
     bool initStatic(const AlgoStaticInfo& info) override;
-    bool configureAndAlloc(const AlgoRuntimeInfo& info) override;
+    bool configure(const AlgoRuntimeInfo& info) override;
+    bool allocateOutputBuffers(const ThreadSlot& slot) override;
     std::size_t scratchBytesNeeded() const override;
     bool launchKernels(const ThreadSlot& slot, cudaStream_t stream) override;
     bool launchD2H(const ThreadSlot& slot, cudaStream_t stream) override;

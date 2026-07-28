@@ -5,7 +5,6 @@
 
 #include <cuda.h>
 
-#include "IAlgo.h"
 #include "ThreadSlot.h"
 
 class GpuContext {
@@ -14,17 +13,13 @@ public:
     int numaNode = -1;
     int maxThreadsPerGpu = 0;
     std::size_t inputBytes = 0;
-    std::size_t scratchBytes = 0;
     bool configured = false;
 
     CUdevice device = 0;
     CUcontext primaryCtx = nullptr;
 
-    // One algorithm instance per (GPU, algorithm).
-    std::vector<IAlgo*> algos;
-
     // Fixed-size slot table. Empty entries are reused without renumbering
-    // surviving workers, so threadId remains a stable algorithm-state index.
+    // surviving workers.
     std::vector<ThreadSlot*> threadSlots;
 
     GpuContext() = default;
@@ -32,9 +27,6 @@ public:
     ~GpuContext() {
         for (ThreadSlot* slot : threadSlots) {
             delete slot;
-        }
-        for (IAlgo* algo : algos) {
-            delete algo;
         }
     }
 

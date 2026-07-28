@@ -1,10 +1,12 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -102,10 +104,19 @@ enum class ExecutionModel {
 
 class DummyGraph {
 public:
-    DummyGraph(int numaHint, int gpuHint, ExecutionModel model, GraphSink& outputSink)
+    DummyGraph(
+        int numaHint,
+        int gpuHint,
+        ExecutionModel model,
+        const std::vector<AlgoFactory>& factories,
+        const AlgoRuntimeInfo& runtime,
+        GraphSink& outputSink
+    )
         : requestedNuma(numaHint),
           requestedGpu(gpuHint),
           executionModel(model),
+          algoFactories(&factories),
+          algoRuntime(&runtime),
           sink(&outputSink) {}
 
     bool registerParameters() {
@@ -114,7 +125,7 @@ public:
     }
 
     bool load() {
-        if (!parametersRegistered) {
+        if (!parametersRegistered || algoFactories == nullptr || algoFactories->empty() || algoRuntime == nullptr) {
             return false;
         }
         slot = GpuContextManager::registerThread(requestedNuma, requestedGpu);
@@ -122,11 +133,32 @@ public:
             return false;
         }
 
-        result.outputs.resize(slot->ctx->algos.size());
-        for (std::size_t index = 0; index < slot->ctx->algos.size(); ++index) {
-            if (!slot->ctx->algos[index]->prepareOutput(result.outputs[index])) {
-                GpuContextManager::unregisterThread(slot);
-                slot = nullptr;
+        algos.reserve(algoFactories->size());
+        std::size_t scratchBytes = 0;
+        const AlgoStaticInfo staticInfo{slot->gpuId, slot->numaNode};
+        for (const AlgoFactory& factory : *algoFactories) {
+            if (!factory.make) {
+                releaseResources();
+                return false;
+            }
+            std::unique_ptr<IAlgo> algorithm = factory.make();
+            if (algorithm == nullptr || !algorithm->initStatic(staticInfo) || !algorithm->configure(*algoRuntime)) {
+                releaseResources();
+                return false;
+            }
+            scratchBytes = std::max(scratchBytes, algorithm->scratchBytesNeeded());
+            algos.push_back(std::move(algorithm));
+        }
+
+        if (scratchBytes > 0 && !GpuContextManager::prepareThreadScratch(slot, scratchBytes)) {
+            releaseResources();
+            return false;
+        }
+
+        result.outputs.resize(algos.size());
+        for (std::size_t index = 0; index < algos.size(); ++index) {
+            if (!algos[index]->allocateOutputBuffers(*slot) || !algos[index]->prepareOutput(result.outputs[index])) {
+                releaseResources();
                 return false;
             }
         }
@@ -135,11 +167,10 @@ public:
         return true;
     }
 
-    // Algorithm allocation is intentionally absent here. All algorithms are
-    // configured once by GpuContextManager::configure() before any worker
-    // registers, avoiding the OCR version's cross-thread reconfiguration race.
+    // Each Graph owns its algorithm objects. Parameter notification does not
+    // reconfigure them after the worker-local cold path has completed.
     bool notifyParameters() {
-        return parametersRegistered && loaded && slot != nullptr;
+        return parametersRegistered && loaded && slot != nullptr && !algos.empty();
     }
 
     bool execute(const Frame& frame) {
@@ -162,7 +193,7 @@ public:
         if (executionModel == ExecutionModel::Batched) {
             // Compute batch.
             if (result.ok) {
-                for (IAlgo* algorithm : slot->ctx->algos) {
+                for (const std::unique_ptr<IAlgo>& algorithm : algos) {
                     if (!algorithm->launchKernels(*slot, slot->stream)) {
                         result.ok = false;
                         break;
@@ -172,7 +203,7 @@ public:
 
             // D2H batch, after all algorithms' compute operations.
             if (result.ok) {
-                for (IAlgo* algorithm : slot->ctx->algos) {
+                for (const std::unique_ptr<IAlgo>& algorithm : algos) {
                     if (!algorithm->launchD2H(*slot, slot->stream)) {
                         result.ok = false;
                         break;
@@ -182,7 +213,7 @@ public:
         }
         else if (executionModel == ExecutionModel::Interleaved) {
             if (result.ok) {
-                for (IAlgo* algorithm : slot->ctx->algos) {
+                for (const std::unique_ptr<IAlgo>& algorithm : algos) {
                     if (!algorithm->launchKernels(*slot, slot->stream)) {
                         result.ok = false;
                         break;
@@ -202,8 +233,8 @@ public:
         CUDA_CHECK(cudaStreamSynchronize(slot->stream), result.ok = false);
 
         if (result.ok) {
-            for (std::size_t index = 0; index < slot->ctx->algos.size(); ++index) {
-                if (!slot->ctx->algos[index]->collectResult(*slot, result.outputs[index])) {
+            for (std::size_t index = 0; index < algos.size(); ++index) {
+                if (!algos[index]->collectResult(*slot, result.outputs[index])) {
                     result.ok = false;
                     break;
                 }
@@ -216,23 +247,41 @@ public:
     }
 
     bool unload() {
-        if (slot != nullptr) {
-            GpuContextManager::unregisterThread(slot);
-            slot = nullptr;
-        }
-        loaded = false;
-        return true;
+        return releaseResources();
     }
 
     DummyGraph(const DummyGraph&) = delete;
     DummyGraph& operator=(const DummyGraph&) = delete;
 
 private:
+    bool releaseResources() {
+        bool ok = true;
+        if (slot != nullptr && slot->stream != nullptr) {
+            CUDA_CHECK(cudaStreamSynchronize(slot->stream), ok = false);
+        }
+        for (const std::unique_ptr<IAlgo>& algorithm : algos) {
+            if (algorithm != nullptr && !algorithm->close()) {
+                ok = false;
+            }
+        }
+        algos.clear();
+        result.outputs.clear();
+        if (slot != nullptr) {
+            GpuContextManager::unregisterThread(slot);
+            slot = nullptr;
+        }
+        loaded = false;
+        return ok;
+    }
+
     int requestedNuma;
     int requestedGpu;
     ExecutionModel executionModel;
+    const std::vector<AlgoFactory>* algoFactories;
+    const AlgoRuntimeInfo* algoRuntime;
     GraphSink* sink;
     ThreadSlot* slot = nullptr;
+    std::vector<std::unique_ptr<IAlgo>> algos;
     JobResult result;
     bool parametersRegistered = false;
     bool loaded = false;

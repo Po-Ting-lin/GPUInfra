@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,7 +22,6 @@ struct AlgoParams {
 };
 
 struct AlgoRuntimeInfo {
-    int numThreads = 0;
     std::size_t inBytes = 0;
     int sizeFactor = 0;
     int frameW = 0;
@@ -47,7 +48,8 @@ public:
     virtual ~IAlgo() = default;
 
     virtual bool initStatic(const AlgoStaticInfo& info) = 0;
-    virtual bool configureAndAlloc(const AlgoRuntimeInfo& info) = 0;
+    virtual bool configure(const AlgoRuntimeInfo& info) = 0;
+    virtual bool allocateOutputBuffers(const ThreadSlot& slot) = 0;
     virtual std::size_t scratchBytesNeeded() const = 0;
 
     // Enqueue compute only. D2H is deliberately kept out of this method so
@@ -63,4 +65,9 @@ public:
     // Copy into the prepared output without resizing or allocating.
     virtual bool collectResult(const ThreadSlot& slot, AlgoOutput& output) const = 0;
     virtual bool close() = 0;
+};
+
+struct AlgoFactory {
+    std::string name;
+    std::function<std::unique_ptr<IAlgo>()> make;
 };

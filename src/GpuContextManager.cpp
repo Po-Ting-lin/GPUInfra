@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -204,6 +205,17 @@ bool firstTouchDevice(void* d_pointer, std::size_t bytes, cudaStream_t stream) {
     return true;
 }
 
+void destroyThreadScratch(ThreadSlot* slot) {
+    if (slot == nullptr) {
+        return;
+    }
+    if (slot->d_scratch != nullptr) {
+        CUDA_CHECK(cudaFree(slot->d_scratch), );
+        slot->d_scratch = nullptr;
+    }
+    slot->scratchBytes = 0;
+}
+
 void destroySlot(ThreadSlot* slot) {
     if (slot == nullptr) {
         return;
@@ -211,10 +223,7 @@ void destroySlot(ThreadSlot* slot) {
     if (slot->stream != nullptr) {
         CUDA_CHECK(cudaStreamSynchronize(slot->stream), );
     }
-    if (slot->d_scratch != nullptr) {
-        CUDA_CHECK(cudaFree(slot->d_scratch), );
-        slot->d_scratch = nullptr;
-    }
+    destroyThreadScratch(slot);
     if (slot->d_in != nullptr) {
         CUDA_CHECK(cudaFree(slot->d_in), );
         slot->d_in = nullptr;
@@ -242,11 +251,6 @@ void releaseContexts(std::vector<GpuContext*>& contexts) {
                 destroySlot(slot);
                 slot = nullptr;
             }
-            for (IAlgo* algorithm : context->algos) {
-                if (algorithm != nullptr) {
-                    algorithm->close();
-                }
-            }
             popContext();
         }
 
@@ -261,9 +265,9 @@ void releaseContexts(std::vector<GpuContext*>& contexts) {
 
 }  // namespace
 
-bool GpuContextManager::init(const GpuInfraConfig& requestedConfig, const std::vector<AlgoFactory>& factories) {
+bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
     std::lock_guard<std::mutex> guard(lock);
-    if (initialised.load(std::memory_order_acquire) || requestedConfig.threadsPerGpu <= 0 || requestedConfig.inputBytes == 0 || factories.empty()) {
+    if (initialised.load(std::memory_order_acquire) || requestedConfig.threadsPerGpu <= 0 || requestedConfig.inputBytes == 0) {
         return false;
     }
 
@@ -319,22 +323,6 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig, const std::v
         });
 
         contexts.push_back(context);
-        const AlgoStaticInfo staticInfo{gpu, node};
-        for (const AlgoFactory& factory : factories) {
-            if (!factory.make) {
-                releaseContexts(contexts);
-                numaToCtxs.clear();
-                return false;
-            }
-            IAlgo* algorithm = factory.make();
-            if (algorithm == nullptr || !algorithm->initStatic(staticInfo)) {
-                delete algorithm;
-                releaseContexts(contexts);
-                numaToCtxs.clear();
-                return false;
-            }
-            context->algos.push_back(algorithm);
-        }
         numaToCtxs[node].push_back(context);
 
         cudaDeviceProp properties{};
@@ -352,38 +340,24 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig, const std::v
 
 bool GpuContextManager::configure(const AlgoRuntimeInfo& runtime) {
     std::lock_guard<std::mutex> guard(lock);
-    if (!initialised.load(std::memory_order_acquire) || runtime.numThreads != config.threadsPerGpu || !ImageSizing::isValidFactor(runtime.sizeFactor)) {
+    if (!initialised.load(std::memory_order_acquire) || !ImageSizing::isValidFactor(runtime.sizeFactor)) {
         return false;
     }
 
     const int expectedFrameSize = ImageSizing::scaledDimension(runtime.sizeFactor, ImageSizing::INPUT_MULTIPLIER);
     const std::size_t expectedInputBytes = ImageSizing::squareBytes(expectedFrameSize, sizeof(std::uint8_t));
-    if (runtime.frameW != expectedFrameSize || runtime.frameH != expectedFrameSize || runtime.inBytes != expectedInputBytes) {
+    if (runtime.frameW != expectedFrameSize || runtime.frameH != expectedFrameSize || runtime.inBytes != expectedInputBytes || runtime.inBytes != config.inputBytes) {
         return false;
     }
 
     for (GpuContext* context : contexts) {
-        if (context->activeSlotCount() != 0 || !pinToNumaNode(context->numaNode) || !activateContext(context, true)) {
+        if (context->activeSlotCount() != 0) {
             return false;
         }
 
-        context->configured = false;
-        context->scratchBytes = 0;
-        bool contextOk = true;
-        for (IAlgo* algorithm : context->algos) {
-            if (!algorithm->configureAndAlloc(runtime)) {
-                contextOk = false;
-                break;
-            }
-            context->scratchBytes = std::max(context->scratchBytes, algorithm->scratchBytesNeeded());
-        }
         context->inputBytes = runtime.inBytes;
-        context->configured = contextOk;
-        const bool popped = popContext();
-        if (!contextOk || !popped) {
-            return false;
-        }
-        std::fprintf(stderr, "[GPUInfra] configured gpu=%d threads=%d input=%zu scratch=%zu algorithms=%zu\n", context->gpuId, runtime.numThreads, context->inputBytes, context->scratchBytes, context->algos.size());
+        context->configured = true;
+        std::fprintf(stderr, "[GPUInfra] configured gpu=%d threads=%d input=%zu\n", context->gpuId, config.threadsPerGpu, context->inputBytes);
     }
 
     configured = true;
@@ -456,7 +430,6 @@ ThreadSlot* GpuContextManager::registerThread(int numaHint, int gpuHint) {
     slot->numaNode = context->numaNode;
     slot->ctx = context;
     slot->inBytes = context->inputBytes;
-    slot->scratchBytes = context->scratchBytes;
 
     bool ok = true;
     CUDA_CHECK(cudaStreamCreateWithFlags(&slot->stream, cudaStreamNonBlocking), ok = false);
@@ -467,14 +440,8 @@ ThreadSlot* GpuContextManager::registerThread(int numaHint, int gpuHint) {
         std::memset(slot->h_in, 0, slot->inBytes);
         CUDA_CHECK(cudaMalloc(&slot->d_in, slot->inBytes), ok = false);
     }
-    if (ok && slot->scratchBytes > 0) {
-        CUDA_CHECK(cudaMalloc(&slot->d_scratch, slot->scratchBytes), ok = false);
-    }
     if (ok) {
         ok = firstTouchDevice(slot->d_in, slot->inBytes, slot->stream);
-    }
-    if (ok && slot->scratchBytes > 0) {
-        ok = firstTouchDevice(slot->d_scratch, slot->scratchBytes, slot->stream);
     }
 
     if (!ok) {
@@ -492,6 +459,43 @@ ThreadSlot* GpuContextManager::registerThread(int numaHint, int gpuHint) {
 
     std::fprintf(stderr, "[GPUInfra] registered thread gpu=%d numa=%d slot=%d stream=%p\n", slot->gpuId, slot->numaNode, slot->threadId, static_cast<void*>(slot->stream));
     return slot;
+}
+
+bool GpuContextManager::prepareThreadScratch(ThreadSlot* slot, std::size_t scratchBytes) {
+    if (slot == nullptr || slot->ctx == nullptr || slot->ownerTid != std::this_thread::get_id() || scratchBytes == 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> guard(lock);
+    GpuContext* context = slot->ctx;
+    if (!initialised.load(std::memory_order_acquire) || !configured || slot->threadId < 0 || static_cast<std::size_t>(slot->threadId) >= context->threadSlots.size() || context->threadSlots[static_cast<std::size_t>(slot->threadId)] != slot || slot->d_scratch != nullptr || slot->scratchBytes != 0) {
+        return false;
+    }
+
+    if (!activateContext(context, false)) {
+        return false;
+    }
+
+    bool ok = true;
+    CUDA_CHECK(cudaMalloc(&slot->d_scratch, scratchBytes), ok = false);
+    if (ok) {
+        ok = firstTouchDevice(slot->d_scratch, scratchBytes, slot->stream);
+    }
+
+    if (ok) {
+        slot->scratchBytes = scratchBytes;
+    }
+    else {
+        destroyThreadScratch(slot);
+    }
+
+    const bool popped = popContext();
+    if (!ok || !popped) {
+        return false;
+    }
+
+    std::fprintf(stderr, "[GPUInfra] prepared scratch gpu=%d slot=%d bytes=%zu\n", slot->gpuId, slot->threadId, scratchBytes);
+    return true;
 }
 
 void GpuContextManager::unregisterThread(ThreadSlot* slot) {

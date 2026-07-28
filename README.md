@@ -1,17 +1,18 @@
 # GPUInfra CUDA demo
 
 This repository is a corrected, runnable version of the OCR-derived GPU
-infrastructure example in [plan.md](plan.md).
+infrastructure example in [architecture.md](architecture.md).
 
 It demonstrates the register-thread/own-the-slot model:
 
 - one `GpuContext` per discovered CUDA GPU;
 - one nonblocking CUDA stream and one fixed slot per Graph worker;
+- one private CEL, SDD, and MI object per `DummyGraph`;
 - one shared H2D input transfer per frame;
-- one pinned host result matrix per algorithm and worker slot;
+- one device output and one pinned-host output buffer owned by each algorithm;
 - a compute batch for all algorithms, followed by a D2H batch;
 - exactly one `cudaStreamSynchronize()` per frame;
-- serialized algorithm configuration before workers start;
+- worker-local algorithm configuration before warmup and timing;
 - no internal queue, dispatcher, or GPUInfra-owned worker threads.
 
 The example currently registers three synthetic algorithms: CEL, SDD, and MI.
@@ -124,7 +125,7 @@ delivered 220 frames across 1 CUDA GPU(s), failures=0
 ```
 
 The demo discovers the GPU count dynamically. It does not assume the two-GPU
-deployment described in the plan.
+deployment illustrated by the architecture diagrams.
 
 ## Lifecycle
 
@@ -138,17 +139,17 @@ deployment described in the plan.
 4. calls `cudaSetDevice()` and primes the Runtime API with
    `cudaFree(nullptr)`;
 5. retains the GPU's primary context with
-   `cuDevicePrimaryCtxRetain()`;
-6. creates one CEL, one SDD, and one MI instance per GPU.
+   `cuDevicePrimaryCtxRetain()`.
 
-### 2. Serialized configuration
+The manager creates no algorithm objects. `GpuContext` owns the per-GPU
+context identity and fixed slot table. It is also the intended owner for future
+large immutable resources that must be shared by every worker on that GPU.
 
-`GpuContextManager::configure()` runs before any worker registers. It allocates
-all per-GPU, per-thread algorithm output buffers.
+### 2. Runtime validation
 
-Configuration does not run from `DummyGraph::notifyParameters()`. The OCR
-version configured the same algorithm instance concurrently from every Graph
-worker, which could reallocate buffers while another worker was using them.
+`GpuContextManager::configure()` runs before workers register. It validates the
+frame geometry and input-byte count and marks each context ready for
+registration. It does not allocate algorithm resources.
 
 ### 3. Worker registration
 
@@ -163,17 +164,24 @@ Registration creates:
 
 - one `cudaStreamNonBlocking` stream;
 - one `cudaHostAlloc()` input buffer;
-- one `cudaMalloc()` device input buffer;
-- optional per-slot shared device scratch.
+- one `cudaMalloc()` device input buffer.
 
 Slot IDs come from a fixed table and are reused without renumbering active
-workers. This keeps `slot.threadId` aligned with every algorithm's
-`perThread[]` state.
+workers. Each slot remains owned by its registering Graph thread.
 
-During `DummyGraph::load()`, each worker also creates one reusable `JobResult`,
-sizes its algorithm-output table, and allocates the CEL, SDD, and MI pageable
-result buffers. The frame-execution path only copies into this prepared storage.
-The demo sink consumes each result by reference and does not retain it.
+During `DummyGraph::load()`, each worker:
+
+1. creates its private CEL, SDD, and MI objects;
+2. configures their output dimensions;
+3. asks the manager to allocate optional shared scratch in the `ThreadSlot`;
+4. asks each algorithm to allocate its own device and pinned-host output
+   buffers;
+5. creates one reusable `JobResult` and its pageable result matrices.
+
+Output allocation is a cold-path operation after NUMA and GPU binding. Separate
+algorithm-owned buffers keep every output valid until its Batched D2H copy.
+Shared scratch may be reused because kernels on one slot execute in stream
+order.
 
 ### 4. Frame execution
 
@@ -186,9 +194,9 @@ caller buffer
   -> CEL (2F)x(2F) matrix-multiplication CUDA kernel
   -> SDD (3F)x(3F) matrix-multiplication CUDA kernel
   -> MI (3F)x(3F) matrix-multiplication CUDA kernel
-  -> CEL cudaMemcpyAsync D2H into a pinned result matrix
-  -> SDD cudaMemcpyAsync D2H into a pinned result matrix
-  -> MI cudaMemcpyAsync D2H into a pinned result matrix
+  -> CEL cudaMemcpyAsync D2H into its pinned output buffer
+  -> SDD cudaMemcpyAsync D2H into its pinned output buffer
+  -> MI cudaMemcpyAsync D2H into its pinned output buffer
   -> one cudaStreamSynchronize
   -> collect owned results
 ```
@@ -199,10 +207,20 @@ transfer.
 
 ### 5. Teardown
 
-Workers unregister from their owning thread. GPUInfra synchronizes and destroys
-the slot stream, frees slot memory, closes algorithm allocations while the
-correct primary context is current, and finally calls
-`cuDevicePrimaryCtxRelease()`.
+Each `DummyGraph` synchronizes its stream, closes and destroys its private
+algorithm objects and their output buffers, and then unregisters its slot.
+GPUInfra frees the slot input, scratch, and stream while the correct primary
+context is current. After all workers have joined, manager shutdown releases
+the retained primary-context reference.
+
+## Ownership summary
+
+| Owner | Resources |
+| --- | --- |
+| `GpuContext` | GPU/NUMA identity, retained primary context, fixed slot table, future immutable per-GPU resources |
+| `ThreadSlot` | Stream, pinned/device input, shared scratch |
+| `DummyGraph` | Private algorithm objects, execution order, reusable `JobResult` |
+| CEL/SDD/MI object | Configuration, device output, pinned-host output |
 
 ## CUDA API split
 
@@ -211,7 +229,7 @@ correct primary context is current, and finally calls
 | Driver initialization | `cuInit` |
 | Primary-context ownership | `cuDevicePrimaryCtxRetain`, `cuCtxPushCurrent`, `cuCtxPopCurrent`, `cuDevicePrimaryCtxRelease` |
 | Runtime device binding | `cudaSetDevice`, `cudaFree(nullptr)` |
-| Slot resources | `cudaStreamCreateWithFlags`, `cudaHostAlloc`, `cudaMalloc` |
+| Slot and algorithm resources | `cudaStreamCreateWithFlags`, `cudaHostAlloc`, `cudaMalloc` |
 | Frame transfers | `cudaMemcpyAsync` |
 | Per-frame wait | `cudaStreamSynchronize` |
 | Cleanup | `cudaFree`, `cudaFreeHost`, `cudaStreamDestroy` |
@@ -224,10 +242,10 @@ description, source file, and line.
 ```text
 src/
   CudaCheck.h              CUDA Runtime/Driver error reporting
-  GpuContext.h             per-GPU registry and fixed slot table
-  GpuContextManager.*      discovery, configuration, registration, teardown
-  ThreadSlot.h             per-Graph-thread CUDA resources
-  IAlgo.h                  split compute/D2H algorithm interface
+  GpuContext.h             per-GPU context identity and fixed slot table
+  GpuContextManager.*      discovery, registration, scratch allocation, teardown
+  ThreadSlot.h             per-Graph-thread input, stream, and shared scratch
+  IAlgo.h                  algorithm allocation, compute, and D2H contracts
   Cel.*                    synthetic CEL matrix-multiplication kernel
   Mi.*                     synthetic MI matrix-multiplication kernel
   Sdd.*                    synthetic SDD matrix-multiplication kernel

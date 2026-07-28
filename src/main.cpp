@@ -56,16 +56,16 @@ private:
     bool released = false;
 };
 
-IAlgo* makeCel() {
-    return new Cel();
+std::unique_ptr<IAlgo> makeCel() {
+    return std::make_unique<Cel>();
 }
 
-IAlgo* makeSdd() {
-    return new Sdd();
+std::unique_ptr<IAlgo> makeSdd() {
+    return std::make_unique<Sdd>();
 }
 
-IAlgo* makeMi() {
-    return new Mi();
+std::unique_ptr<IAlgo> makeMi() {
+    return std::make_unique<Mi>();
 }
 
 bool parseFrameCount(const char* text, bool allowZero, std::uint64_t& output) {
@@ -134,8 +134,20 @@ bool executeFrames(DummyGraph& graph, GraphFrameSource& source, const char* phas
     return true;
 }
 
-void runGraphWorker(int numaNode, int gpuId, ExecutionModel executionModel, GraphFrameSource& warmupSource, GraphFrameSource& timedSource, GraphSink& sink, WorkerGate& startGate, WorkerGate& finishGate, std::atomic<int>& workerFailures) {
-    DummyGraph graph(numaNode, gpuId, executionModel, sink);
+void runGraphWorker(
+    int numaNode,
+    int gpuId,
+    ExecutionModel executionModel,
+    const std::vector<AlgoFactory>& factories,
+    const AlgoRuntimeInfo& runtime,
+    GraphFrameSource& warmupSource,
+    GraphFrameSource& timedSource,
+    GraphSink& sink,
+    WorkerGate& startGate,
+    WorkerGate& finishGate,
+    std::atomic<int>& workerFailures
+) {
+    DummyGraph graph(numaNode, gpuId, executionModel, factories, runtime, sink);
     bool canRun = graph.registerParameters() && graph.load() && graph.notifyParameters();
     if (!canRun) {
         std::cerr << "worker setup failed: gpu=" << gpuId << " numa=" << numaNode << '\n';
@@ -182,13 +194,12 @@ int main(int argc, char* argv[]) {
     config.requireNuma = true;
     config.inputBytes = frameBytes;
 
-    if (!GpuContextManager::init(config, factories)) {
+    if (!GpuContextManager::init(config)) {
         std::cerr << "GpuContextManager::init failed\n";
         return 1;
     }
 
     AlgoRuntimeInfo runtime;
-    runtime.numThreads = THREADS_PER_GPU;
     runtime.inBytes = frameBytes;
     runtime.sizeFactor = sizeFactor;
     runtime.frameW = frameWidth;
@@ -230,7 +241,7 @@ int main(int argc, char* argv[]) {
         const int gpuId = static_cast<int>(gpu);
         const int node = GpuContextManager::numaNodeForGpu(gpuId);
         for (int worker = 0; worker < THREADS_PER_GPU; ++worker) {
-            workers.emplace_back(runGraphWorker, node, gpuId, executionModel, std::ref(*warmupSources[gpu]), std::ref(*timedSources[gpu]), std::ref(sink), std::ref(startGate), std::ref(finishGate), std::ref(workerFailures));
+            workers.emplace_back(runGraphWorker, node, gpuId, executionModel, std::cref(factories), std::cref(runtime), std::ref(*warmupSources[gpu]), std::ref(*timedSources[gpu]), std::ref(sink), std::ref(startGate), std::ref(finishGate), std::ref(workerFailures));
         }
     }
 
