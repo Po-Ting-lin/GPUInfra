@@ -1280,9 +1280,9 @@
                     <span class="note-index">02</span>
                     <h3>No hot-path allocation</h3>
                     <p>
-                        Slots and algorithm-owned output buffers are prepared
-                        before frame execution; the frame path only copies and
-                        enqueues.
+                        Slots and algorithm-owned output buffers are initialized
+                        and parameters are notified before frame execution; the
+                        frame path only copies and enqueues.
                     </p>
                 </article>
                 <article class="note">

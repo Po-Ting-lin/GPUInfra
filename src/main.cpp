@@ -12,13 +12,9 @@
 #include <thread>
 #include <vector>
 
-#include "Cel.h"
 #include "GpuContextManager.h"
 #include "GraphStuff.h"
-#include "IAlgo.h"
 #include "ImageSizing.h"
-#include "Mi.h"
-#include "Sdd.h"
 
 namespace {
 
@@ -55,18 +51,6 @@ private:
     std::size_t arrivedWorkers = 0;
     bool released = false;
 };
-
-std::unique_ptr<IAlgo> makeCel() {
-    return std::make_unique<Cel>();
-}
-
-std::unique_ptr<IAlgo> makeSdd() {
-    return std::make_unique<Sdd>();
-}
-
-std::unique_ptr<IAlgo> makeMi() {
-    return std::make_unique<Mi>();
-}
 
 bool parseFrameCount(const char* text, bool allowZero, std::uint64_t& output) {
     try {
@@ -138,8 +122,8 @@ void runGraphWorker(
     int numaNode,
     int gpuId,
     ExecutionModel executionModel,
-    const std::vector<AlgoFactory>& factories,
     const AlgoRuntimeInfo& runtime,
+    const AlgoParams& params,
     GraphFrameSource& warmupSource,
     GraphFrameSource& timedSource,
     GraphSink& sink,
@@ -147,7 +131,7 @@ void runGraphWorker(
     WorkerGate& finishGate,
     std::atomic<int>& workerFailures
 ) {
-    DummyGraph graph(numaNode, gpuId, executionModel, factories, runtime, sink);
+    DummyGraph graph(numaNode, gpuId, executionModel, runtime, params, sink);
     bool canRun = graph.registerParameters() && graph.load() && graph.notifyParameters();
     if (!canRun) {
         std::cerr << "worker setup failed: gpu=" << gpuId << " numa=" << numaNode << '\n';
@@ -183,12 +167,6 @@ int main(int argc, char* argv[]) {
     const int miSize = ImageSizing::scaledDimension(sizeFactor, ImageSizing::MI_MULTIPLIER);
     const std::size_t frameBytes = ImageSizing::squareBytes(frameWidth, sizeof(std::uint8_t));
 
-    std::vector<AlgoFactory> factories{
-        {"cel", makeCel},
-        {"sdd", makeSdd},
-        {"mi", makeMi},
-    };
-
     GpuInfraConfig config;
     config.threadsPerGpu = THREADS_PER_GPU;
     config.requireNuma = true;
@@ -205,12 +183,14 @@ int main(int argc, char* argv[]) {
     runtime.frameW = frameWidth;
     runtime.frameH = frameHeight;
     runtime.frameDtype = 1;
-    runtime.params.name = "demo";
     if (!GpuContextManager::configure(runtime)) {
         std::cerr << "GpuContextManager::configure failed\n";
         GpuContextManager::shutdown();
         return 1;
     }
+
+    AlgoParams params;
+    params.name = "demo";
 
     const std::size_t gpuCount = GpuContextManager::gpuCount();
     GraphSink sink;
@@ -241,7 +221,7 @@ int main(int argc, char* argv[]) {
         const int gpuId = static_cast<int>(gpu);
         const int node = GpuContextManager::numaNodeForGpu(gpuId);
         for (int worker = 0; worker < THREADS_PER_GPU; ++worker) {
-            workers.emplace_back(runGraphWorker, node, gpuId, executionModel, std::cref(factories), std::cref(runtime), std::ref(*warmupSources[gpu]), std::ref(*timedSources[gpu]), std::ref(sink), std::ref(startGate), std::ref(finishGate), std::ref(workerFailures));
+            workers.emplace_back(runGraphWorker, node, gpuId, executionModel, std::cref(runtime), std::cref(params), std::ref(*warmupSources[gpu]), std::ref(*timedSources[gpu]), std::ref(sink), std::ref(startGate), std::ref(finishGate), std::ref(workerFailures));
         }
     }
 

@@ -97,7 +97,7 @@ context lifetime:
 ```text
 manager init
   -> cuDevicePrimaryCtxRetain()
-  -> configure algorithms and register Graph workers
+  -> initialize algorithms and register Graph workers
   -> process frames
 manager shutdown
   -> release streams and allocations

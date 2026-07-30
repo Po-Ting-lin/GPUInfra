@@ -13,10 +13,13 @@
 
 #include <cuda_runtime.h>
 
+#include "Cel.h"
 #include "CudaCheck.h"
 #include "GpuContext.h"
 #include "GpuContextManager.h"
 #include "IAlgo.h"
+#include "Mi.h"
+#include "Sdd.h"
 #include "ThreadSlot.h"
 
 // Minimal stand-ins for the external AOI Graph framework.
@@ -108,15 +111,15 @@ public:
         int numaHint,
         int gpuHint,
         ExecutionModel model,
-        const std::vector<AlgoFactory>& factories,
         const AlgoRuntimeInfo& runtime,
+        const AlgoParams& params,
         GraphSink& outputSink
     )
         : requestedNuma(numaHint),
           requestedGpu(gpuHint),
           executionModel(model),
-          algoFactories(&factories),
           algoRuntime(&runtime),
+          algoParams(&params),
           sink(&outputSink) {}
 
     bool registerParameters() {
@@ -125,7 +128,7 @@ public:
     }
 
     bool load() {
-        if (!parametersRegistered || algoFactories == nullptr || algoFactories->empty() || algoRuntime == nullptr) {
+        if (!parametersRegistered || algoRuntime == nullptr || algoParams == nullptr) {
             return false;
         }
         slot = GpuContextManager::registerThread(requestedNuma, requestedGpu);
@@ -133,21 +136,20 @@ public:
             return false;
         }
 
-        algos.reserve(algoFactories->size());
+        algos.reserve(3);
+        algos.push_back(std::make_unique<Cel>());
+        algos.push_back(std::make_unique<Sdd>());
+        algos.push_back(std::make_unique<Mi>());
+
+        result.outputs.resize(algos.size());
         std::size_t scratchBytes = 0;
-        const AlgoStaticInfo staticInfo{slot->gpuId, slot->numaNode};
-        for (const AlgoFactory& factory : *algoFactories) {
-            if (!factory.make) {
+        for (std::size_t index = 0; index < algos.size(); ++index) {
+            std::size_t algorithmScratchBytes = 0;
+            if (!algos[index]->init(*algoRuntime, *slot, result.outputs[index], algorithmScratchBytes)) {
                 releaseResources();
                 return false;
             }
-            std::unique_ptr<IAlgo> algorithm = factory.make();
-            if (algorithm == nullptr || !algorithm->initStatic(staticInfo) || !algorithm->configure(*algoRuntime)) {
-                releaseResources();
-                return false;
-            }
-            scratchBytes = std::max(scratchBytes, algorithm->scratchBytesNeeded());
-            algos.push_back(std::move(algorithm));
+            scratchBytes = std::max(scratchBytes, algorithmScratchBytes);
         }
 
         if (scratchBytes > 0 && !GpuContextManager::prepareThreadScratch(slot, scratchBytes)) {
@@ -155,22 +157,25 @@ public:
             return false;
         }
 
-        result.outputs.resize(algos.size());
-        for (std::size_t index = 0; index < algos.size(); ++index) {
-            if (!algos[index]->allocateOutputBuffers(*slot) || !algos[index]->prepareOutput(result.outputs[index])) {
-                releaseResources();
-                return false;
-            }
-        }
+        CUDA_CHECK(cudaStreamSynchronize(slot->stream), {
+            releaseResources();
+            return false;
+        });
 
         loaded = true;
         return true;
     }
 
-    // Each Graph owns its algorithm objects. Parameter notification does not
-    // reconfigure them after the worker-local cold path has completed.
     bool notifyParameters() {
-        return parametersRegistered && loaded && slot != nullptr && !algos.empty();
+        if (!parametersRegistered || !loaded || slot == nullptr || slot->ownerTid != std::this_thread::get_id() || algoParams == nullptr || algos.empty()) {
+            return false;
+        }
+        for (const std::unique_ptr<IAlgo>& algorithm : algos) {
+            if (!algorithm->notifyParameter(*algoParams)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     bool execute(const Frame& frame) {
@@ -277,8 +282,8 @@ private:
     int requestedNuma;
     int requestedGpu;
     ExecutionModel executionModel;
-    const std::vector<AlgoFactory>* algoFactories;
     const AlgoRuntimeInfo* algoRuntime;
+    const AlgoParams* algoParams;
     GraphSink* sink;
     ThreadSlot* slot = nullptr;
     std::vector<std::unique_ptr<IAlgo>> algos;

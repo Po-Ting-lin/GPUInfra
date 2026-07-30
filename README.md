@@ -12,17 +12,18 @@ It demonstrates the register-thread/own-the-slot model:
 - one device output and one pinned-host output buffer owned by each algorithm;
 - a compute batch for all algorithms, followed by a D2H batch;
 - exactly one `cudaStreamSynchronize()` per frame;
-- worker-local algorithm configuration before warmup and timing;
+- worker-local algorithm initialization and parameter notification before
+  warmup and timing;
 - no internal queue, dispatcher, or GPUInfra-owned worker threads.
 
-The example currently registers three synthetic algorithms: CEL, SDD, and MI.
-Each launches a real CUDA matrix-multiplication kernel over a shared square byte
-input frame. For size factor `F`, the input is `(8F)x(8F)`, CEL operates on the
-top-left `(2F)x(2F)` region, and SDD and MI each operate on the top-left
-`(3F)x(3F)` region. Results are returned as row-major `uint32_t` matrices in
-`AlgoOutput::data`. These kernels create measurable GPU load but do not
-implement OCR. Real CEL/SDD/MI kernels can replace them without changing the
-infrastructure or `IAlgo` lifecycle.
+Each `DummyGraph` directly constructs three synthetic algorithms: CEL, SDD,
+and MI. Each launches a real CUDA matrix-multiplication kernel over a shared
+square byte input frame. For size factor `F`, the input is `(8F)x(8F)`, CEL
+operates on the top-left `(2F)x(2F)` region, and SDD and MI each operate on the
+top-left `(3F)x(3F)` region. Results are returned as row-major `uint32_t`
+matrices in `AlgoOutput::data`. These kernels create measurable GPU load but
+do not implement OCR. Real CEL/SDD/MI kernels can replace them without changing
+the infrastructure or `IAlgo` lifecycle.
 
 ## Requirements
 
@@ -171,17 +172,22 @@ workers. Each slot remains owned by its registering Graph thread.
 
 During `DummyGraph::load()`, each worker:
 
-1. creates its private CEL, SDD, and MI objects;
-2. configures their output dimensions;
-3. asks the manager to allocate optional shared scratch in the `ThreadSlot`;
-4. asks each algorithm to allocate its own device and pinned-host output
-   buffers;
-5. creates one reusable `JobResult` and its pageable result matrices.
+1. creates its private CEL, SDD, and MI objects and reusable `AlgoOutput`
+   entries;
+2. calls each algorithm's `init()` to read slot identity, validate and store
+   frame geometry, allocate and first-touch its device and pinned-host outputs,
+   prepare its pageable output, and write its shared-scratch requirement;
+3. asks the manager to allocate the maximum optional shared scratch in the
+   `ThreadSlot`;
+4. completes the initialization stream work.
 
-Output allocation is a cold-path operation after NUMA and GPU binding. Separate
-algorithm-owned buffers keep every output valid until its Batched D2H copy.
-Shared scratch may be reused because kernels on one slot execute in stream
-order.
+After `load()`, `DummyGraph::notifyParameters()` calls `notifyParameter()` on
+each algorithm to validate and store its parameters.
+
+Initialization and parameter notification are cold-path operations on the
+owning worker thread. Separate algorithm-owned buffers keep every output valid
+until its Batched D2H copy. Shared scratch may be reused because kernels on one
+slot execute in stream order.
 
 ### 4. Frame execution
 
@@ -220,7 +226,7 @@ the retained primary-context reference.
 | `GpuContext` | GPU/NUMA identity, retained primary context, fixed slot table, future immutable per-GPU resources |
 | `ThreadSlot` | Stream, pinned/device input, shared scratch |
 | `DummyGraph` | Private algorithm objects, execution order, reusable `JobResult` |
-| CEL/SDD/MI object | Configuration, device output, pinned-host output |
+| CEL/SDD/MI object | Frame geometry, parameters, device output, pinned-host output |
 
 ## CUDA API split
 
@@ -245,7 +251,7 @@ src/
   GpuContext.h             per-GPU context identity and fixed slot table
   GpuContextManager.*      discovery, registration, scratch allocation, teardown
   ThreadSlot.h             per-Graph-thread input, stream, and shared scratch
-  IAlgo.h                  algorithm allocation, compute, and D2H contracts
+  IAlgo.h                  initialization, parameter, compute, and D2H contracts
   Cel.*                    synthetic CEL matrix-multiplication kernel
   Mi.*                     synthetic MI matrix-multiplication kernel
   Sdd.*                    synthetic SDD matrix-multiplication kernel

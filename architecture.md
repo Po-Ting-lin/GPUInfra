@@ -13,8 +13,8 @@ The current demo uses:
 - one stream and one input pair per slot;
 - one device and pinned-host output pair per algorithm object.
 
-The algorithm count and thread count are configuration choices. The ownership
-model remains the same when either count changes.
+The CEL, SDD, and MI set and its execution order are fixed by direct
+construction in `DummyGraph::load()`. The thread count is configurable.
 
 ## 1. Design decisions
 
@@ -99,24 +99,25 @@ between Graph workers.
 
 ### `IAlgo`
 
-An `IAlgo` implementation owns its configuration, device output buffer, and
-pinned-host D2H buffer. It uses the slot stream, input, and optional scratch
-without owning them.
+An `IAlgo` implementation owns its frame geometry, parameters, device output
+buffer, and pinned-host D2H buffer. It uses the slot stream, input, and optional
+scratch without owning them.
 
 The lifecycle is:
 
 ```text
-factory.make()
-  -> initStatic(gpu, numa)
-  -> configure(runtime)
-  -> allocateOutputBuffers(slot)
-  -> prepareOutput(output)
+make_unique<Cel>(), make_unique<Sdd>(), make_unique<Mi>()
+  -> init(runtime, slot, output, scratchBytes)
+  -> notifyParameter(params)
   -> launchKernels / launchD2H / collectResult
   -> close()
 ```
 
-CEL, SDD, and MI store the expected GPU and slot ID when allocating. Calls
-using a different slot are rejected.
+`init()` reads GPU, NUMA, and thread identity from the slot, validates and stores
+frame geometry, allocates and first-touches output buffers, prepares the reusable
+pageable output, and reports scratch demand through its output parameter.
+`notifyParameter()` only validates and updates algorithm parameters. Calls using
+a different slot are rejected.
 
 ## 3. Startup and worker lifecycle
 
@@ -133,25 +134,27 @@ GpuContextManager::configure(runtime);
 and retains primary contexts. `configure()` validates the input dimensions and
 marks contexts ready. Neither call creates algorithm objects or output buffers.
 
-### Graph worker load
+### Graph worker setup
 
-Each external worker constructs one `DummyGraph` and calls `load()`:
+Each external worker constructs one `DummyGraph`, calls `load()`, and then
+calls `notifyParameters()`:
 
 ```text
 register ThreadSlot
   -> create private algorithm objects
-  -> configure each algorithm
-  -> collect the maximum shared-scratch requirement
+  -> create reusable pageable outputs
+  -> init each algorithm, prepare its output, and collect scratch requirements
   -> allocate optional slot scratch
-  -> allocate each algorithm's output buffers
-  -> prepare reusable pageable outputs
+  -> complete device first-touch operations
+  -> notify each algorithm of its parameters
 ```
 
 All allocation occurs before warmup and timing.
 
 If any step fails, `DummyGraph` destroys the objects it already created and
 unregisters the slot. Each algorithm frees any output buffers it allocated;
-slot teardown frees input and scratch resources.
+slot teardown frees input and scratch resources. Parameter notification must
+run on the owning worker while frame execution is quiescent.
 
 ### Graph worker unload
 
@@ -272,7 +275,7 @@ host-side CUDA wait per frame.
 - Explicit `numaHint` pins the Graph worker before slot allocation.
 - Pinned input and algorithm output allocations occur after pinning.
 - `registerThread()` binds the selected CUDA device on the calling thread.
-- Algorithm allocation calls `cudaSetDevice()` for the slot GPU.
+- Algorithm `init()` calls `cudaSetDevice()` for the slot GPU.
 - Slot registration, scratch preparation, and teardown are cold paths protected
   by the manager mutex.
 - Kernel launch and transfer operations use no manager mutex.
@@ -295,27 +298,32 @@ The following rules are non-negotiable during `DummyGraph::execute()`:
 - exactly one `cudaStreamSynchronize()` per frame.
 
 CUDA allocations, vector growth, and output preparation are allowed only
-during `load()` or teardown.
+during `load()` or teardown. Parameter notification runs after `load()` and
+before warmup while the worker is quiescent.
 
 ## 8. Adding an algorithm
 
 To add algorithm D:
 
 1. implement `IAlgo`;
-2. compute output sizes in `configure()`;
-3. allocate owned device and pinned-host outputs in
-   `allocateOutputBuffers()`;
+2. validate geometry, allocate and first-touch owned outputs, prepare the
+   pageable destination, and write scratch demand from `init()`;
+3. validate and store parameters in `notifyParameter()`;
 4. enqueue compute in `launchKernels()`;
 5. enqueue D2H in `launchD2H()`;
 6. copy into the prepared pageable destination in `collectResult()`;
-7. register its factory in `main.cpp`.
+7. include the implementation and add `make_unique<AlgorithmD>()` to
+   `DummyGraph::load()` at the required execution position.
 
 No change to `ThreadSlot` or the execution loops is required.
 
-If the algorithm needs temporary storage, report it through
-`scratchBytesNeeded()` and use `slot.d_scratch`. If it needs immutable
-per-GPU model data, add an explicit shared-resource type owned by
-`GpuContext`; do not place a separate copy in every `DummyGraph`.
+If the algorithm needs temporary storage, write its size through
+`scratchBytes` in `init()` and use `slot.d_scratch` during execution. `init()`
+may report scratch demand but must not use the scratch pointer because
+allocation happens after all algorithms return. If it needs immutable per-GPU
+model data, add an explicit
+shared-resource type owned by `GpuContext`; do not place a separate copy in
+every `DummyGraph`.
 
 ## 9. Verification
 

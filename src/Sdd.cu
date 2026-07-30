@@ -37,46 +37,17 @@ __global__ void sddMatrixMultiplicationKernel(const std::uint8_t* d_input, std::
 
 }  // namespace
 
-struct Sdd::Impl {
-    int gpuId = -1;
-    int numaNode = -1;
-    int threadId = -1;
-    int inputStride = 0;
-    int matrixSize = 0;
-    std::size_t inBytes = 0;
-    std::size_t matrixBytes = 0;
-    std::uint32_t* d_outputMatrix = nullptr;
-    std::uint32_t* h_outputMatrix = nullptr;
-    bool staticReady = false;
-    bool runtimeReady = false;
-    bool outputReady = false;
-    AlgoParams params;
-};
-
-Sdd::Sdd() : impl(new Impl()) {}
-
 Sdd::~Sdd() {
     close();
-    delete impl;
-    impl = nullptr;
 }
 
-bool Sdd::initStatic(const AlgoStaticInfo& info) {
-    if (impl == nullptr || info.gpuId < 0 || info.numaNode < 0) {
+bool Sdd::init(const AlgoRuntimeInfo& info, const ThreadSlot& slot, AlgoOutput& output, std::size_t& scratchBytes) {
+    scratchBytes = 0;
+    if (slot.threadId < 0 || slot.gpuId < 0 || slot.numaNode < 0 || slot.stream == nullptr || !ImageSizing::isValidFactor(info.sizeFactor)) {
         return false;
     }
-    impl->gpuId = info.gpuId;
-    impl->numaNode = info.numaNode;
-    impl->staticReady = true;
-    return true;
-}
-
-bool Sdd::configure(const AlgoRuntimeInfo& info) {
-    if (impl == nullptr || !impl->staticReady || !ImageSizing::isValidFactor(info.sizeFactor)) {
-        return false;
-    }
-    const int matrixSize = ImageSizing::scaledDimension(info.sizeFactor, ImageSizing::SDD_MULTIPLIER);
-    if (info.frameW < matrixSize || info.frameH < matrixSize) {
+    const int outputSize = ImageSizing::scaledDimension(info.sizeFactor, ImageSizing::SDD_MULTIPLIER);
+    if (info.frameW < outputSize || info.frameH < outputSize) {
         return false;
     }
     const std::size_t frameBytes = static_cast<std::size_t>(info.frameW) * info.frameH;
@@ -87,106 +58,105 @@ bool Sdd::configure(const AlgoRuntimeInfo& info) {
     if (!close()) {
         return false;
     }
-    impl->inputStride = info.frameW;
-    impl->matrixSize = matrixSize;
-    impl->inBytes = info.inBytes;
-    impl->matrixBytes = ImageSizing::squareBytes(matrixSize, sizeof(std::uint32_t));
-    impl->params = info.params;
-    impl->runtimeReady = true;
-    return true;
-}
+    gpuId = slot.gpuId;
+    numaNode = slot.numaNode;
+    threadId = slot.threadId;
+    frameW = info.frameW;
+    frameH = info.frameH;
+    matrixSize = outputSize;
+    inBytes = info.inBytes;
+    matrixBytes = ImageSizing::squareBytes(matrixSize, sizeof(std::uint32_t));
 
-bool Sdd::allocateOutputBuffers(const ThreadSlot& slot) {
-    if (impl == nullptr || !impl->runtimeReady || impl->outputReady || slot.threadId < 0 || slot.gpuId != impl->gpuId || slot.numaNode != impl->numaNode) {
+    output.algoName = "sdd";
+    output.width = matrixSize;
+    output.height = matrixSize;
+    output.data.resize(matrixBytes);
+
+    CUDA_CHECK(cudaSetDevice(gpuId), return false);
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_outputMatrix), matrixBytes), {
+        close();
         return false;
-    }
-
-    CUDA_CHECK(cudaSetDevice(impl->gpuId), return false);
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&impl->d_outputMatrix), impl->matrixBytes), return false);
-    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&impl->h_outputMatrix), impl->matrixBytes, cudaHostAllocPortable), {
-        CUDA_CHECK(cudaFree(impl->d_outputMatrix), );
-        impl->d_outputMatrix = nullptr;
+    });
+    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&h_outputMatrix), matrixBytes, cudaHostAllocPortable), {
+        close();
+        return false;
+    });
+    std::memset(h_outputMatrix, 0, matrixBytes);
+    CUDA_CHECK(cudaMemsetAsync(d_outputMatrix, 0, matrixBytes, slot.stream), {
+        close();
         return false;
     });
 
-    impl->threadId = slot.threadId;
-    impl->outputReady = true;
+    initialized = true;
     return true;
 }
 
-std::size_t Sdd::scratchBytesNeeded() const {
-    return 0;
+bool Sdd::notifyParameter(const AlgoParams& params) {
+    if (!initialized) {
+        return false;
+    }
+    // The demo accepts any name/blob. Real algorithms validate their schema here.
+    algoParams = params;
+    return true;
 }
 
 bool Sdd::launchKernels(const ThreadSlot& slot, cudaStream_t stream) {
-    if (impl == nullptr || !impl->runtimeReady || !impl->outputReady || slot.threadId != impl->threadId || slot.gpuId != impl->gpuId || slot.d_in == nullptr || stream == nullptr || stream != slot.stream) {
+    if (!initialized || slot.threadId != threadId || slot.gpuId != gpuId || slot.d_in == nullptr || stream == nullptr || stream != slot.stream) {
         return false;
     }
 
     const auto* d_input = static_cast<const std::uint8_t*>(slot.d_in);
     dim3 block(SDD_BLOCK_DIM, SDD_BLOCK_DIM);
-    dim3 grid((impl->matrixSize + block.x - 1U) / block.x, (impl->matrixSize + block.y - 1U) / block.y);
-    sddMatrixMultiplicationKernel << <grid, block, 0, stream >> > (d_input, impl->d_outputMatrix, impl->matrixSize, impl->inputStride);
+    dim3 grid((matrixSize + block.x - 1U) / block.x, (matrixSize + block.y - 1U) / block.y);
+    sddMatrixMultiplicationKernel << <grid, block, 0, stream >> > (d_input, d_outputMatrix, matrixSize, frameW);
     CUDA_CHECK(cudaGetLastError(), return false);
     return true;
 }
 
 bool Sdd::launchD2H(const ThreadSlot& slot, cudaStream_t stream) {
-    if (impl == nullptr || !impl->runtimeReady || !impl->outputReady || slot.threadId != impl->threadId || slot.gpuId != impl->gpuId || stream == nullptr || stream != slot.stream) {
+    if (!initialized || slot.threadId != threadId || slot.gpuId != gpuId || stream == nullptr || stream != slot.stream) {
         return false;
     }
 
-    CUDA_CHECK(cudaMemcpyAsync(impl->h_outputMatrix, impl->d_outputMatrix, impl->matrixBytes, cudaMemcpyDeviceToHost, stream), return false);
-    return true;
-}
-
-bool Sdd::prepareOutput(AlgoOutput& output) const {
-    if (impl == nullptr || !impl->runtimeReady || !impl->outputReady) {
-        return false;
-    }
-
-    output.algoName = "sdd";
-    output.width = impl->matrixSize;
-    output.height = impl->matrixSize;
-    output.data.resize(impl->matrixBytes);
+    CUDA_CHECK(cudaMemcpyAsync(h_outputMatrix, d_outputMatrix, matrixBytes, cudaMemcpyDeviceToHost, stream), return false);
     return true;
 }
 
 bool Sdd::collectResult(const ThreadSlot& slot, AlgoOutput& output) const {
-    if (impl == nullptr || !impl->runtimeReady || !impl->outputReady || slot.threadId != impl->threadId || slot.gpuId != impl->gpuId) {
+    if (!initialized || slot.threadId != threadId || slot.gpuId != gpuId) {
         return false;
     }
 
-    if (output.data.size() != impl->matrixBytes) {
+    if (output.data.size() != matrixBytes) {
         return false;
     }
 
-    std::memcpy(output.data.data(), impl->h_outputMatrix, impl->matrixBytes);
+    std::memcpy(output.data.data(), h_outputMatrix, matrixBytes);
     return true;
 }
 
 bool Sdd::close() {
-    if (impl == nullptr) {
-        return true;
-    }
     bool ok = true;
-    if (impl->d_outputMatrix != nullptr || impl->h_outputMatrix != nullptr) {
-        CUDA_CHECK(cudaSetDevice(impl->gpuId), return false);
+    if (d_outputMatrix != nullptr || h_outputMatrix != nullptr) {
+        CUDA_CHECK(cudaSetDevice(gpuId), return false);
     }
-    if (impl->d_outputMatrix != nullptr) {
-        CUDA_CHECK(cudaFree(impl->d_outputMatrix), ok = false);
-        impl->d_outputMatrix = nullptr;
+    if (d_outputMatrix != nullptr) {
+        CUDA_CHECK(cudaFree(d_outputMatrix), ok = false);
+        d_outputMatrix = nullptr;
     }
-    if (impl->h_outputMatrix != nullptr) {
-        CUDA_CHECK(cudaFreeHost(impl->h_outputMatrix), ok = false);
-        impl->h_outputMatrix = nullptr;
+    if (h_outputMatrix != nullptr) {
+        CUDA_CHECK(cudaFreeHost(h_outputMatrix), ok = false);
+        h_outputMatrix = nullptr;
     }
-    impl->threadId = -1;
-    impl->inputStride = 0;
-    impl->matrixSize = 0;
-    impl->inBytes = 0;
-    impl->matrixBytes = 0;
-    impl->runtimeReady = false;
-    impl->outputReady = false;
+    gpuId = -1;
+    numaNode = -1;
+    threadId = -1;
+    frameW = 0;
+    frameH = 0;
+    matrixSize = 0;
+    inBytes = 0;
+    matrixBytes = 0;
+    initialized = false;
+    algoParams = {};
     return ok;
 }

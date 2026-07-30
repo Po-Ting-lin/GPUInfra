@@ -904,7 +904,8 @@
                                 <div class="member"><span class="visibility">+</span><code><span class="method-name">unload</span>(): bool</code></div>
                             </div>
                             <div class="class-note">
-                                One instance runs on one external Graph thread.
+                                One instance runs on one external Graph thread
+                                and directly constructs Cel, Sdd, and Mi.
                             </div>
                         </article>
 
@@ -933,13 +934,10 @@
                                 <span class="class-name">IAlgo</span>
                             </header>
                             <div class="class-section method">
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">initStatic</span>(info): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">configure</span>(runtime): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">allocateOutputBuffers</span>(slot): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">scratchBytesNeeded</span>(): size_t</code></div>
+                                <div class="member"><span class="visibility">+</span><code><span class="method-name">init</span>(runtime, slot, output, scratchBytes): bool</code></div>
+                                <div class="member"><span class="visibility">+</span><code><span class="method-name">notifyParameter</span>(params): bool</code></div>
                                 <div class="member"><span class="visibility">+</span><code><span class="method-name">launchKernels</span>(slot, stream): bool</code></div>
                                 <div class="member"><span class="visibility">+</span><code><span class="method-name">launchD2H</span>(slot, stream): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">prepareOutput</span>(output): bool</code></div>
                                 <div class="member"><span class="visibility">+</span><code><span class="method-name">collectResult</span>(slot, output): bool</code></div>
                                 <div class="member"><span class="visibility">+</span><code><span class="method-name">close</span>(): bool</code></div>
                             </div>
@@ -953,7 +951,7 @@
                             <div class="impl-row">
                                 <span class="impl-name">Cel</span>
                                 <span class="impl-detail">
-                                    impl: Cel::Impl*<br>
+                                    direct private state<br>
                                     owns d_output + h_output
                                 </span>
                             </div>
@@ -963,7 +961,7 @@
                             <div class="impl-row">
                                 <span class="impl-name">Sdd</span>
                                 <span class="impl-detail">
-                                    impl: Sdd::Impl*<br>
+                                    direct private state<br>
                                     owns d_output + h_output
                                 </span>
                             </div>
@@ -973,7 +971,7 @@
                             <div class="impl-row">
                                 <span class="impl-name">Mi</span>
                                 <span class="impl-detail">
-                                    impl: Mi::Impl*<br>
+                                    direct private state<br>
                                     owns d_output + h_output
                                 </span>
                             </div>
@@ -982,8 +980,9 @@
                         <aside class="callout" id="core-manager-note">
                             <strong>Cold path:</strong> the manager discovers
                             GPUs and creates one <code>GpuContext</code> per
-                            GPU. Each worker creates private algorithms; each
-                            algorithm allocates its own output buffers.
+                            GPU. Each worker creates private algorithms;
+                            <code>init()</code> allocates and first-touches
+                            outputs before parameter notification.
                         </aside>
                     </div>
                 </section>
@@ -1027,14 +1026,14 @@
                             <text class="multiplicity" x="1070" y="930">1</text>
                             <text class="multiplicity" x="1100" y="690">0..*</text>
 
-                            <path class="relation dependency" d="M 290 620 L 310 620 L 310 470 L 665 470 L 665 605 L 700 605" marker-end="url(#data-dependency-arrow)"></path>
-                            <text class="relation-label" x="410" y="455">initStatic(info)</text>
+                            <path class="relation dependency" d="M 700 605 L 665 605 L 665 470 L 310 470 L 310 620 L 290 620" marker-end="url(#data-dependency-arrow)"></path>
+                            <text class="relation-label" x="410" y="455">init() outputs</text>
 
                             <path class="relation dependency" d="M 630 715 L 700 715" marker-end="url(#data-dependency-arrow)"></path>
-                            <text class="relation-label" x="630" y="700">configure</text>
+                            <text class="relation-label" x="505" y="700">init(runtime, slot, output, scratchBytes)</text>
 
-                            <path class="relation composition" d="M 480 820 L 480 870" marker-start="url(#data-diamond)"></path>
-                            <text class="relation-label" x="498" y="850">params</text>
+                            <path class="relation dependency" d="M 630 940 L 665 940 L 665 780 L 700 780" marker-end="url(#data-dependency-arrow)"></path>
+                            <text class="relation-label" x="500" y="855">notifyParameter(params)</text>
 
                             <path class="relation dependency" d="M 1045 620 L 1120 620" marker-end="url(#data-dependency-arrow)"></path>
                             <text class="relation-label" x="1055" y="605">output</text>
@@ -1107,12 +1106,13 @@
 
                         <article class="uml-class data-type" id="data-static">
                             <header class="class-header">
-                                <span class="stereotype">«configuration data»</span>
-                                <span class="class-name">AlgoStaticInfo</span>
+                                <span class="stereotype">«initialization contract»</span>
+                                <span class="class-name">init() outputs</span>
                             </header>
                             <div class="class-section">
-                                <div class="member"><span class="visibility">+</span><code>gpuId: int</code></div>
-                                <div class="member"><span class="visibility">+</span><code>numaNode: int</code></div>
+                                <div class="member"><span class="visibility">+</span><code>return: bool</code></div>
+                                <div class="member"><span class="visibility">+</span><code>output: AlgoOutput&amp;</code></div>
+                                <div class="member"><span class="visibility">+</span><code>scratchBytes: size_t&amp;</code></div>
                             </div>
                         </article>
 
@@ -1124,10 +1124,9 @@
                             <div class="class-section">
                                 <div class="member"><span class="visibility">+</span><code>inBytes / sizeFactor</code></div>
                                 <div class="member"><span class="visibility">+</span><code>frameW / frameH / frameDtype</code></div>
-                                <div class="member"><span class="visibility">+</span><code>params: AlgoParams</code></div>
                             </div>
                             <div class="class-note">
-                                Used once on the serialized cold path.
+                                Read once by each worker during load.
                             </div>
                         </article>
 
@@ -1137,12 +1136,10 @@
                                 <span class="class-name">IAlgo</span>
                             </header>
                             <div class="class-section method">
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">initStatic</span>(AlgoStaticInfo): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">configure</span>(AlgoRuntimeInfo): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">allocateOutputBuffers</span>(ThreadSlot): bool</code></div>
+                                <div class="member"><span class="visibility">+</span><code><span class="method-name">init</span>(runtime, slot, output, scratchBytes): bool</code></div>
+                                <div class="member"><span class="visibility">+</span><code><span class="method-name">notifyParameter</span>(AlgoParams): bool</code></div>
                                 <div class="member"><span class="visibility">+</span><code><span class="method-name">launchKernels</span>(ThreadSlot, stream): bool</code></div>
                                 <div class="member"><span class="visibility">+</span><code><span class="method-name">launchD2H</span>(ThreadSlot, stream): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">prepareOutput</span>(AlgoOutput&amp;): bool</code></div>
                                 <div class="member"><span class="visibility">+</span><code><span class="method-name">collectResult</span>(ThreadSlot, AlgoOutput&amp;): bool</code></div>
                             </div>
                             <div class="class-note">
@@ -1214,8 +1211,9 @@
                     <span class="footnote-index">03</span>
                     <h2>Hot-path contract</h2>
                     <p>
-                        Frame execution reuses the slot and <code>JobResult</code>;
-                        no per-frame allocation or vector growth is required.
+                        Initialization and parameter notification finish before
+                        frames. Execution reuses the slot and
+                        <code>JobResult</code> without allocation or growth.
                     </p>
                 </article>
             </footer>

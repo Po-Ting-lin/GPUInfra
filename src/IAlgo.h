@@ -2,19 +2,12 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
-#include <memory>
 #include <string>
 #include <vector>
 
 #include <cuda_runtime.h>
 
 struct ThreadSlot;
-
-struct AlgoStaticInfo {
-    int gpuId = -1;
-    int numaNode = -1;
-};
 
 struct AlgoParams {
     std::string name;
@@ -27,7 +20,6 @@ struct AlgoRuntimeInfo {
     int frameW = 0;
     int frameH = 0;
     int frameDtype = 0;
-    AlgoParams params;
 };
 
 struct AlgoOutput {
@@ -47,10 +39,8 @@ class IAlgo {
 public:
     virtual ~IAlgo() = default;
 
-    virtual bool initStatic(const AlgoStaticInfo& info) = 0;
-    virtual bool configure(const AlgoRuntimeInfo& info) = 0;
-    virtual bool allocateOutputBuffers(const ThreadSlot& slot) = 0;
-    virtual std::size_t scratchBytesNeeded() const = 0;
+    virtual bool init(const AlgoRuntimeInfo& info, const ThreadSlot& slot, AlgoOutput& output, std::size_t& scratchBytes) = 0;
+    virtual bool notifyParameter(const AlgoParams& params) = 0;
 
     // Enqueue compute only. D2H is deliberately kept out of this method so
     // the infrastructure can enqueue every algorithm's compute first.
@@ -59,15 +49,7 @@ public:
     // Enqueue this algorithm's output transfer after the whole kernel batch.
     virtual bool launchD2H(const ThreadSlot& slot, cudaStream_t stream) = 0;
 
-    // Allocate and describe one reusable output during worker setup.
-    virtual bool prepareOutput(AlgoOutput& output) const = 0;
-
     // Copy into the prepared output without resizing or allocating.
     virtual bool collectResult(const ThreadSlot& slot, AlgoOutput& output) const = 0;
     virtual bool close() = 0;
-};
-
-struct AlgoFactory {
-    std::string name;
-    std::function<std::unique_ptr<IAlgo>()> make;
 };
