@@ -6,7 +6,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "IAlgo.h"
 #include "ThreadSlot.h"
 
 class GpuContext;
@@ -19,11 +18,8 @@ struct GpuInfraConfig {
 
 class GpuContextManager {
 public:
-    // Serialized cold path: discover GPUs and retain primary contexts.
+    // Serialized cold path: discover GPUs, retain primary contexts, and prepare registration.
     static bool init(const GpuInfraConfig& config);
-
-    // Serialized cold path. Must finish before Graph workers register.
-    static bool configure(const AlgoRuntimeInfo& runtime);
 
     static ThreadSlot* registerThread(int numaHint = -1, int gpuHint = -1);
     static bool prepareThreadScratch(ThreadSlot* slot, std::size_t scratchBytes);
@@ -39,5 +35,4 @@ private:
     static std::unordered_map<int, std::vector<GpuContext*>> numaToCtxs;
     static std::mutex lock;
     static std::atomic<bool> initialised;
-    static bool configured;
 };

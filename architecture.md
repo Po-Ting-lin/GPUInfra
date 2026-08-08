@@ -127,12 +127,14 @@ The main thread calls:
 
 ```cpp
 GpuContextManager::init(config);
-GpuContextManager::configure(runtime);
 ```
 
 `init()` discovers devices, establishes NUMA placement, primes the Runtime API,
-and retains primary contexts. `configure()` validates the input dimensions and
-marks contexts ready. Neither call creates algorithm objects or output buffers.
+retains primary contexts, records the input byte count, and makes the contexts
+available for worker registration. It creates no algorithm objects or output
+buffers. `DummyGraph::load()` validates the input envelope against the size
+factor and slot capacity; each algorithm's `init()` validates its output
+geometry.
 
 ### Graph worker setup
 
@@ -140,7 +142,8 @@ Each external worker constructs one `DummyGraph`, calls `load()`, and then
 calls `notifyParameters()`:
 
 ```text
-register ThreadSlot
+validate runtime input geometry
+  -> register ThreadSlot
   -> create private algorithm objects
   -> create reusable pageable outputs
   -> init each algorithm, prepare its output, and collect scratch requirements

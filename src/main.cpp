@@ -183,11 +183,6 @@ int main(int argc, char* argv[]) {
     runtime.frameW = frameWidth;
     runtime.frameH = frameHeight;
     runtime.frameDtype = 1;
-    if (!GpuContextManager::configure(runtime)) {
-        std::cerr << "GpuContextManager::configure failed\n";
-        GpuContextManager::shutdown();
-        return 1;
-    }
 
     AlgoParams params;
     params.name = "demo";
@@ -221,6 +216,8 @@ int main(int argc, char* argv[]) {
         const int gpuId = static_cast<int>(gpu);
         const int node = GpuContextManager::numaNodeForGpu(gpuId);
         for (int worker = 0; worker < THREADS_PER_GPU; ++worker) {
+            // std::cref(x) share x as a const reference
+            // std::ref(x): share x as a mutable reference.
             workers.emplace_back(runGraphWorker, node, gpuId, executionModel, std::cref(runtime), std::cref(params), std::ref(*warmupSources[gpu]), std::ref(*timedSources[gpu]), std::ref(sink), std::ref(startGate), std::ref(finishGate), std::ref(workerFailures));
         }
     }

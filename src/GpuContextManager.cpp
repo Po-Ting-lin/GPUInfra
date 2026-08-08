@@ -22,14 +22,12 @@
 
 #include "CudaCheck.h"
 #include "GpuContext.h"
-#include "ImageSizing.h"
 
 GpuInfraConfig GpuContextManager::config;
 std::vector<GpuContext*> GpuContextManager::contexts;
 std::unordered_map<int, std::vector<GpuContext*>> GpuContextManager::numaToCtxs;
 std::mutex GpuContextManager::lock;
 std::atomic<bool> GpuContextManager::initialised{false};
-bool GpuContextManager::configured = false;
 
 namespace {
 
@@ -168,7 +166,7 @@ GpuContext* pickContextOnNode(const std::unordered_map<int, std::vector<GpuConte
 
     GpuContext* best = nullptr;
     for (GpuContext* context : found->second) {
-        if (!context->configured || context->activeSlotCount() >= static_cast<std::size_t>(context->maxThreadsPerGpu)) {
+        if (context->activeSlotCount() >= static_cast<std::size_t>(context->maxThreadsPerGpu)) {
             continue;
         }
         if (best == nullptr || context->activeSlotCount() < best->activeSlotCount()) {
@@ -281,7 +279,6 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
     config = requestedConfig;
     contexts.clear();
     numaToCtxs.clear();
-    configured = false;
 
     for (int gpu = 0; gpu < deviceCount; ++gpu) {
         const int node = probeNumaNodeOfGpu(gpu);
@@ -338,32 +335,6 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
     return true;
 }
 
-bool GpuContextManager::configure(const AlgoRuntimeInfo& runtime) {
-    std::lock_guard<std::mutex> guard(lock);
-    if (!initialised.load(std::memory_order_acquire) || !ImageSizing::isValidFactor(runtime.sizeFactor)) {
-        return false;
-    }
-
-    const int expectedFrameSize = ImageSizing::scaledDimension(runtime.sizeFactor, ImageSizing::INPUT_MULTIPLIER);
-    const std::size_t expectedInputBytes = ImageSizing::squareBytes(expectedFrameSize, sizeof(std::uint8_t));
-    if (runtime.frameW != expectedFrameSize || runtime.frameH != expectedFrameSize || runtime.inBytes != expectedInputBytes || runtime.inBytes != config.inputBytes) {
-        return false;
-    }
-
-    for (GpuContext* context : contexts) {
-        if (context->activeSlotCount() != 0) {
-            return false;
-        }
-
-        context->inputBytes = runtime.inBytes;
-        context->configured = true;
-        std::fprintf(stderr, "[GPUInfra] configured gpu=%d threads=%d input=%zu\n", context->gpuId, config.threadsPerGpu, context->inputBytes);
-    }
-
-    configured = true;
-    return true;
-}
-
 ThreadSlot* GpuContextManager::registerThread(int numaHint, int gpuHint) {
     if (!initialised.load(std::memory_order_acquire)) {
         return nullptr;
@@ -378,10 +349,6 @@ ThreadSlot* GpuContextManager::registerThread(int numaHint, int gpuHint) {
     }
 
     std::lock_guard<std::mutex> guard(lock);
-    if (!configured) {
-        return nullptr;
-    }
-
     GpuContext* context = nullptr;
     if (gpuHint >= 0) {
         context = findGpu(contexts, gpuHint);
@@ -398,12 +365,12 @@ ThreadSlot* GpuContextManager::registerThread(int numaHint, int gpuHint) {
 
     if (context == nullptr && !config.requireNuma) {
         for (GpuContext* candidate : contexts) {
-            if (candidate->configured && candidate->activeSlotCount() < static_cast<std::size_t>(candidate->maxThreadsPerGpu) && (context == nullptr || candidate->activeSlotCount() < context->activeSlotCount())) {
+            if (candidate->activeSlotCount() < static_cast<std::size_t>(candidate->maxThreadsPerGpu) && (context == nullptr || candidate->activeSlotCount() < context->activeSlotCount())) {
                 context = candidate;
             }
         }
     }
-    if (context == nullptr || !context->configured || context->activeSlotCount() >= static_cast<std::size_t>(context->maxThreadsPerGpu) || !pinToNumaNode(context->numaNode) || !activateContext(context, true)) {
+    if (context == nullptr || context->activeSlotCount() >= static_cast<std::size_t>(context->maxThreadsPerGpu) || !pinToNumaNode(context->numaNode) || !activateContext(context, true)) {
         return nullptr;
     }
 
@@ -468,7 +435,7 @@ bool GpuContextManager::prepareThreadScratch(ThreadSlot* slot, std::size_t scrat
 
     std::lock_guard<std::mutex> guard(lock);
     GpuContext* context = slot->ctx;
-    if (!initialised.load(std::memory_order_acquire) || !configured || slot->threadId < 0 || static_cast<std::size_t>(slot->threadId) >= context->threadSlots.size() || context->threadSlots[static_cast<std::size_t>(slot->threadId)] != slot || slot->d_scratch != nullptr || slot->scratchBytes != 0) {
+    if (!initialised.load(std::memory_order_acquire) || slot->threadId < 0 || static_cast<std::size_t>(slot->threadId) >= context->threadSlots.size() || context->threadSlots[static_cast<std::size_t>(slot->threadId)] != slot || slot->d_scratch != nullptr || slot->scratchBytes != 0) {
         return false;
     }
 
@@ -524,7 +491,6 @@ void GpuContextManager::shutdown() {
 
     releaseContexts(contexts);
     numaToCtxs.clear();
-    configured = false;
     initialised.store(false, std::memory_order_release);
     std::fprintf(stderr, "[GPUInfra] shutdown complete\n");
 }

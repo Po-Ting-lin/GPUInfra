@@ -18,6 +18,7 @@
 #include "GpuContext.h"
 #include "GpuContextManager.h"
 #include "IAlgo.h"
+#include "ImageSizing.h"
 #include "Mi.h"
 #include "Sdd.h"
 #include "ThreadSlot.h"
@@ -128,11 +129,21 @@ public:
     }
 
     bool load() {
-        if (!parametersRegistered || algoRuntime == nullptr || algoParams == nullptr) {
+        if (!parametersRegistered || algoRuntime == nullptr || algoParams == nullptr || !ImageSizing::isValidFactor(algoRuntime->sizeFactor)) {
             return false;
         }
+        const int expectedFrameSize = ImageSizing::scaledDimension(algoRuntime->sizeFactor, ImageSizing::INPUT_MULTIPLIER);
+        const std::size_t expectedInputBytes = ImageSizing::squareBytes(expectedFrameSize, sizeof(std::uint8_t));
+        if (algoRuntime->frameW != expectedFrameSize || algoRuntime->frameH != expectedFrameSize || algoRuntime->inBytes != expectedInputBytes) {
+            return false;
+        }
+
         slot = GpuContextManager::registerThread(requestedNuma, requestedGpu);
         if (slot == nullptr) {
+            return false;
+        }
+        if (slot->inBytes != algoRuntime->inBytes) {
+            releaseResources();
             return false;
         }
 

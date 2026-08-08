@@ -13,7 +13,6 @@ public:
     int numaNode = -1;
     int maxThreadsPerGpu = 0;
     std::size_t inputBytes = 0;
-    bool configured = false;
 
     CUdevice device = 0;
     CUcontext primaryCtx = nullptr;

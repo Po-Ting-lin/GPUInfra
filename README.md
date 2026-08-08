@@ -140,19 +140,15 @@ deployment illustrated by the architecture diagrams.
 4. calls `cudaSetDevice()` and primes the Runtime API with
    `cudaFree(nullptr)`;
 5. retains the GPU's primary context with
-   `cuDevicePrimaryCtxRetain()`.
+   `cuDevicePrimaryCtxRetain()`;
+6. records the requested input byte count and makes the contexts available
+   for worker registration.
 
 The manager creates no algorithm objects. `GpuContext` owns the per-GPU
 context identity and fixed slot table. It is also the intended owner for future
 large immutable resources that must be shared by every worker on that GPU.
 
-### 2. Runtime validation
-
-`GpuContextManager::configure()` runs before workers register. It validates the
-frame geometry and input-byte count and marks each context ready for
-registration. It does not allocate algorithm resources.
-
-### 3. Worker registration
+### 2. Worker registration
 
 Each external Graph worker calls:
 
@@ -172,14 +168,16 @@ workers. Each slot remains owned by its registering Graph thread.
 
 During `DummyGraph::load()`, each worker:
 
-1. creates its private CEL, SDD, and MI objects and reusable `AlgoOutput`
+1. validates the input geometry against the size factor and registered slot
+   capacity;
+2. creates its private CEL, SDD, and MI objects and reusable `AlgoOutput`
    entries;
-2. calls each algorithm's `init()` to read slot identity, validate and store
+3. calls each algorithm's `init()` to read slot identity, validate and store
    frame geometry, allocate and first-touch its device and pinned-host outputs,
    prepare its pageable output, and write its shared-scratch requirement;
-3. asks the manager to allocate the maximum optional shared scratch in the
+4. asks the manager to allocate the maximum optional shared scratch in the
    `ThreadSlot`;
-4. completes the initialization stream work.
+5. completes the initialization stream work.
 
 After `load()`, `DummyGraph::notifyParameters()` calls `notifyParameter()` on
 each algorithm to validate and store its parameters.
@@ -189,7 +187,7 @@ owning worker thread. Separate algorithm-owned buffers keep every output valid
 until its Batched D2H copy. Shared scratch may be reused because kernels on one
 slot execute in stream order.
 
-### 4. Frame execution
+### 3. Frame execution
 
 `DummyGraph::execute()` records this chain:
 
@@ -211,7 +209,7 @@ There is no per-frame CUDA allocation and no `cudaDeviceSynchronize()`.
 There is also no per-frame host allocation, vector growth, or result ownership
 transfer.
 
-### 5. Teardown
+### 4. Teardown
 
 Each `DummyGraph` synchronizes its stream, closes and destroys its private
 algorithm objects and their output buffers, and then unregisters its slot.
