@@ -7,1250 +7,346 @@
     <style>
         :root {
             color-scheme: dark;
-            --bg: #071018;
-            --panel: #0c1722;
-            --panel-raised: #10202e;
-            --panel-soft: #132838;
-            --border: #294355;
-            --border-strong: #416277;
-            --text: #edf7ff;
-            --muted: #91aabd;
-            --cyan: #40d5dc;
-            --cyan-soft: rgba(64, 213, 220, 0.12);
-            --violet: #ac91ff;
-            --violet-soft: rgba(172, 145, 255, 0.12);
-            --green: #70e6a8;
-            --green-soft: rgba(112, 230, 168, 0.12);
-            --amber: #f1c96f;
-            --amber-soft: rgba(241, 201, 111, 0.12);
-            --rose: #fb91ad;
-            --rose-soft: rgba(251, 145, 173, 0.12);
-            --blue: #7db8ff;
-            --blue-soft: rgba(125, 184, 255, 0.12);
-            --shadow: 0 28px 90px rgba(0, 0, 0, 0.32);
+            --background: #08111f;
+            --panel: #101d31;
+            --panel-strong: #162844;
+            --line: #36577f;
+            --text: #e8f0ff;
+            --muted: #9eb0c9;
+            --graph: #65d4a2;
+            --task: #75b8ff;
+            --frame: #ffca6a;
+            --gpu: #c897ff;
+            --danger: #ff7f86;
         }
 
         * {
             box-sizing: border-box;
         }
 
-        html {
-            background: var(--bg);
-        }
-
         body {
-            min-width: 320px;
             margin: 0;
+            min-width: 320px;
+            background: radial-gradient(circle at top, #132948 0, var(--background) 46rem);
             color: var(--text);
-            background:
-                radial-gradient(circle at 8% -8%, rgba(64, 213, 220, 0.13), transparent 31rem),
-                radial-gradient(circle at 92% 4%, rgba(172, 145, 255, 0.12), transparent 34rem),
-                var(--bg);
-            font-family:
-                Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-                "Segoe UI", sans-serif;
-            line-height: 1.5;
+            font: 15px/1.5 system-ui, sans-serif;
         }
 
-        button {
-            font: inherit;
-        }
-
-        code {
-            color: var(--text);
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        }
-
-        .page {
-            width: min(1560px, calc(100% - 40px));
+        main {
+            width: min(1240px, calc(100% - 32px));
             margin: 0 auto;
-            padding: 46px 0 64px;
+            padding: 48px 0 64px;
         }
 
-        .hero {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            gap: 30px;
-            align-items: end;
-            margin-bottom: 28px;
-        }
-
-        .eyebrow {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            margin: 0 0 13px;
-            color: var(--cyan);
-            font: 750 0.72rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-            letter-spacing: 0.14em;
-            text-transform: uppercase;
-        }
-
-        .eyebrow::before {
-            width: 30px;
-            height: 1px;
-            background: currentColor;
-            content: "";
+        h1,
+        h2,
+        p {
+            margin-top: 0;
         }
 
         h1 {
-            margin: 0;
-            font-size: clamp(2.35rem, 5vw, 4.8rem);
-            font-weight: 660;
-            letter-spacing: -0.055em;
-            line-height: 0.98;
+            margin-bottom: 8px;
+            font-size: clamp(28px, 4vw, 46px);
+            letter-spacing: -0.03em;
         }
 
-        .intro {
-            max-width: 840px;
-            margin: 17px 0 0;
+        h2 {
+            margin-bottom: 18px;
+            font-size: 19px;
+        }
+
+        code {
+            color: #d7e7ff;
+            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        }
+
+        .lede {
+            max-width: 850px;
             color: var(--muted);
-            font-size: 0.98rem;
+            font-size: 17px;
         }
 
-        .source-badge {
-            padding: 8px 12px;
-            border: 1px solid var(--border);
+        .golden {
+            display: inline-flex;
+            gap: 12px;
+            align-items: center;
+            margin: 16px 0 36px;
+            padding: 12px 18px;
+            border: 1px solid color-mix(in srgb, var(--graph), transparent 45%);
             border-radius: 999px;
-            color: var(--muted);
-            background: rgba(12, 23, 34, 0.72);
-            font: 650 0.69rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-            white-space: nowrap;
+            background: color-mix(in srgb, var(--graph), transparent 88%);
         }
 
-        .diagram-panel {
-            overflow: hidden;
-            border: 1px solid var(--border);
-            border-radius: 24px;
-            background: rgba(12, 23, 34, 0.96);
-            box-shadow: var(--shadow);
+        .golden strong {
+            color: var(--graph);
         }
 
-        .toolbar {
-            display: flex;
-            justify-content: space-between;
-            gap: 18px;
-            align-items: center;
-            padding: 16px 18px;
-            border-bottom: 1px solid var(--border);
-            background: rgba(7, 16, 24, 0.55);
-        }
-
-        .view-switch {
-            display: flex;
-            gap: 4px;
-            padding: 4px;
-            border: 1px solid var(--border);
-            border-radius: 11px;
-            background: var(--bg);
-        }
-
-        .view-button {
-            padding: 8px 13px;
-            border: 0;
-            border-radius: 8px;
-            color: var(--muted);
-            background: transparent;
-            cursor: pointer;
-            font-size: 0.72rem;
-            font-weight: 750;
-        }
-
-        .view-button:hover {
-            color: var(--text);
-        }
-
-        .view-button[aria-pressed="true"] {
-            color: var(--bg);
-            background: var(--cyan);
-        }
-
-        .legend {
-            display: flex;
-            gap: 15px;
-            align-items: center;
-            color: var(--muted);
-            font-size: 0.68rem;
-            white-space: nowrap;
-        }
-
-        .legend-item {
-            display: flex;
-            gap: 7px;
-            align-items: center;
-        }
-
-        .legend-line {
-            position: relative;
-            width: 24px;
-            height: 10px;
-        }
-
-        .legend-line::before {
-            position: absolute;
-            top: 4px;
-            right: 0;
-            left: 0;
-            height: 1px;
-            background: var(--muted);
-            content: "";
-        }
-
-        .legend-line.composition::after {
-            position: absolute;
-            top: 1px;
-            left: 0;
-            width: 7px;
-            height: 7px;
-            background: var(--green);
-            content: "";
-            transform: rotate(45deg);
-        }
-
-        .legend-line.inheritance::after {
-            position: absolute;
-            top: 0;
-            right: 0;
-            width: 0;
-            height: 0;
-            border-top: 5px solid transparent;
-            border-bottom: 5px solid transparent;
-            border-left: 8px solid var(--violet);
-            content: "";
-        }
-
-        .legend-line.dependency::before {
-            height: 0;
-            border-top: 1px dashed var(--cyan);
-            background: transparent;
-        }
-
-        .diagram-scroll {
-            overflow: auto;
-            padding: 18px;
-            scrollbar-color: var(--border-strong) var(--bg);
-        }
-
-        .diagram-view {
-            display: none;
-        }
-
-        .diagram-view.is-active {
-            display: block;
-        }
-
-        .canvas {
-            position: relative;
-            width: 1460px;
-            min-width: 1460px;
-            margin: 0 auto;
-            overflow: hidden;
-            border: 1px solid rgba(41, 67, 85, 0.65);
+        .section {
+            margin-top: 28px;
+            padding: 24px;
+            border: 1px solid var(--line);
             border-radius: 18px;
-            background:
-                linear-gradient(rgba(41, 67, 85, 0.12) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(41, 67, 85, 0.12) 1px, transparent 1px),
-                radial-gradient(circle at 50% 42%, rgba(64, 213, 220, 0.055), transparent 30rem),
-                rgba(7, 16, 24, 0.56);
-            background-size: 24px 24px, 24px 24px, auto, auto;
+            background: color-mix(in srgb, var(--panel), transparent 4%);
+            box-shadow: 0 18px 60px rgb(0 0 0 / 18%);
         }
 
-        .ownership-canvas {
-            height: 1130px;
+        .class-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 16px;
         }
 
-        .data-canvas {
-            height: 1080px;
-        }
-
-        .canvas-title {
-            position: absolute;
-            top: 19px;
-            left: 22px;
-            z-index: 3;
-            color: var(--muted);
-            font: 700 0.63rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-        }
-
-        .relations {
-            position: absolute;
-            inset: 0;
-            z-index: 1;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
-        }
-
-        .relation {
-            fill: none;
-            stroke: var(--border-strong);
-            stroke-width: 1.5;
-            vector-effect: non-scaling-stroke;
-        }
-
-        .relation.composition {
-            stroke: var(--green);
-        }
-
-        .relation.inheritance {
-            stroke: var(--violet);
-        }
-
-        .relation.dependency {
-            stroke: var(--cyan);
-            stroke-dasharray: 7 6;
-        }
-
-        .relation.association {
-            stroke: var(--blue);
-        }
-
-        .relation.data {
-            stroke: var(--amber);
-        }
-
-        .relation-label {
-            paint-order: stroke fill;
-            stroke: var(--bg);
-            stroke-width: 6px;
-            stroke-linejoin: round;
-            fill: var(--muted);
-            font: 650 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-        }
-
-        .multiplicity {
-            paint-order: stroke fill;
-            stroke: var(--bg);
-            stroke-width: 5px;
-            fill: var(--text);
-            font: 750 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-        }
-
-        .uml-class {
-            --class-accent: var(--cyan);
-            --class-accent-soft: var(--cyan-soft);
-            position: absolute;
-            z-index: 2;
+        .class-card {
             overflow: hidden;
-            border: 1px solid var(--border);
+            border: 1px solid var(--line);
             border-radius: 14px;
-            background: rgba(16, 32, 46, 0.98);
-            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.23);
+            background: var(--panel-strong);
         }
 
-        .uml-class.manager {
-            --class-accent: var(--cyan);
-            --class-accent-soft: var(--cyan-soft);
+        .class-card header {
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--line);
         }
 
-        .uml-class.context {
-            --class-accent: var(--green);
-            --class-accent-soft: var(--green-soft);
-        }
-
-        .uml-class.graph {
-            --class-accent: var(--blue);
-            --class-accent-soft: var(--blue-soft);
-        }
-
-        .uml-class.slot {
-            --class-accent: var(--amber);
-            --class-accent-soft: var(--amber-soft);
-        }
-
-        .uml-class.interface {
-            --class-accent: var(--violet);
-            --class-accent-soft: var(--violet-soft);
-        }
-
-        .uml-class.implementation {
-            --class-accent: var(--rose);
-            --class-accent-soft: var(--rose-soft);
-        }
-
-        .uml-class.data-type {
-            --class-accent: var(--amber);
-            --class-accent-soft: var(--amber-soft);
-        }
-
-        .uml-class.source {
-            --class-accent: var(--cyan);
-            --class-accent-soft: var(--cyan-soft);
-        }
-
-        .uml-class.sink {
-            --class-accent: var(--rose);
-            --class-accent-soft: var(--rose-soft);
-        }
-
-        .class-header {
-            position: relative;
-            padding: 13px 16px 12px;
-            border-bottom: 1px solid var(--border);
-            background:
-                linear-gradient(110deg, var(--class-accent-soft), transparent 72%),
-                rgba(7, 16, 24, 0.42);
-        }
-
-        .class-header::before {
-            position: absolute;
-            top: 0;
-            right: 16px;
-            left: 16px;
-            height: 2px;
-            background: var(--class-accent);
-            box-shadow: 0 0 15px var(--class-accent);
-            content: "";
+        .class-card h3 {
+            margin: 3px 0 0;
+            font-size: 18px;
         }
 
         .stereotype {
-            display: block;
-            margin-bottom: 3px;
-            color: var(--class-accent);
-            font: 700 0.59rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-            letter-spacing: 0.08em;
-        }
-
-        .class-name {
-            display: block;
-            font-size: 0.98rem;
-            font-weight: 750;
-            letter-spacing: -0.02em;
-        }
-
-        .class-section {
-            padding: 10px 14px;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .class-section:last-child {
-            border-bottom: 0;
-        }
-
-        .member {
-            display: grid;
-            grid-template-columns: 14px minmax(0, 1fr);
-            gap: 5px;
-            align-items: baseline;
-            margin: 3px 0;
             color: var(--muted);
-            font: 500 0.64rem/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 11px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
         }
 
-        .member code {
-            overflow: hidden;
-            color: inherit;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+        .class-card ul {
+            margin: 0;
+            padding: 14px 16px 16px 34px;
         }
 
-        .visibility {
-            color: var(--class-accent);
-            font-weight: 800;
+        .class-card li + li {
+            margin-top: 5px;
+        }
+
+        .graph-card header {
+            box-shadow: inset 4px 0 var(--graph);
+        }
+
+        .task-card header {
+            box-shadow: inset 4px 0 var(--task);
+        }
+
+        .frame-card header {
+            box-shadow: inset 4px 0 var(--frame);
+        }
+
+        .gpu-card header {
+            box-shadow: inset 4px 0 var(--gpu);
+        }
+
+        .wide {
+            grid-column: span 2;
+        }
+
+        .relationship {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr auto 1fr;
+            gap: 14px;
+            align-items: center;
             text-align: center;
         }
 
-        .method {
-            color: #bdd0dc;
-        }
-
-        .method-name {
-            color: var(--text);
-        }
-
-        .class-note {
-            padding: 10px 14px;
-            color: var(--muted);
-            background: rgba(7, 16, 24, 0.34);
-            font-size: 0.62rem;
-        }
-
-        .class-note strong {
-            color: var(--class-accent);
-        }
-
-        .impl-row {
+        .node {
+            min-height: 104px;
             display: grid;
-            grid-template-columns: 64px minmax(0, 1fr);
-            gap: 12px;
+            place-content: center;
+            padding: 16px;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            background: var(--panel-strong);
+        }
+
+        .node strong {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 18px;
+        }
+
+        .node span {
+            color: var(--muted);
+        }
+
+        .arrow {
+            color: var(--graph);
+            font-size: 28px;
+        }
+
+        .lifecycle {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
             align-items: center;
-            padding: 13px 15px;
         }
 
-        .impl-name {
-            color: var(--class-accent);
-            font-size: 1rem;
-            font-weight: 800;
-        }
-
-        .impl-detail {
-            color: var(--muted);
-            font: 500 0.62rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
-        }
-
-        .callout {
-            position: absolute;
-            z-index: 2;
-            padding: 11px 13px;
-            border: 1px dashed var(--border-strong);
+        .step {
+            padding: 10px 14px;
+            border: 1px solid var(--line);
             border-radius: 10px;
+            background: var(--panel-strong);
+        }
+
+        .lifecycle .arrow {
+            font-size: 19px;
+        }
+
+        .note {
+            margin: 18px 0 0;
+            padding: 12px 14px;
+            border-left: 3px solid var(--danger);
+            background: color-mix(in srgb, var(--danger), transparent 91%);
             color: var(--muted);
-            background: rgba(7, 16, 24, 0.9);
-            font-size: 0.65rem;
         }
 
-        .callout strong {
-            color: var(--text);
+        @media (max-width: 960px) {
+            .class-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .relationship {
+                grid-template-columns: 1fr;
+            }
+
+            .relationship .arrow {
+                transform: rotate(90deg);
+            }
         }
 
-        /* Core ownership layout */
-        #core-manager {
-            top: 70px;
-            left: 555px;
-            width: 350px;
-            height: 250px;
-        }
-
-        #core-context {
-            top: 390px;
-            left: 555px;
-            width: 350px;
-            height: 300px;
-        }
-
-        #core-graph {
-            top: 390px;
-            left: 60px;
-            width: 370px;
-            height: 300px;
-        }
-
-        #core-slot {
-            top: 800px;
-            left: 60px;
-            width: 370px;
-            height: 270px;
-        }
-
-        #core-ialgo {
-            top: 790px;
-            left: 555px;
-            width: 350px;
-            height: 300px;
-        }
-
-        #core-cel {
-            top: 745px;
-            left: 1040px;
-            width: 350px;
-            height: 96px;
-        }
-
-        #core-sdd {
-            top: 865px;
-            left: 1040px;
-            width: 350px;
-            height: 96px;
-        }
-
-        #core-mi {
-            top: 985px;
-            left: 1040px;
-            width: 350px;
-            height: 96px;
-        }
-
-        #core-manager-note {
-            top: 83px;
-            left: 1015px;
-            width: 375px;
-        }
-
-        /* Data layout */
-        #data-source {
-            top: 100px;
-            left: 35px;
-            width: 300px;
-            height: 245px;
-        }
-
-        #data-frame {
-            top: 115px;
-            left: 410px;
-            width: 250px;
-            height: 215px;
-        }
-
-        #data-graph {
-            top: 75px;
-            left: 745px;
-            width: 350px;
-            height: 300px;
-        }
-
-        #data-sink {
-            top: 105px;
-            left: 1170px;
-            width: 255px;
-            height: 225px;
-        }
-
-        #data-static {
-            top: 570px;
-            left: 35px;
-            width: 255px;
-            height: 180px;
-        }
-
-        #data-runtime {
-            top: 550px;
-            left: 330px;
-            width: 300px;
-            height: 270px;
-        }
-
-        #data-ialgo {
-            top: 500px;
-            left: 700px;
-            width: 345px;
-            height: 335px;
-        }
-
-        #data-output {
-            top: 520px;
-            left: 1120px;
-            width: 285px;
-            height: 235px;
-        }
-
-        #data-result {
-            top: 845px;
-            left: 745px;
-            width: 320px;
-            height: 200px;
-        }
-
-        #data-params {
-            top: 870px;
-            left: 330px;
-            width: 300px;
-            height: 165px;
-        }
-
-        .footnotes {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 12px;
-            padding: 18px;
-            border-top: 1px solid var(--border);
-        }
-
-        .footnote {
-            padding: 14px;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            background: var(--panel-raised);
-        }
-
-        .footnote-index {
-            display: inline-grid;
-            width: 23px;
-            height: 23px;
-            margin-bottom: 9px;
-            place-items: center;
-            border-radius: 6px;
-            color: var(--cyan);
-            background: var(--cyan-soft);
-            font: 750 0.61rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-        }
-
-        .footnote h2 {
-            margin: 0 0 5px;
-            font-size: 0.78rem;
-        }
-
-        .footnote p {
-            margin: 0;
-            color: var(--muted);
-            font-size: 0.69rem;
-        }
-
-        @media (max-width: 800px) {
-            .page {
-                width: min(100% - 24px, 1560px);
+        @media (max-width: 580px) {
+            main {
+                width: min(100% - 20px, 1240px);
                 padding-top: 28px;
             }
 
-            .hero {
-                grid-template-columns: 1fr;
-                gap: 15px;
-            }
-
-            .source-badge {
-                width: max-content;
-            }
-
-            .toolbar {
-                align-items: flex-start;
-                flex-direction: column;
-            }
-
-            .legend {
-                flex-wrap: wrap;
-                white-space: normal;
-            }
-
-            .diagram-scroll {
-                padding: 10px;
-            }
-
-            .footnotes {
+            .class-grid {
                 grid-template-columns: 1fr;
             }
-        }
 
-        @media print {
-            body {
-                background: white;
-            }
-
-            .page {
-                width: 100%;
-                padding: 0;
-            }
-
-            .hero,
-            .toolbar,
-            .footnotes {
-                display: none;
-            }
-
-            .diagram-panel {
-                border: 0;
-                box-shadow: none;
-            }
-
-            .diagram-scroll {
-                overflow: visible;
-                padding: 0;
-            }
-
-            .diagram-view {
-                display: block;
-                break-after: page;
-            }
-
-            .canvas {
-                transform: scale(0.68);
-                transform-origin: top left;
+            .wide {
+                grid-column: auto;
             }
         }
     </style>
 </head>
 <body>
-    <main class="page">
-        <header class="hero">
-            <div>
-                <p class="eyebrow">GPUInfra / class model</p>
-                <h1>Resources are layered. Execution is per Graph thread.</h1>
-                <p class="intro">
-                    A UML-style map generated from the current <code>src</code>
-                    headers. Switch views to separate resource ownership from
-                    the Graph framework’s frame and result contracts.
-                </p>
-            </div>
-            <span class="source-badge">SOURCE · src/*.h</span>
-        </header>
+<main>
+    <h1>GPUInfra class and ownership model</h1>
+    <p class="lede">The current implementation separates logical frame data, reusable task resources, and host execution. A task is GPU-bound but can move between all graph threads in its NUMA-node graph copy.</p>
+    <div class="golden"><strong>Golden mapping</strong><code>start → DummyTask → end</code></div>
 
-        <section class="diagram-panel" aria-label="GPUInfra class diagram">
-            <div class="toolbar">
-                <div class="view-switch" aria-label="Class diagram view">
-                    <button class="view-button" type="button" data-view="ownership" aria-pressed="true">
-                        Core ownership
-                    </button>
-                    <button class="view-button" type="button" data-view="data" aria-pressed="false">
-                        Graph data
-                    </button>
-                </div>
+    <section class="section">
+        <h2>Core classes</h2>
+        <div class="class-grid">
+            <article class="class-card gpu-card wide">
+                <header><span class="stereotype">process-wide service</span><h3>GpuContextManager</h3></header>
+                <ul>
+                    <li><code>init(config)</code> discovers GPUs and NUMA nodes</li>
+                    <li><code>registerTask(node, gpu, resources)</code></li>
+                    <li><code>makeTaskCurrent(resources)</code></li>
+                    <li><code>pinCurrentThreadToNumaNode(node)</code></li>
+                    <li><code>shutdown()</code> releases retained contexts</li>
+                </ul>
+            </article>
+            <article class="class-card gpu-card wide">
+                <header><span class="stereotype">one per GPU</span><h3>GpuContext</h3></header>
+                <ul>
+                    <li><code>gpuId</code> and <code>numaNode</code></li>
+                    <li>retained <code>CUcontext primaryCtx</code></li>
+                    <li>registered <code>TaskGpuResources*</code> table</li>
+                    <li>no frame or worker ownership</li>
+                </ul>
+            </article>
+            <article class="class-card graph-card wide">
+                <header><span class="stereotype">one per GPU-bearing NUMA node</span><h3>DummyGraph</h3></header>
+                <ul>
+                    <li>NUMA-local worker pool</li>
+                    <li>free <code>DummyTask</code> pool and FIFO frame queue</li>
+                    <li>warmup/timed <code>FrameSlot</code> collections</li>
+                    <li>lifecycle barriers, phase gate, and cancellation</li>
+                    <li>publishes terminal results to <code>GraphSink</code></li>
+                </ul>
+            </article>
+            <article class="class-card task-card wide">
+                <header><span class="stereotype">graph task instance</span><h3>DummyTask</h3></header>
+                <ul>
+                    <li>golden lifecycle API</li>
+                    <li>permanent GPU binding; no host-thread binding</li>
+                    <li>owns <code>TaskGpuResources</code></li>
+                    <li>owns private CEL, SDD, and MI objects</li>
+                    <li>atomic single-execution guard</li>
+                </ul>
+            </article>
+            <article class="class-card frame-card">
+                <header><span class="stereotype">logical frame</span><h3>FrameSlot</h3></header>
+                <ul>
+                    <li>ID, NUMA node, phase, state</li>
+                    <li>owning input bytes</li>
+                    <li>preallocated <code>JobResult</code></li>
+                    <li>no stream or GPU affinity</li>
+                </ul>
+            </article>
+            <article class="class-card task-card">
+                <header><span class="stereotype">task CUDA lane</span><h3>TaskGpuResources</h3></header>
+                <ul>
+                    <li>GPU/NUMA/resource identity</li>
+                    <li>stream and pinned/device input</li>
+                    <li>optional device scratch</li>
+                    <li>non-owning <code>GpuContext*</code></li>
+                </ul>
+            </article>
+            <article class="class-card task-card">
+                <header><span class="stereotype">private operations</span><h3>CEL / SDD / MI</h3></header>
+                <ul>
+                    <li>device output matrix</li>
+                    <li>pinned D2H staging output</li>
+                    <li>geometry and parameters</li>
+                    <li>all consume task <code>d_in</code></li>
+                </ul>
+            </article>
+            <article class="class-card graph-card">
+                <header><span class="stereotype">shared run configuration</span><h3>ParameterRegistry</h3></header>
+                <ul>
+                    <li>typed schema agreement</li>
+                    <li>value validation</li>
+                    <li>sealed immutable snapshot</li>
+                    <li>one snapshot for all tasks</li>
+                </ul>
+            </article>
+        </div>
+    </section>
 
-                <div class="legend" aria-label="UML relationship legend">
-                    <span class="legend-item">
-                        <span class="legend-line composition"></span>
-                        composition / owns
-                    </span>
-                    <span class="legend-item">
-                        <span class="legend-line inheritance"></span>
-                        inheritance
-                    </span>
-                    <span class="legend-item">
-                        <span class="legend-line dependency"></span>
-                        dependency / call
-                    </span>
-                </div>
-            </div>
+    <section class="section">
+        <h2>One scheduling assignment</h2>
+        <div class="relationship">
+            <div class="node"><strong style="color: var(--frame)">Ready FrameSlot</strong><span>input and results</span></div>
+            <div class="arrow">+</div>
+            <div class="node"><strong style="color: var(--task)">Free DummyTask</strong><span>GPU-bound CUDA lane</span></div>
+            <div class="arrow">+</div>
+            <div class="node"><strong style="color: var(--graph)">Free graph thread</strong><span>NUMA-local host execution</span></div>
+        </div>
+        <p class="note">The three objects are associated only for one <code>execute()</code>. The task and thread return independently to their pools.</p>
+    </section>
 
-            <div class="diagram-scroll">
-                <section class="diagram-view is-active" data-diagram="ownership" aria-label="Core ownership class diagram">
-                    <div class="canvas ownership-canvas">
-                        <span class="canvas-title">View 01 · core ownership and registration</span>
-
-                        <svg class="relations" viewBox="0 0 1460 1130" aria-hidden="true">
-                            <defs>
-                                <marker id="core-diamond" markerWidth="14" markerHeight="14" refX="3" refY="7" orient="auto">
-                                    <path d="M 1 7 L 7 1 L 13 7 L 7 13 Z" fill="#70e6a8"></path>
-                                </marker>
-                                <marker id="core-arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
-                                    <path d="M 0 1 L 9 5 L 0 9 Z" fill="#40d5dc"></path>
-                                </marker>
-                                <marker id="core-association-arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
-                                    <path d="M 0 1 L 9 5 L 0 9 Z" fill="#7db8ff"></path>
-                                </marker>
-                                <marker id="core-triangle" markerWidth="13" markerHeight="13" refX="11" refY="6.5" orient="auto">
-                                    <path d="M 1 1 L 11 6.5 L 1 12 Z" fill="#071018" stroke="#ac91ff" stroke-width="1.4"></path>
-                                </marker>
-                            </defs>
-
-                            <path class="relation composition" d="M 730 320 L 730 390" marker-start="url(#core-diamond)"></path>
-                            <text class="relation-label" x="748" y="358">manages</text>
-                            <text class="multiplicity" x="710" y="339">1</text>
-                            <text class="multiplicity" x="710" y="383">1 / GPU</text>
-
-                            <path class="relation dependency" d="M 245 390 L 245 355 L 520 355 L 520 190 L 555 190" marker-end="url(#core-arrow)"></path>
-                            <text class="relation-label" x="275" y="344">registerThread() / unregisterThread()</text>
-
-                            <path class="relation composition" d="M 555 570 L 485 570 L 485 920 L 430 920" marker-start="url(#core-diamond)"></path>
-                            <text class="relation-label" x="450" y="735" transform="rotate(-90 450 735)">fixed slot table</text>
-                            <text class="multiplicity" x="525" y="558">1</text>
-                            <text class="multiplicity" x="438" y="910">0..threadsPerGpu</text>
-
-                            <path class="relation composition" d="M 350 690 L 350 740 L 730 740 L 730 790" marker-start="url(#core-diamond)"></path>
-                            <text class="relation-label" x="455" y="725">owns private algorithm objects</text>
-                            <text class="multiplicity" x="365" y="710">1</text>
-                            <text class="multiplicity" x="710" y="782">1..*</text>
-
-                            <path class="relation association" d="M 245 690 L 245 800" marker-end="url(#core-association-arrow)"></path>
-                            <text class="relation-label" x="265" y="750">uses while loaded</text>
-                            <text class="multiplicity" x="225" y="710">1</text>
-                            <text class="multiplicity" x="225" y="792">0..1</text>
-
-                            <path class="relation association" d="M 430 960 L 490 960 L 490 620 L 555 620" marker-end="url(#core-association-arrow)"></path>
-                            <text class="relation-label" x="504" y="780" transform="rotate(-90 504 780)">ctx back-reference</text>
-
-                            <path class="relation inheritance" d="M 1040 793 L 980 793 L 980 880 L 905 880" marker-end="url(#core-triangle)"></path>
-                            <path class="relation inheritance" d="M 1040 913 L 960 913 L 960 900 L 905 900" marker-end="url(#core-triangle)"></path>
-                            <path class="relation inheritance" d="M 1040 1033 L 980 1033 L 980 920 L 905 920" marker-end="url(#core-triangle)"></path>
-                            <text class="relation-label" x="955" y="705">implements</text>
-                        </svg>
-
-                        <article class="uml-class manager" id="core-manager">
-                            <header class="class-header">
-                                <span class="stereotype">«static service»</span>
-                                <span class="class-name">GpuContextManager</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">−</span><code>contexts: vector&lt;GpuContext*&gt;</code></div>
-                                <div class="member"><span class="visibility">−</span><code>numaToCtxs: map&lt;int, vector&lt;GpuContext*&gt;&gt;</code></div>
-                                <div class="member"><span class="visibility">−</span><code>config: GpuInfraConfig</code></div>
-                            </div>
-                            <div class="class-section method">
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">init</span>(config): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">registerThread</span>(numa, gpu): ThreadSlot*</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">prepareThreadScratch</span>(slot, bytes): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">unregisterThread</span>(slot): void</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">shutdown</span>(): void</code></div>
-                            </div>
-                        </article>
-
-                        <article class="uml-class context" id="core-context">
-                            <header class="class-header">
-                                <span class="stereotype">«resource owner»</span>
-                                <span class="class-name">GpuContext</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">+</span><code>gpuId: int</code></div>
-                                <div class="member"><span class="visibility">+</span><code>numaNode: int</code></div>
-                                <div class="member"><span class="visibility">+</span><code>primaryCtx: CUcontext</code></div>
-                                <div class="member"><span class="visibility">+</span><code>threadSlots: vector&lt;ThreadSlot*&gt;</code></div>
-                                <div class="member"><span class="visibility">+</span><code>inputBytes: size_t</code></div>
-                            </div>
-                            <div class="class-section method">
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">activeSlotCount</span>(): size_t</code></div>
-                            </div>
-                            <div class="class-note">
-                                Owns slots and future immutable per-GPU
-                                resources; owns no algorithm objects.
-                            </div>
-                        </article>
-
-                        <article class="uml-class graph" id="core-graph">
-                            <header class="class-header">
-                                <span class="stereotype">«Graph worker façade»</span>
-                                <span class="class-name">DummyGraph</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">−</span><code>requestedNuma / requestedGpu: int</code></div>
-                                <div class="member"><span class="visibility">−</span><code>executionModel: ExecutionModel</code></div>
-                                <div class="member"><span class="visibility">−</span><code>slot: ThreadSlot* {non-owning}</code></div>
-                                <div class="member"><span class="visibility">−</span><code>algos: vector&lt;unique_ptr&lt;IAlgo&gt;&gt;</code></div>
-                                <div class="member"><span class="visibility">−</span><code>sink: GraphSink* {non-owning}</code></div>
-                                <div class="member"><span class="visibility">−</span><code>result: JobResult</code></div>
-                            </div>
-                            <div class="class-section method">
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">load</span>(): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">execute</span>(frame): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">unload</span>(): bool</code></div>
-                            </div>
-                            <div class="class-note">
-                                One instance runs on one external Graph thread
-                                and directly constructs Cel, Sdd, and Mi.
-                            </div>
-                        </article>
-
-                        <article class="uml-class slot" id="core-slot">
-                            <header class="class-header">
-                                <span class="stereotype">«per-worker resources»</span>
-                                <span class="class-name">ThreadSlot</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">+</span><code>threadId / gpuId / numaNode: int</code></div>
-                                <div class="member"><span class="visibility">+</span><code>ownerTid: std::thread::id</code></div>
-                                <div class="member"><span class="visibility">+</span><code>stream: cudaStream_t</code></div>
-                                <div class="member"><span class="visibility">+</span><code>h_in / d_in: void*</code></div>
-                                <div class="member"><span class="visibility">+</span><code>d_scratch: void*</code></div>
-                                <div class="member"><span class="visibility">+</span><code>ctx: GpuContext* {non-owning}</code></div>
-                            </div>
-                            <div class="class-note">
-                                Owns the stream, shared input, and optional
-                                shared scratch for one Graph worker.
-                            </div>
-                        </article>
-
-                        <article class="uml-class interface" id="core-ialgo">
-                            <header class="class-header">
-                                <span class="stereotype">«interface»</span>
-                                <span class="class-name">IAlgo</span>
-                            </header>
-                            <div class="class-section method">
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">init</span>(runtime, slot, output, scratchBytes): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">notifyParameter</span>(params): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">launchKernels</span>(slot, stream): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">launchD2H</span>(slot, stream): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">collectResult</span>(slot, output): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">close</span>(): bool</code></div>
-                            </div>
-                            <div class="class-note">
-                                One implementation object per
-                                <strong>(DummyGraph, algorithm)</strong>.
-                            </div>
-                        </article>
-
-                        <article class="uml-class implementation" id="core-cel">
-                            <div class="impl-row">
-                                <span class="impl-name">Cel</span>
-                                <span class="impl-detail">
-                                    direct private state<br>
-                                    owns d_output + h_output
-                                </span>
-                            </div>
-                        </article>
-
-                        <article class="uml-class implementation" id="core-sdd">
-                            <div class="impl-row">
-                                <span class="impl-name">Sdd</span>
-                                <span class="impl-detail">
-                                    direct private state<br>
-                                    owns d_output + h_output
-                                </span>
-                            </div>
-                        </article>
-
-                        <article class="uml-class implementation" id="core-mi">
-                            <div class="impl-row">
-                                <span class="impl-name">Mi</span>
-                                <span class="impl-detail">
-                                    direct private state<br>
-                                    owns d_output + h_output
-                                </span>
-                            </div>
-                        </article>
-
-                        <aside class="callout" id="core-manager-note">
-                            <strong>Cold path:</strong> the manager discovers
-                            GPUs and creates one <code>GpuContext</code> per
-                            GPU. Each worker creates private algorithms;
-                            <code>init()</code> allocates and first-touches
-                            outputs before parameter notification.
-                        </aside>
-                    </div>
-                </section>
-
-                <section class="diagram-view" data-diagram="data" aria-label="Graph data class diagram">
-                    <div class="canvas data-canvas">
-                        <span class="canvas-title">View 02 · Graph input, algorithm contracts, and output</span>
-
-                        <svg class="relations" viewBox="0 0 1460 1080" aria-hidden="true">
-                            <defs>
-                                <marker id="data-diamond" markerWidth="14" markerHeight="14" refX="3" refY="7" orient="auto">
-                                    <path d="M 1 7 L 7 1 L 13 7 L 7 13 Z" fill="#70e6a8"></path>
-                                </marker>
-                                <marker id="data-arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
-                                    <path d="M 0 1 L 9 5 L 0 9 Z" fill="#f1c96f"></path>
-                                </marker>
-                                <marker id="data-blue-arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
-                                    <path d="M 0 1 L 9 5 L 0 9 Z" fill="#7db8ff"></path>
-                                </marker>
-                                <marker id="data-dependency-arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
-                                    <path d="M 0 1 L 9 5 L 0 9 Z" fill="#40d5dc"></path>
-                                </marker>
-                            </defs>
-
-                            <path class="relation data" d="M 335 220 L 410 220" marker-end="url(#data-arrow)"></path>
-                            <text class="relation-label" x="350" y="205">fills</text>
-
-                            <path class="relation data" d="M 660 220 L 745 220" marker-end="url(#data-arrow)"></path>
-                            <text class="relation-label" x="675" y="205">execute()</text>
-
-                            <path class="relation association" d="M 1095 220 L 1170 220" marker-end="url(#data-blue-arrow)"></path>
-                            <text class="relation-label" x="1102" y="205">deliver()</text>
-
-                            <path class="relation composition" d="M 760 375 L 670 375 L 670 945 L 745 945" marker-start="url(#data-diamond)"></path>
-                            <text class="relation-label" x="653" y="520" transform="rotate(-90 653 520)">owns reusable result</text>
-                            <text class="multiplicity" x="775" y="395">1</text>
-                            <text class="multiplicity" x="720" y="932">1</text>
-
-                            <path class="relation composition" d="M 1065 945 L 1085 945 L 1085 700 L 1120 700" marker-start="url(#data-diamond)"></path>
-                            <text class="relation-label" x="1098" y="835" transform="rotate(-90 1098 835)">outputs</text>
-                            <text class="multiplicity" x="1070" y="930">1</text>
-                            <text class="multiplicity" x="1100" y="690">0..*</text>
-
-                            <path class="relation dependency" d="M 700 605 L 665 605 L 665 470 L 310 470 L 310 620 L 290 620" marker-end="url(#data-dependency-arrow)"></path>
-                            <text class="relation-label" x="410" y="455">init() outputs</text>
-
-                            <path class="relation dependency" d="M 630 715 L 700 715" marker-end="url(#data-dependency-arrow)"></path>
-                            <text class="relation-label" x="505" y="700">init(runtime, slot, output, scratchBytes)</text>
-
-                            <path class="relation dependency" d="M 630 940 L 665 940 L 665 780 L 700 780" marker-end="url(#data-dependency-arrow)"></path>
-                            <text class="relation-label" x="500" y="855">notifyParameter(params)</text>
-
-                            <path class="relation dependency" d="M 1045 620 L 1120 620" marker-end="url(#data-dependency-arrow)"></path>
-                            <text class="relation-label" x="1055" y="605">output</text>
-                        </svg>
-
-                        <article class="uml-class source" id="data-source">
-                            <header class="class-header">
-                                <span class="stereotype">«source»</span>
-                                <span class="class-name">GraphFrameSource</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">−</span><code>buffer: vector&lt;uint8_t&gt;</code></div>
-                                <div class="member"><span class="visibility">−</span><code>total / idBase: uint64_t</code></div>
-                                <div class="member"><span class="visibility">−</span><code>numa: int</code></div>
-                                <div class="member"><span class="visibility">−</span><code>nextId: atomic&lt;uint64_t&gt;</code></div>
-                            </div>
-                            <div class="class-section method">
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">nextFrame</span>(Frame&amp;): bool</code></div>
-                            </div>
-                        </article>
-
-                        <article class="uml-class data-type" id="data-frame">
-                            <header class="class-header">
-                                <span class="stereotype">«data»</span>
-                                <span class="class-name">Frame</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">+</span><code>id: uint64_t</code></div>
-                                <div class="member"><span class="visibility">+</span><code>data: const uint8_t*</code></div>
-                                <div class="member"><span class="visibility">+</span><code>bytes: size_t</code></div>
-                                <div class="member"><span class="visibility">+</span><code>numaNode: int</code></div>
-                            </div>
-                            <div class="class-note">
-                                Non-owning view of caller storage.
-                            </div>
-                        </article>
-
-                        <article class="uml-class graph" id="data-graph">
-                            <header class="class-header">
-                                <span class="stereotype">«Graph worker façade»</span>
-                                <span class="class-name">DummyGraph</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">−</span><code>slot: ThreadSlot*</code></div>
-                                <div class="member"><span class="visibility">−</span><code>sink: GraphSink*</code></div>
-                                <div class="member"><span class="visibility">−</span><code>result: JobResult</code></div>
-                                <div class="member"><span class="visibility">−</span><code>executionModel: ExecutionModel</code></div>
-                            </div>
-                            <div class="class-section method">
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">load</span>(): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">execute</span>(const Frame&amp;): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">unload</span>(): bool</code></div>
-                            </div>
-                        </article>
-
-                        <article class="uml-class sink" id="data-sink">
-                            <header class="class-header">
-                                <span class="stereotype">«sink»</span>
-                                <span class="class-name">GraphSink</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">−</span><code>lock: mutex</code></div>
-                                <div class="member"><span class="visibility">−</span><code>deliveredResults: size_t</code></div>
-                                <div class="member"><span class="visibility">−</span><code>failedResults: size_t</code></div>
-                            </div>
-                            <div class="class-section method">
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">deliver</span>(const JobResult&amp;)</code></div>
-                            </div>
-                        </article>
-
-                        <article class="uml-class data-type" id="data-static">
-                            <header class="class-header">
-                                <span class="stereotype">«initialization contract»</span>
-                                <span class="class-name">init() outputs</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">+</span><code>return: bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code>output: AlgoOutput&amp;</code></div>
-                                <div class="member"><span class="visibility">+</span><code>scratchBytes: size_t&amp;</code></div>
-                            </div>
-                        </article>
-
-                        <article class="uml-class data-type" id="data-runtime">
-                            <header class="class-header">
-                                <span class="stereotype">«configuration data»</span>
-                                <span class="class-name">AlgoRuntimeInfo</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">+</span><code>inBytes / sizeFactor</code></div>
-                                <div class="member"><span class="visibility">+</span><code>frameW / frameH / frameDtype</code></div>
-                            </div>
-                            <div class="class-note">
-                                Read once by each worker during load.
-                            </div>
-                        </article>
-
-                        <article class="uml-class interface" id="data-ialgo">
-                            <header class="class-header">
-                                <span class="stereotype">«interface»</span>
-                                <span class="class-name">IAlgo</span>
-                            </header>
-                            <div class="class-section method">
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">init</span>(runtime, slot, output, scratchBytes): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">notifyParameter</span>(AlgoParams): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">launchKernels</span>(ThreadSlot, stream): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">launchD2H</span>(ThreadSlot, stream): bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code><span class="method-name">collectResult</span>(ThreadSlot, AlgoOutput&amp;): bool</code></div>
-                            </div>
-                            <div class="class-note">
-                                Converts its owned pinned result into prepared
-                                pageable <code>AlgoOutput</code> storage.
-                            </div>
-                        </article>
-
-                        <article class="uml-class data-type" id="data-output">
-                            <header class="class-header">
-                                <span class="stereotype">«owned data»</span>
-                                <span class="class-name">AlgoOutput</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">+</span><code>algoName: string</code></div>
-                                <div class="member"><span class="visibility">+</span><code>data: vector&lt;uint8_t&gt;</code></div>
-                                <div class="member"><span class="visibility">+</span><code>width / height: int</code></div>
-                            </div>
-                            <div class="class-note">
-                                Prepared once during <code>DummyGraph::load()</code>.
-                            </div>
-                        </article>
-
-                        <article class="uml-class data-type" id="data-result">
-                            <header class="class-header">
-                                <span class="stereotype">«owned aggregate»</span>
-                                <span class="class-name">JobResult</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">+</span><code>id: uint64_t</code></div>
-                                <div class="member"><span class="visibility">+</span><code>ok: bool</code></div>
-                                <div class="member"><span class="visibility">+</span><code>outputs: vector&lt;AlgoOutput&gt;</code></div>
-                            </div>
-                        </article>
-
-                        <article class="uml-class data-type" id="data-params">
-                            <header class="class-header">
-                                <span class="stereotype">«configuration data»</span>
-                                <span class="class-name">AlgoParams</span>
-                            </header>
-                            <div class="class-section">
-                                <div class="member"><span class="visibility">+</span><code>name: string</code></div>
-                                <div class="member"><span class="visibility">+</span><code>blob: vector&lt;uint8_t&gt;</code></div>
-                            </div>
-                        </article>
-                    </div>
-                </section>
-            </div>
-
-            <footer class="footnotes">
-                <article class="footnote">
-                    <span class="footnote-index">01</span>
-                    <h2>Algorithm ownership</h2>
-                    <p>
-                        Each <code>DummyGraph</code> owns one Cel, Sdd, and Mi
-                        object. No algorithm object is shared across threads.
-                    </p>
-                </article>
-                <article class="footnote">
-                    <span class="footnote-index">02</span>
-                    <h2>Worker ownership</h2>
-                    <p>
-                        A loaded <code>DummyGraph</code> uses one manager-created
-                        slot. The context owns the slot; each algorithm owns its
-                        output buffers.
-                    </p>
-                </article>
-                <article class="footnote">
-                    <span class="footnote-index">03</span>
-                    <h2>Hot-path contract</h2>
-                    <p>
-                        Initialization and parameter notification finish before
-                        frames. Execution reuses the slot and
-                        <code>JobResult</code> without allocation or growth.
-                    </p>
-                </article>
-            </footer>
-        </section>
-    </main>
-
-    <script>
-        const viewButtons = document.querySelectorAll(".view-button");
-        const diagramViews = document.querySelectorAll(".diagram-view");
-
-        function showView(name, updateHash = true) {
-            for (const button of viewButtons) {
-                button.setAttribute(
-                    "aria-pressed",
-                    String(button.dataset.view === name)
-                );
-            }
-
-            for (const view of diagramViews) {
-                view.classList.toggle(
-                    "is-active",
-                    view.dataset.diagram === name
-                );
-            }
-
-            if (updateHash) {
-                history.replaceState(null, "", `#${name}`);
-            }
-        }
-
-        for (const button of viewButtons) {
-            button.addEventListener("click", () => {
-                showView(button.dataset.view);
-            });
-        }
-
-        const initialView = location.hash === "#data" ? "data" : "ownership";
-        showView(initialView, false);
-    </script>
+    <section class="section">
+        <h2>DummyTask lifecycle</h2>
+        <div class="lifecycle">
+            <div class="step">load</div><div class="arrow">→</div>
+            <div class="step">registerParameters</div><div class="arrow">→</div>
+            <div class="step">notifyParameters</div><div class="arrow">→</div>
+            <div class="step">execute per frame</div><div class="arrow">→</div>
+            <div class="step">unload</div>
+        </div>
+    </section>
+</main>
 </body>
 </html>

@@ -1,18 +1,13 @@
 #include "GpuContextManager.h"
 
-#include <algorithm>
 #include <atomic>
 #include <cctype>
-#include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <new>
 #include <sstream>
 #include <string>
-#include <thread>
-#include <unordered_map>
 #include <vector>
 
 #include <cuda.h>
@@ -25,7 +20,6 @@
 
 GpuInfraConfig GpuContextManager::config;
 std::vector<GpuContext*> GpuContextManager::contexts;
-std::unordered_map<int, std::vector<GpuContext*>> GpuContextManager::numaToCtxs;
 std::mutex GpuContextManager::lock;
 std::atomic<bool> GpuContextManager::initialised{false};
 
@@ -70,19 +64,18 @@ bool pinToNumaNode(int node) {
     if (node < 0) {
         return false;
     }
+
     cpu_set_t nodeSet;
     cpu_set_t allowedSet;
     if (!nodeCpuSet(node, nodeSet) || pthread_getaffinity_np(pthread_self(), sizeof(allowedSet), &allowedSet) != 0) {
         return false;
     }
 
-    // Respect a container/cgroup's existing CPU allowance.
+    // Respect a container or cgroup's existing CPU allowance.
     CPU_AND(&nodeSet, &nodeSet, &allowedSet);
     if (CPU_COUNT(&nodeSet) == 0) {
         return false;
     }
-    // Pin before cudaHostAlloc and host first-touch. Avoid process-wide
-    // membind because GPUInfra does not own unrelated application memory.
     return pthread_setaffinity_np(pthread_self(), sizeof(nodeSet), &nodeSet) == 0;
 }
 
@@ -114,34 +107,8 @@ int probeNumaNodeOfGpu(int gpuId) {
     return node < 0 ? 0 : node;
 }
 
-int detectNumaAffinity() {
-    cpu_set_t affinity;
-    CPU_ZERO(&affinity);
-    if (pthread_getaffinity_np(pthread_self(), sizeof(affinity), &affinity) != 0) {
-        return -1;
-    }
-
-    int detectedNode = -1;
-    for (int node = 0; node < 256; ++node) {
-        cpu_set_t nodeSet;
-        if (!nodeCpuSet(node, nodeSet)) {
-            continue;
-        }
-        CPU_AND(&nodeSet, &nodeSet, &affinity);
-        if (CPU_COUNT(&nodeSet) > 0) {
-            if (detectedNode < 0) {
-                detectedNode = node;
-            }
-            else if (detectedNode != node) {
-                return -1;
-            }
-        }
-    }
-    return detectedNode;
-}
-
-GpuContext* findGpu(const std::vector<GpuContext*>& contexts, int gpuId) {
-    for (GpuContext* context : contexts) {
+GpuContext* findGpu(const std::vector<GpuContext*>& availableContexts, int gpuId) {
+    for (GpuContext* context : availableContexts) {
         if (context != nullptr && context->gpuId == gpuId) {
             return context;
         }
@@ -149,123 +116,29 @@ GpuContext* findGpu(const std::vector<GpuContext*>& contexts, int gpuId) {
     return nullptr;
 }
 
-GpuContext* pickContextOnNode(const std::unordered_map<int, std::vector<GpuContext*>>& contextsByNode, int node, int gpuHint) {
-    const auto found = contextsByNode.find(node);
-    if (found == contextsByNode.end() || found->second.empty()) {
-        return nullptr;
-    }
-
-    if (gpuHint >= 0) {
-        for (GpuContext* context : found->second) {
-            if (context->gpuId == gpuHint) {
-                return context;
-            }
-        }
-        return nullptr;
-    }
-
-    GpuContext* best = nullptr;
-    for (GpuContext* context : found->second) {
-        if (context->activeSlotCount() >= static_cast<std::size_t>(context->maxThreadsPerGpu)) {
-            continue;
-        }
-        if (best == nullptr || context->activeSlotCount() < best->activeSlotCount()) {
-            best = context;
-        }
-    }
-    return best;
-}
-
-bool activateContext(GpuContext* context, bool primeRuntime) {
-    if (context == nullptr || context->primaryCtx == nullptr) {
-        return false;
-    }
-    CUDA_CHECK(cudaSetDevice(context->gpuId), return false);
-    if (primeRuntime) {
-        CUDA_CHECK(cudaFree(nullptr), return false);
-    }
-    CU_CHECK(cuCtxPushCurrent(context->primaryCtx), return false);
-    return true;
-}
-
-bool popContext() {
-    CUcontext popped = nullptr;
-    CU_CHECK(cuCtxPopCurrent(&popped), return false);
-    return true;
-}
-
-bool firstTouchDevice(void* d_pointer, std::size_t bytes, cudaStream_t stream) {
-    if (d_pointer == nullptr || bytes == 0 || stream == nullptr) {
-        return false;
-    }
-    CUDA_CHECK(cudaMemsetAsync(d_pointer, 0, bytes, stream), return false);
-    CUDA_CHECK(cudaStreamSynchronize(stream), return false);
-    return true;
-}
-
-void destroyThreadScratch(ThreadSlot* slot) {
-    if (slot == nullptr) {
-        return;
-    }
-    if (slot->d_scratch != nullptr) {
-        CUDA_CHECK(cudaFree(slot->d_scratch), );
-        slot->d_scratch = nullptr;
-    }
-    slot->scratchBytes = 0;
-}
-
-void destroySlot(ThreadSlot* slot) {
-    if (slot == nullptr) {
-        return;
-    }
-    if (slot->stream != nullptr) {
-        CUDA_CHECK(cudaStreamSynchronize(slot->stream), );
-    }
-    destroyThreadScratch(slot);
-    if (slot->d_in != nullptr) {
-        CUDA_CHECK(cudaFree(slot->d_in), );
-        slot->d_in = nullptr;
-    }
-    if (slot->h_in != nullptr) {
-        CUDA_CHECK(cudaFreeHost(slot->h_in), );
-        slot->h_in = nullptr;
-    }
-    if (slot->stream != nullptr) {
-        CUDA_CHECK(cudaStreamDestroy(slot->stream), );
-        slot->stream = nullptr;
-    }
-    delete slot;
-}
-
-void releaseContexts(std::vector<GpuContext*>& contexts) {
-    for (GpuContext* context : contexts) {
+void releaseContexts(std::vector<GpuContext*>& availableContexts) {
+    for (GpuContext* context : availableContexts) {
         if (context == nullptr) {
             continue;
         }
-
-        const bool active = activateContext(context, true);
-        if (active) {
-            for (ThreadSlot*& slot : context->threadSlots) {
-                destroySlot(slot);
-                slot = nullptr;
-            }
-            popContext();
+        if (context->activeTaskCount() != 0) {
+            std::fprintf(stderr, "[GPUInfra] refusing to release gpu=%d with %zu registered task resource(s)\n", context->gpuId, context->activeTaskCount());
+            continue;
         }
-
         if (context->primaryCtx != nullptr) {
             CU_CHECK(cuDevicePrimaryCtxRelease(context->device), );
             context->primaryCtx = nullptr;
         }
         delete context;
     }
-    contexts.clear();
+    availableContexts.clear();
 }
 
 }  // namespace
 
 bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
     std::lock_guard<std::mutex> guard(lock);
-    if (initialised.load(std::memory_order_acquire) || requestedConfig.threadsPerGpu <= 0 || requestedConfig.inputBytes == 0) {
+    if (initialised.load(std::memory_order_acquire)) {
         return false;
     }
 
@@ -278,13 +151,14 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
 
     config = requestedConfig;
     contexts.clear();
-    numaToCtxs.clear();
 
     for (int gpu = 0; gpu < deviceCount; ++gpu) {
-        const int node = probeNumaNodeOfGpu(gpu);
-        if (node < 0 || !pinToNumaNode(node)) {
+        int node = probeNumaNodeOfGpu(gpu);
+        if (node < 0 && !config.requireNuma) {
+            node = 0;
+        }
+        if (node < 0) {
             releaseContexts(contexts);
-            numaToCtxs.clear();
             return false;
         }
 
@@ -304,9 +178,6 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
         }
         context->gpuId = gpu;
         context->numaNode = node;
-        context->maxThreadsPerGpu = config.threadsPerGpu;
-        context->inputBytes = config.inputBytes;
-        context->threadSlots.assign(static_cast<std::size_t>(config.threadsPerGpu), nullptr);
 
         CU_CHECK(cuDeviceGet(&context->device, gpu), {
             delete context;
@@ -320,12 +191,10 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
         });
 
         contexts.push_back(context);
-        numaToCtxs[node].push_back(context);
 
         cudaDeviceProp properties{};
         CUDA_CHECK(cudaGetDeviceProperties(&properties, gpu), {
             releaseContexts(contexts);
-            numaToCtxs.clear();
             return false;
         });
         std::fprintf(stderr, "[GPUInfra] discovered gpu=%d name=%s numa=%d compute=%d.%d async_engines=%d\n", gpu, properties.name, node, properties.major, properties.minor, properties.asyncEngineCount);
@@ -335,152 +204,70 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
     return true;
 }
 
-ThreadSlot* GpuContextManager::registerThread(int numaHint, int gpuHint) {
-    if (!initialised.load(std::memory_order_acquire)) {
-        return nullptr;
-    }
+bool GpuContextManager::pinCurrentThreadToNumaNode(int numaNode) {
+    return pinToNumaNode(numaNode);
+}
 
-    int targetNode = numaHint;
-    if (targetNode < 0) {
-        targetNode = detectNumaAffinity();
-    }
-    else if (!pinToNumaNode(targetNode)) {
-        return nullptr;
+bool GpuContextManager::registerTask(int numaNode, int gpuId, TaskGpuResources& resources) {
+    if (!initialised.load(std::memory_order_acquire) || resources.ctx != nullptr || numaNode < 0 || gpuId < 0 || !pinToNumaNode(numaNode)) {
+        return false;
     }
 
     std::lock_guard<std::mutex> guard(lock);
-    GpuContext* context = nullptr;
-    if (gpuHint >= 0) {
-        context = findGpu(contexts, gpuHint);
-        if (context != nullptr && targetNode < 0) {
-            targetNode = context->numaNode;
-        }
-        if (context == nullptr || context->numaNode != targetNode) {
-            return nullptr;
-        }
-    }
-    else if (targetNode >= 0) {
-        context = pickContextOnNode(numaToCtxs, targetNode, -1);
+    GpuContext* context = findGpu(contexts, gpuId);
+    if (context == nullptr || context->numaNode != numaNode) {
+        return false;
     }
 
-    if (context == nullptr && !config.requireNuma) {
-        for (GpuContext* candidate : contexts) {
-            if (candidate->activeSlotCount() < static_cast<std::size_t>(candidate->maxThreadsPerGpu) && (context == nullptr || candidate->activeSlotCount() < context->activeSlotCount())) {
-                context = candidate;
-            }
-        }
-    }
-    if (context == nullptr || context->activeSlotCount() >= static_cast<std::size_t>(context->maxThreadsPerGpu) || !pinToNumaNode(context->numaNode) || !activateContext(context, true)) {
-        return nullptr;
-    }
-
-    int slotId = -1;
-    for (std::size_t index = 0; index < context->threadSlots.size(); ++index) {
-        if (context->threadSlots[index] == nullptr) {
-            slotId = static_cast<int>(index);
+    std::size_t resourceId = context->taskResources.size();
+    for (std::size_t index = 0; index < context->taskResources.size(); ++index) {
+        if (context->taskResources[index] == nullptr) {
+            resourceId = index;
             break;
         }
     }
-    if (slotId < 0) {
-        popContext();
-        return nullptr;
-    }
-
-    ThreadSlot* slot = new (std::nothrow) ThreadSlot();
-    if (slot == nullptr) {
-        popContext();
-        return nullptr;
-    }
-    slot->threadId = slotId;
-    slot->ownerTid = std::this_thread::get_id();
-    slot->gpuId = context->gpuId;
-    slot->numaNode = context->numaNode;
-    slot->ctx = context;
-    slot->inBytes = context->inputBytes;
-
-    bool ok = true;
-    CUDA_CHECK(cudaStreamCreateWithFlags(&slot->stream, cudaStreamNonBlocking), ok = false);
-    if (ok) {
-        CUDA_CHECK(cudaHostAlloc(&slot->h_in, slot->inBytes, cudaHostAllocPortable), ok = false);
-    }
-    if (ok) {
-        std::memset(slot->h_in, 0, slot->inBytes);
-        CUDA_CHECK(cudaMalloc(&slot->d_in, slot->inBytes), ok = false);
-    }
-    if (ok) {
-        ok = firstTouchDevice(slot->d_in, slot->inBytes, slot->stream);
-    }
-
-    if (!ok) {
-        destroySlot(slot);
-        popContext();
-        return nullptr;
-    }
-
-    context->threadSlots[static_cast<std::size_t>(slotId)] = slot;
-    if (!popContext()) {
-        context->threadSlots[static_cast<std::size_t>(slotId)] = nullptr;
-        destroySlot(slot);
-        return nullptr;
-    }
-
-    std::fprintf(stderr, "[GPUInfra] registered thread gpu=%d numa=%d slot=%d stream=%p\n", slot->gpuId, slot->numaNode, slot->threadId, static_cast<void*>(slot->stream));
-    return slot;
-}
-
-bool GpuContextManager::prepareThreadScratch(ThreadSlot* slot, std::size_t scratchBytes) {
-    if (slot == nullptr || slot->ctx == nullptr || slot->ownerTid != std::this_thread::get_id() || scratchBytes == 0) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> guard(lock);
-    GpuContext* context = slot->ctx;
-    if (!initialised.load(std::memory_order_acquire) || slot->threadId < 0 || static_cast<std::size_t>(slot->threadId) >= context->threadSlots.size() || context->threadSlots[static_cast<std::size_t>(slot->threadId)] != slot || slot->d_scratch != nullptr || slot->scratchBytes != 0) {
-        return false;
-    }
-
-    if (!activateContext(context, false)) {
-        return false;
-    }
-
-    bool ok = true;
-    CUDA_CHECK(cudaMalloc(&slot->d_scratch, scratchBytes), ok = false);
-    if (ok) {
-        ok = firstTouchDevice(slot->d_scratch, scratchBytes, slot->stream);
-    }
-
-    if (ok) {
-        slot->scratchBytes = scratchBytes;
+    if (resourceId == context->taskResources.size()) {
+        context->taskResources.push_back(&resources);
     }
     else {
-        destroyThreadScratch(slot);
+        context->taskResources[resourceId] = &resources;
     }
 
-    const bool popped = popContext();
-    if (!ok || !popped) {
-        return false;
-    }
-
-    std::fprintf(stderr, "[GPUInfra] prepared scratch gpu=%d slot=%d bytes=%zu\n", slot->gpuId, slot->threadId, scratchBytes);
+    resources.resourceId = static_cast<int>(resourceId);
+    resources.gpuId = gpuId;
+    resources.numaNode = numaNode;
+    resources.ctx = context;
+    std::fprintf(stderr, "[GPUInfra] registered task gpu=%d numa=%d resource=%d\n", gpuId, numaNode, resources.resourceId);
     return true;
 }
 
-void GpuContextManager::unregisterThread(ThreadSlot* slot) {
-    if (slot == nullptr || slot->ctx == nullptr || slot->ownerTid != std::this_thread::get_id()) {
-        return;
+bool GpuContextManager::makeTaskCurrent(const TaskGpuResources& resources) {
+    if (!initialised.load(std::memory_order_acquire) || resources.ctx == nullptr || resources.gpuId < 0 || resources.ctx->gpuId != resources.gpuId || resources.ctx->numaNode != resources.numaNode) {
+        return false;
+    }
+    CUDA_CHECK(cudaSetDevice(resources.gpuId), return false);
+    return true;
+}
+
+bool GpuContextManager::unregisterTask(TaskGpuResources& resources) {
+    if (resources.ctx == nullptr || resources.resourceId < 0) {
+        return true;
     }
 
     std::lock_guard<std::mutex> guard(lock);
-    GpuContext* context = slot->ctx;
-    if (slot->threadId < 0 || static_cast<std::size_t>(slot->threadId) >= context->threadSlots.size() || context->threadSlots[static_cast<std::size_t>(slot->threadId)] != slot || !activateContext(context, false)) {
-        return;
+    GpuContext* context = resources.ctx;
+    const std::size_t resourceId = static_cast<std::size_t>(resources.resourceId);
+    if (!initialised.load(std::memory_order_acquire) || resourceId >= context->taskResources.size() || context->taskResources[resourceId] != &resources) {
+        return false;
     }
 
-    const int releasedSlot = slot->threadId;
-    context->threadSlots[static_cast<std::size_t>(releasedSlot)] = nullptr;
-    destroySlot(slot);
-    popContext();
-    std::fprintf(stderr, "[GPUInfra] unregistered thread gpu=%d slot=%d\n", context->gpuId, releasedSlot);
+    context->taskResources[resourceId] = nullptr;
+    std::fprintf(stderr, "[GPUInfra] unregistered task gpu=%d resource=%d\n", context->gpuId, resources.resourceId);
+    resources.resourceId = -1;
+    resources.gpuId = -1;
+    resources.numaNode = -1;
+    resources.ctx = nullptr;
+    return true;
 }
 
 void GpuContextManager::shutdown() {
@@ -488,20 +275,26 @@ void GpuContextManager::shutdown() {
     if (!initialised.load(std::memory_order_acquire)) {
         return;
     }
+    for (const GpuContext* context : contexts) {
+        if (context != nullptr && context->activeTaskCount() != 0) {
+            std::fprintf(stderr, "[GPUInfra] shutdown blocked by gpu=%d active_tasks=%zu\n", context->gpuId, context->activeTaskCount());
+            return;
+        }
+    }
 
     releaseContexts(contexts);
-    numaToCtxs.clear();
     initialised.store(false, std::memory_order_release);
     std::fprintf(stderr, "[GPUInfra] shutdown complete\n");
 }
 
-std::size_t GpuContextManager::gpuCount() {
+std::vector<GpuLocation> GpuContextManager::gpuLocations() {
     std::lock_guard<std::mutex> guard(lock);
-    return contexts.size();
-}
-
-int GpuContextManager::numaNodeForGpu(int gpuId) {
-    std::lock_guard<std::mutex> guard(lock);
-    GpuContext* context = findGpu(contexts, gpuId);
-    return context == nullptr ? -1 : context->numaNode;
+    std::vector<GpuLocation> locations;
+    locations.reserve(contexts.size());
+    for (const GpuContext* context : contexts) {
+        if (context != nullptr) {
+            locations.push_back({context->gpuId, context->numaNode});
+        }
+    }
+    return locations;
 }

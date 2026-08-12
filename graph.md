@@ -8,11 +8,18 @@
   process only one frame at a time.
 - A **graph thread** is a worker thread that runs a task instance. A graph
   thread can run only one `execute()` call at a time.
+- A **graph copy** is the graph assigned to one NUMA node. There is one graph
+  copy in each NUMA node.
 
 A frame is not permanently bound to a task instance or graph thread. For each
 `execute()` call, the graph scheduler may select any free instance of the
-required task type and any free graph thread. Both remain busy until that call
-finishes.
+required task type and any eligible free graph thread. Both remain busy until
+that call finishes.
+
+All graph threads eligible to run a given task are guaranteed to come from the
+same NUMA node. Therefore, "any free graph thread" in the scheduling rules
+below means any free thread that is NUMA-local and eligible for that task. The
+examples below describe one graph copy and its NUMA-local graph threads.
 
 ## Task API and lifecycle
 
@@ -45,8 +52,8 @@ Consider this graph:
 start -> TaskA -> end
 ```
 
-Suppose the graph has six graph threads and must process 200 frames. The graph
-creates six instances of `TaskA`.
+Suppose one graph copy has six graph threads and must process 200 frames. That
+graph copy creates six instances of `TaskA`.
 
 ### Cold path (initialization order)
 
@@ -70,7 +77,7 @@ The graph can dispatch a frame to `TaskA` when:
 
 1. The frame is ready.
 2. A `TaskA` instance is free.
-3. A graph thread is free.
+3. An eligible graph thread from the task's NUMA node is free.
 
 The frame is complete when its `TaskA::execute()` call finishes.
 
@@ -105,9 +112,9 @@ Consider this graph:
 start -> TaskA -> TaskB -> TaskC -> end
 ```
 
-Suppose the graph has six graph threads and must process 200 frames. The graph
-creates six instances of each task type: six `TaskA` instances, six `TaskB`
-instances, and six `TaskC` instances.
+Suppose one graph copy has six graph threads and must process 200 frames. That
+graph copy creates six instances of each task type: six `TaskA` instances, six
+`TaskB` instances, and six `TaskC` instances.
 
 ### Cold path (initialization order)
 
@@ -142,7 +149,7 @@ The graph can dispatch a frame to its next task when:
 
 1. The frame has completed its previous task, if any.
 2. An instance of the required task type is free.
-3. A graph thread is free.
+3. An eligible graph thread from the task's NUMA node is free.
 
 Tasks for the same frame always run in graph order. Tasks belonging to
 different frames may be interleaved and executed in parallel.
@@ -183,6 +190,6 @@ The timeline illustrates the following rules:
 - A task instance can process different frames over time. For example,
   `TaskB Instance0` processes `Frame0` and later processes `Frame2`.
 
-Therefore, frames, task instances, and graph threads are scheduled
-independently. They are associated only for the duration of one `execute()`
-call.
+Therefore, within a graph copy, frames, task instances, and NUMA-local graph
+threads are scheduled independently. They are associated only for the duration
+of one `execute()` call.

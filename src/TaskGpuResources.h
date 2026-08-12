@@ -1,15 +1,13 @@
 #pragma once
 
 #include <cstddef>
-#include <thread>
 
 #include <cuda_runtime.h>
 
 class GpuContext;
 
-struct ThreadSlot {
-    int threadId = -1;
-    std::thread::id ownerTid;
+struct TaskGpuResources {
+    int resourceId = -1;
     int gpuId = -1;
     int numaNode = -1;
 

@@ -14,11 +14,11 @@ The primary context is a shared, per-device, per-process resource. Retaining
 its handle gives GPUInfra a reference and an identity to validate; it does not
 give GPUInfra exclusive ownership of the context.
 
-GPU, NUMA node, worker, slot, stream, frame, and algorithm attribution do not
-require a `CUcontext`. GPUInfra should first carry that existing Runtime and
-`ThreadSlot` metadata through one unified diagnostic path. Exact context
-identity is an optional extension to that path, not the reason to create a
-separate logging architecture.
+GPU, NUMA node, task instance, graph worker, task-resource ID, stream, frame,
+and algorithm attribution do not require a `CUcontext`. GPUInfra can carry
+Runtime API and `TaskGpuResources` metadata through one unified diagnostic
+path. Exact context identity is an optional extension to that path, not the
+reason to create a separate logging architecture.
 
 ## CUDA 10 through CUDA 12 compatibility
 
@@ -97,10 +97,10 @@ context lifetime:
 ```text
 manager init
   -> cuDevicePrimaryCtxRetain()
-  -> initialize algorithms and register Graph workers
+  -> register and initialize GPU-bound task resources
   -> process frames
 manager shutdown
-  -> release streams and allocations
+  -> unload every task and release streams and allocations
   -> cuDevicePrimaryCtxRelease()
 ```
 
@@ -113,13 +113,14 @@ The stored handle is not ownership of every CUDA allocation. GPUInfra must
 still release its streams, pinned buffers, device buffers, and algorithm
 resources deterministically.
 
-### 3. Graph-worker binding and validation
+### 3. Per-assignment worker binding and validation
 
 CUDA context state is current per host thread. The stored handle allows a Graph
-worker to establish and verify the selected GPU's primary context.
+worker to establish and verify the selected task's primary context.
 
-For a dedicated Graph worker that does not need to preserve an incoming CUDA
-context, use Runtime binding followed by Driver API identity validation:
+For a graph worker that is assigned a GPU-bound task and does not need to
+preserve an incoming CUDA context, use Runtime binding followed by Driver API
+identity validation:
 
 ```cpp
 CUDA_CHECK(cudaSetDevice(gpuId), return false);
@@ -162,20 +163,18 @@ is not part of its documented contract. A production scoped-context guard
 should remember the expected context, verify the popped handle, and log rather
 than throw if pop fails in its destructor.
 
-The current `activateContext()` implementation calls `cudaSetDevice()`, primes
-the Runtime, and then pushes the same primary context. That extra push is
-redundant for a dedicated worker and does not preserve a context that was
-current before `cudaSetDevice()` replaced it. The implementation should
-eventually choose one of the two policies above rather than combining them.
+The current `makeTaskCurrent()` implementation uses `cudaSetDevice()` for each
+assignment. It retains `primaryCtx` for process lifetime but does not push,
+compare, or log the handle. Exact identity validation would therefore be an
+additional feature rather than a description of current behavior.
 
 Context validation belongs at ownership and assignment boundaries, not before
-every kernel launch. GPUInfra should validate when a worker creates or acquires
-a slot. If the external Graph scheduler permits code on the same worker thread
-to change its context between tasks, validation may also be performed when a
-new task is assigned to that slot. Because per-task assignment is still part
-of the measured frame path, that check should be benchmarked and may instead
-be enabled for diagnostic builds or performed after an error when the worker
-contract guarantees a stable context.
+every kernel launch. GPUInfra already calls `cudaSetDevice()` when a worker
+acquires a task. If same-thread third-party code may install a different
+context, exact identity may also be checked at that boundary. Because task
+assignment is part of the measured frame path, the extra Driver API query
+should be benchmarked and may instead be enabled for diagnostic builds or
+performed after an error.
 
 CUDA current-context state is per host thread. Another worker thread cannot
 directly change it; the relevant risk is other code or a third-party library
@@ -206,8 +205,8 @@ but a non-primary context is current, for example because same-thread
 third-party code created or installed its own context.
 
 NUMA locality is not a CUDA-context property. It must be diagnosed separately
-from the worker CPU affinity, requested NUMA node, selected GPU, and
-`ThreadSlot::numaNode`.
+from graph-worker CPU affinity, the graph copy's NUMA node, the selected task's
+GPU, and `TaskGpuResources::numaNode`.
 
 ### 5. Better attribution in custom logs
 
@@ -218,7 +217,8 @@ record shared by Runtime and Driver API checks:
 struct CudaDiagnosticContext {
     int gpuId = -1;
     int numaNode = -1;
-    int slotId = -1;
+    int taskInstanceId = -1;
+    int resourceId = -1;
     cudaStream_t stream = nullptr;
     std::uint64_t frameId = 0;
     const char* algorithm = nullptr;
@@ -227,20 +227,20 @@ struct CudaDiagnosticContext {
 ```
 
 `CudaCheck.h` should consume this metadata through the same path for all CUDA
-failures. GPU, NUMA, thread, slot, stream, frame, and algorithm fields remain
-useful in a Runtime-only build. When exact context validation is enabled,
+failures. GPU, NUMA, task, worker, resource, stream, frame, and algorithm fields
+remain useful in a Runtime-only build. When exact context validation is enabled,
 `expectedContext` and a best-effort `cuCtxGetCurrent()` result can be appended
 to the same record:
 
 ```text
-frame=42 gpu=0 numa=0 slot=2 algorithm=CEL
+frame=42 gpu=0 numa=0 task=2 resource=2 algorithm=CEL
 expected_context=0x1234 current_context=0x1234 stream=0x5678
 call=cudaStreamSynchronize(stream)
 error=cudaErrorIllegalAddress
 ```
 
 This can make a multi-GPU failure easier to attribute. The improvement comes
-from GPUInfra carrying task and slot metadata into the error path, not from
+from GPUInfra carrying task and resource metadata into the error path, not from
 retaining the context by itself. Context identity is an additional field only
 when the application has a credible non-primary-context risk.
 
@@ -294,26 +294,27 @@ debugging that class of problem:
 Retaining a primary-context handle does not increase SM utilization, PCIe
 bandwidth, kernel concurrency, or copy-engine concurrency.
 
-Performance comes from the stream and pipeline design: multiple Graph-owned
-streams, one shared H2D, a contiguous kernel batch, a contiguous D2H batch,
-preallocated buffers, and one synchronization per frame.
+Performance comes from the stream and pipeline design: multiple task-owned
+streams, one H2D per task execution, a contiguous kernel batch, a contiguous
+D2H batch, preallocated buffers, and one synchronization per frame.
 
 ### 4. It does not replace `cudaSetDevice()`
 
-Each Graph worker still needs to establish the selected Runtime API device.
-Keeping a `CUcontext` member does not automatically make that context current
-on another host thread.
+Each Graph worker still needs to establish the selected task's Runtime API
+device for every assignment. Keeping a `CUcontext` member does not automatically
+make that context current on another host thread.
 
 ### 5. It does not make shared state thread-safe
 
 A context may be used by multiple host threads, but application data still
-needs correct ownership. GPUInfra relies on each thread having a distinct
-slot, stream, scratch buffer, and private algorithm objects with owned output
-buffers.
+needs correct ownership. GPUInfra gives every `DummyTask` a distinct stream,
+input, scratch buffer, and private algorithm objects. The scheduler and the
+task's atomic guard prevent concurrent use while permitting sequential movement
+between host threads.
 
-The context handle does not prevent races in slot registration, future
-per-GPU shared resources, or any mutable state introduced outside the current
-thread-confined algorithm objects.
+The context handle does not prevent races in task registration, future per-GPU
+shared resources, or mutable task state. Those remain application-level
+invariants.
 
 ### 6. It does not replace deterministic resource cleanup
 
@@ -329,27 +330,26 @@ still explicitly release its own resources first:
 
 ### 7. It does not provide fault isolation
 
-All Graph workers on one GPU intentionally share its primary context. A fatal
+All task instances on one GPU intentionally share its primary context. A fatal
 device error or illegal access can therefore affect other work using that
 context. A stored context handle does not provide process isolation or
-per-thread fault containment.
+per-task fault containment.
 
 ## Shutdown requirements
 
 `cuDevicePrimaryCtxRelease()` does not pop the primary context from any host
 thread's context stack. Before GPUInfra releases its reference, it must ensure:
 
-1. all Graph workers have stopped using the context and unregistered;
+1. all Graph workers have stopped using tasks bound to the context;
 2. every GPUInfra push has a matching pop;
 3. all asynchronous work needed for teardown has completed;
 4. streams, events, modules, device buffers, pinned buffers, and algorithm
    resources owned by GPUInfra have been released;
 5. no GPUInfra-scoped context binding remains current on a worker thread.
 
-The demo joins its workers before `GpuContextManager::shutdown()`, which
-satisfies the first requirement for the demonstrated call path. The manager
-should still treat shutdown with active slots as an invalid lifecycle in a
-general external integration.
+The demo joins graph workers and unloads every task before
+`GpuContextManager::shutdown()`, which satisfies the first requirement. The
+manager rejects shutdown while registered task resources remain active.
 
 ## Decision rule
 
@@ -359,16 +359,15 @@ code performs a real function that justifies its maintenance cost.
 
 Use the following order:
 
-1. First connect GPU, NUMA node, worker, slot, stream, frame, and algorithm
-   metadata to the shared CUDA error path. This is valuable in every
+1. First connect GPU, NUMA node, task, worker, resource, stream, frame, and
+   algorithm metadata to the shared CUDA error path. This is valuable in every
    multi-GPU deployment and requires only Runtime API and existing
-   `ThreadSlot` state.
+   `TaskGpuResources` state.
 2. Add `CUcontext` identity to that same diagnostic record only when GPUInfra
    must detect or restore a non-primary context on the same worker thread.
-3. Validate context identity at slot ownership or assignment boundaries, not
-   before every kernel launch. Use diagnostic-build or error-path validation
-   when the stable-worker contract makes an unconditional per-task query
-   unnecessary.
+3. Validate context identity at task registration or assignment boundaries,
+   not before every kernel launch. Use diagnostic-build or error-path
+   validation when an unconditional per-assignment query is too expensive.
 
 Keep `primaryCtx` when at least one concrete requirement exists:
 
@@ -378,17 +377,16 @@ Keep `primaryCtx` when at least one concrete requirement exists:
 - an observed context-mismatch debugging problem justifies exact identity
   checks.
 
-Remove `primaryCtx`, its retain/release pair, and its push/pop layer when the
-implementation is Runtime-API-only, dedicated workers use `cudaSetDevice()`,
-and there is no credible non-primary-context scenario. Wrong-GPU attribution
-and NUMA diagnostics remain available from Runtime API and `ThreadSlot`
-metadata.
+Remove `primaryCtx` and its retain/release pair when the implementation is
+Runtime-API-only, workers use `cudaSetDevice()` per task assignment, and there
+is no credible non-primary-context scenario. Wrong-GPU and NUMA diagnostics
+remain available from Runtime API and `TaskGpuResources` metadata.
 
-The current intermediate state—retaining and pushing `primaryCtx` without
-reading it, comparing it, logging it, or making decisions from it—is
-maintenance debt. It suggests a context invariant that the implementation does
-not actually enforce. GPUInfra should either implement context identity as the
-specific feature described above or remove the unused Driver context layer.
+The current intermediate state—retaining `primaryCtx` without reading it,
+comparing it, logging it, or making decisions from it—is maintenance debt. It
+suggests a context invariant that the implementation does not actually enforce.
+GPUInfra should either implement context identity as the specific feature
+described above or remove the unused Driver context layer.
 
 ## NVIDIA references
 

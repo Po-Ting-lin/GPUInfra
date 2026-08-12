@@ -19,8 +19,12 @@ find_package(CUDAToolkit REQUIRED)
 
 add_library(gpuinfra
     src/Cel.cu
+    src/DummyTask.cpp
+    src/GraphStuff.cpp
+    src/GraphTypes.cpp
     src/GpuContextManager.cpp
     src/Mi.cu
+    src/ParameterRegistry.cpp
     src/Sdd.cu
 )
 
@@ -54,6 +58,10 @@ target_link_libraries(gpuinfra_demo PRIVATE gpuinfra)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(gpuinfra_tests tests/gpuinfra_tests.cpp)
+    target_link_libraries(gpuinfra_tests PRIVATE gpuinfra)
+
+    add_test(NAME gpuinfra_protocol_tests COMMAND gpuinfra_tests)
     add_test(NAME gpuinfra_demo_runs COMMAND gpuinfra_demo)
     add_test(NAME gpuinfra_demo_interleaved_runs COMMAND gpuinfra_demo 2 1 interleaved)
     add_test(NAME gpuinfra_demo_min_factor_runs COMMAND gpuinfra_demo 2 1 batched 16)

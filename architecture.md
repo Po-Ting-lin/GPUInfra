@@ -1,341 +1,279 @@
 # GPUInfra architecture
 
-This document describes the implemented ownership and execution model in the
-current GPUInfra demo. The design relies on Graph framework threads for
-parallelism and does not create an internal queue, dispatcher, or worker pool.
+GPUInfra implements the one-task form of the golden protocol in `graph.md`:
 
-The current demo uses:
+```text
+start -> DummyTask -> end
+```
 
-- one CUDA `GpuContext` per discovered GPU;
-- four Graph threads per GPU;
-- one `DummyGraph` and `ThreadSlot` per Graph thread;
-- three private algorithms per `DummyGraph`: CEL, SDD, and MI;
-- one stream and one input pair per slot;
-- one device and pinned-host output pair per algorithm object.
+CEL, SDD, and MI are private operations inside `DummyTask`. They are not
+independent graph tasks. One `DummyGraph` is created for each NUMA node that has
+at least one discovered CUDA GPU.
 
-The CEL, SDD, and MI set and its execution order are fixed by direct
-construction in `DummyGraph::load()`. The thread count is configurable.
+## 1. Runtime topology
 
-## 1. Design decisions
+```text
+process
+  |
+  +-- GpuContextManager
+  |     +-- GpuContext(gpu=0, numa=0)
+  |     +-- GpuContext(gpu=1, numa=0)
+  |     `-- GpuContext(gpu=2, numa=1)
+  |
+  +-- DummyGraph(numa=0)
+  |     +-- NUMA-local graph-thread pool
+  |     +-- GPU-bound DummyTask pool for GPUs 0 and 1
+  |     `-- warmup/timed FrameSlot collections
+  |
+  `-- DummyGraph(numa=1)
+        +-- NUMA-local graph-thread pool
+        +-- GPU-bound DummyTask pool for GPU 2
+        `-- warmup/timed FrameSlot collections
+```
 
-| Topic | Decision |
+The scheduler has three independent resources:
+
+1. a ready frame slot;
+2. a free task instance;
+3. a free graph thread.
+
+The selected objects are associated only while one `DummyTask::execute()` call
+runs. A task instance can process many frames and can move between all graph
+threads in its NUMA copy.
+
+## 2. Ownership
+
+| Component | Ownership and lifetime |
 | --- | --- |
-| Parallelism owner | External Graph framework |
-| GPU binding | Fixed for the lifetime of a registered Graph worker |
-| Algorithm ownership | One private algorithm object set per `DummyGraph` |
-| Input and shared scratch ownership | `ThreadSlot` |
-| Output buffer ownership | Each private algorithm object |
-| Primary context and per-GPU shared data | `GpuContext` |
-| Streams | One nonblocking stream per slot |
-| Input transfer | One H2D per frame, shared by all algorithms |
-| Default ordering | Kernel batch followed by D2H batch |
-| Host wait | One `cudaStreamSynchronize()` per frame |
-| Hot-path allocation | Forbidden |
-| NUMA policy | Pin before pinned-host allocation and first touch |
+| `GpuContextManager` | Process-wide GPU discovery, NUMA mapping, task registration, and primary-context lifetime |
+| `GpuContext` | One GPU's identity, NUMA node, retained `CUcontext`, and active task-resource table |
+| `DummyGraph` | One NUMA graph copy, workers, task pool, frame collections, queues, lifecycle barriers, and parameters |
+| `FrameSlot` | One logical frame's identity, phase/state, input vector, and preallocated results |
+| `DummyTask` | One GPU-bound reusable CUDA lane and the internal algorithm objects |
+| `TaskGpuResources` | Task stream, pinned/device input, optional scratch, and GPU/NUMA identity |
+| CEL/SDD/MI | Algorithm parameters, geometry, device output, and pinned D2H staging output |
+| Graph thread | NUMA affinity and a temporary execution call; no persistent CUDA lane |
 
-The ownership boundary follows lifetime and mutation:
-
-- per-thread mutable execution state belongs to `DummyGraph` or `ThreadSlot`;
-- output resources used by one algorithm belong to that algorithm;
-- GPU resources shared by every algorithm in one worker belong to `ThreadSlot`;
-- large immutable resources shared by every worker on one GPU belong to
-  `GpuContext`.
-
-## 2. Ownership model
-
-### `GpuContextManager`
-
-`GpuContextManager` is the process-wide discovery and registration service. It:
-
-- discovers CUDA devices and PCI NUMA nodes;
-- creates one `GpuContext` per GPU;
-- retains each device primary context;
-- validates the common runtime frame geometry;
-- registers and unregisters thread slots;
-- allocates and frees optional shared slot scratch;
-- releases primary-context references after every worker has stopped.
-
-It does not own algorithm objects.
-
-### `GpuContext`
-
-`GpuContext` owns per-GPU infrastructure:
-
-- CUDA device and NUMA identity;
-- retained `CUcontext primaryCtx`;
-- the fixed `ThreadSlot*` table;
-- input-size and registration limits;
-- future large immutable per-GPU resources.
-
-The current CEL, SDD, and MI implementations do not have large immutable model
-data. If a future algorithm adds weights, lookup tables, or modules that should
-not be duplicated per thread, those resources should be represented by a
-separate immutable object owned by `GpuContext`. Per-Graph algorithm instances
-may hold non-owning or shared-const references to it.
-
-### `ThreadSlot`
-
-One registered Graph worker owns one slot for its lifetime. The slot contains:
-
-- `cudaStream_t stream`;
-- NUMA-local pinned input `h_in`;
-- device input `d_in`;
-- optional shared device scratch `d_scratch`.
-
-`GpuContext` owns the slot allocation. The Graph worker holds a non-owning
-pointer and must unregister it from the same host thread.
-
-### `DummyGraph`
-
-One `DummyGraph` runs on one Graph worker thread. It owns:
-
-- `vector<unique_ptr<IAlgo>> algos`;
-- algorithm execution order;
-- one reusable `JobResult`;
-- the pageable `AlgoOutput` matrices prepared during `load()`.
-
-Every algorithm object is thread-confined. No algorithm instance is shared
-between Graph workers.
-
-### `IAlgo`
-
-An `IAlgo` implementation owns its frame geometry, parameters, device output
-buffer, and pinned-host D2H buffer. It uses the slot stream, input, and optional
-scratch without owning them.
-
-The lifecycle is:
+The essential separation is:
 
 ```text
-make_unique<Cel>(), make_unique<Sdd>(), make_unique<Mi>()
-  -> init(runtime, slot, output, scratchBytes)
-  -> notifyParameter(params)
-  -> launchKernels / launchD2H / collectResult
-  -> close()
+frame data belongs to FrameSlot
+CUDA execution resources belong to DummyTask
+host execution belongs temporarily to a graph thread
 ```
 
-`init()` reads GPU, NUMA, and thread identity from the slot, validates and stores
-frame geometry, allocates and first-touches output buffers, prepares the reusable
-pageable output, and reports scratch demand through its output parameter.
-`notifyParameter()` only validates and updates algorithm parameters. Calls using
-a different slot are rejected.
+## 3. GPU and NUMA rules
 
-## 3. Startup and worker lifecycle
+`GpuContextManager::init()` discovers all GPUs and records their PCI NUMA node.
+It does not pin the startup thread. `main.cpp` groups the returned
+`GpuLocation` records and creates one graph per distinct GPU-bearing node.
 
-### Manager startup
+Setup, teardown, and graph workers run on threads pinned to their graph's NUMA
+node. This ensures that frame first touch, pinned-host allocation, and task
+execution use CPUs from the correct node.
 
-The main thread calls:
+Each `DummyTask` is permanently bound to one GPU so its CUDA allocations remain
+stable. It has no permanent host-thread owner. On every assignment, the worker
+calls `GpuContextManager::makeTaskCurrent()`, which selects the task's GPU with
+`cudaSetDevice()`. CUDA streams and allocations can then be used by that worker
+because concurrent calls on the same task are prohibited.
 
-```cpp
-GpuContextManager::init(config);
-```
+All workers in one graph copy are eligible for all tasks whose GPUs belong to
+that graph's NUMA node. GPUs on another node are never eligible.
 
-`init()` discovers devices, establishes NUMA placement, primes the Runtime API,
-retains primary contexts, records the input byte count, and makes the contexts
-available for worker registration. It creates no algorithm objects or output
-buffers. `DummyGraph::load()` validates the input envelope against the size
-factor and slot capacity; each algorithm's `init()` validates its output
-geometry.
+## 4. Task lifecycle
 
-### Graph worker setup
-
-Each external worker constructs one `DummyGraph`, calls `load()`, and then
-calls `notifyParameters()`:
+`DummyTask` exposes the exact golden API:
 
 ```text
-validate runtime input geometry
-  -> register ThreadSlot
-  -> create private algorithm objects
-  -> create reusable pageable outputs
-  -> init each algorithm, prepare its output, and collect scratch requirements
-  -> allocate optional slot scratch
-  -> complete device first-touch operations
-  -> notify each algorithm of its parameters
+load
+  -> registerParameters
+  -> notifyParameters
+  -> execute for each assigned frame
+  -> unload
 ```
 
-All allocation occurs before warmup and timing.
+Its explicit lifecycle state rejects calls in the wrong order. An atomic
+execution guard additionally rejects two simultaneous `execute()` calls on one
+instance even if a caller bypasses the graph scheduler.
 
-If any step fails, `DummyGraph` destroys the objects it already created and
-unregisters the slot. Each algorithm frees any output buffers it allocated;
-slot teardown frees input and scratch resources. Parameter notification must
-run on the owning worker while frame execution is quiescent.
+### `load()`
 
-### Graph worker unload
+`load()` registers task resources with the selected `GpuContext`, then creates:
 
-Teardown order is:
+- one nonblocking stream;
+- one pinned input buffer;
+- one device input buffer;
+- private CEL, SDD, and MI objects;
+- one device and pinned-host output pair per algorithm;
+- optional device scratch sized to the largest internal requirement.
+
+The task synchronizes initialization work before becoming `Loaded`.
+
+### Parameter registration and notification
+
+Every task registers the same schema in one graph-owned `ParameterRegistry`:
+
+| Name | Type |
+| --- | --- |
+| `dummy.name` | string |
+| `dummy.blob` | byte vector |
+
+Repeated registration succeeds only when the type agrees. The graph writes one
+run value set, seals it, creates an immutable snapshot, and notifies every task
+instance with that snapshot.
+
+### `unload()`
+
+After workers stop, every task synchronizes its stream, closes the algorithms,
+frees scratch/input/stream resources, and unregisters from its `GpuContext`.
+Repeated unload is harmless; unload during execution is rejected.
+
+## 5. Graph-copy cold path
+
+`DummyGraph::initialize()` starts a temporary NUMA-pinned setup thread and
+performs copy-wide phases rather than complete setup per worker:
 
 ```text
-synchronize slot stream
-  -> close private algorithms and free their output buffers
-  -> destroy private algorithms
-  -> release pageable JobResult storage
-  -> unregister ThreadSlot
-  -> free slot input, scratch, and stream
+create all DummyTask objects
+  -> load all task instances
+  -> register all task instances
+  -> seal shared parameter values
+  -> notify all task instances
+  -> allocate and first-touch all FrameSlots
+  -> start all NUMA-local graph workers
+  -> wait until every worker reports successful affinity
 ```
 
-After every worker has joined, manager shutdown releases the primary-context
-references.
+Any failure sets the shared process cancellation flag and unloads all task
+instances that reached any partial lifecycle state.
 
-## 4. Algorithm-owned output buffers
+Task count and graph-thread count are independent configuration values. The
+demo defaults to four tasks per GPU and the same aggregate number of workers in
+each graph copy, but the scheduler supports unequal pools.
 
-Every private algorithm allocates two persistent buffers during
-`DummyGraph::load()`:
+## 6. Frame-slot lifetime
+
+Every warmup and timed `FrameSlot` is allocated before workers start. A slot
+contains:
+
+- an owning input byte vector;
+- its NUMA node and warmup/timed phase;
+- a state: `Prepared`, `Ready`, `Executing`, `Completed`, `Failed`, or
+  `Cancelled`;
+- a `JobResult` with pre-sized CEL, SDD, and MI output vectors.
+
+Slots have no GPU affinity. Whichever local-GPU task becomes free first may
+process the first ready slot. This permits dynamic balancing among GPUs on one
+NUMA node.
+
+Preallocating every slot keeps `execute()` allocation-free. It also makes host
+memory proportional to total configured frames, which is an intentional demo
+tradeoff.
+
+## 7. Scheduler
+
+Graph workers self-dispatch; there is no dedicated dispatcher thread.
 
 ```text
-CEL -> d_outputMatrix + h_outputMatrix
-SDD -> d_outputMatrix + h_outputMatrix
-MI  -> d_outputMatrix + h_outputMatrix
+worker waits
+  -> lock scheduler
+  -> claim FIFO FrameSlot and one free DummyTask atomically
+  -> mark frame Executing and task unavailable
+  -> unlock scheduler
+  -> wait for the phase gate
+  -> task.execute(frame)
+  -> graph publishes frame.result
+  -> lock scheduler
+  -> return task to free pool
+  -> complete phase when every slot is terminal
 ```
 
-The device buffer holds the kernel result. The pinned-host buffer is the target
-of the algorithm's asynchronous D2H copy. The buffers remain allocated and are
-reused for every frame until `close()`.
+The scheduler lock is never held during CUDA work. A free task and ready frame
+without a free worker cannot run; a free worker and ready frame without a free
+task also cannot run.
 
-Separate buffers are required in Batched mode:
+Warmup and timed slots use separate collections. Main starts every graph copy
+with the same `PhaseGate`; timing begins immediately before the timed gate is
+released and ends after all graph copies report completion.
+
+## 8. CUDA hot path
+
+Each execution performs:
 
 ```text
-kernel(CEL)
-kernel(SDD)
-kernel(MI)
-D2H(CEL)
-D2H(SDD)
-D2H(MI)
+FrameSlot.input
+  -> task h_in
+  -> task d_in
+  -> CEL / SDD / MI submissions on the task stream
+  -> algorithm pinned staging outputs
+  -> one cudaStreamSynchronize
+  -> FrameSlot.result.outputs
 ```
 
-All three device outputs remain live until their D2H copies are enqueued. All
-three pinned-host results remain live until the single stream synchronization
-and result collection complete.
+All algorithms read `d_in`. Their names express required submission order, not
+data chaining.
 
-`d_scratch` is different: it may be sized to the maximum scratch requirement
-and reused by algorithms because all kernels in one slot are ordered on the
-same stream. Scratch contents are undefined when the next algorithm begins.
-
-### Memory scaling
-
-For `K` threads and `M` algorithms on one GPU:
-
-```text
-device input       = K * inputBytes
-pinned input       = K * inputBytes
-device outputs     = K * sum(deviceOutputBytes[i])
-pinned D2H output  = K * sum(hostOutputBytes[i])
-device scratch     = K * max(scratchBytes[i])
-pageable results   = K * sum(hostOutputBytes[i])
-```
-
-Moving algorithm objects from `GpuContext` to `DummyGraph` does not multiply
-the output-buffer count. The old design had one per-GPU object with `K`
-internal states; the current design has `K` private objects that each own one
-buffer pair. Both require `K * M` output-buffer pairs.
-
-Large per-object immutable data would be multiplied by `K`, which is why such
-data belongs in a `GpuContext`-owned shared resource.
-
-## 5. Frame execution
-
-The frame hot path is allocation-free:
-
-```text
-caller frame
-  -> memcpy into slot.h_in
-  -> cudaMemcpyAsync H2D into slot.d_in
-  -> algorithm kernel operations
-  -> algorithm D2H operations into algorithm-owned pinned buffers
-  -> one cudaStreamSynchronize(slot.stream)
-  -> memcpy pinned buffers into prepared AlgoOutput vectors
-  -> GraphSink::deliver(result)
-```
-
-### Batched model
+Batched mode:
 
 ```text
 H2D
-  -> CEL kernel
-  -> SDD kernel
-  -> MI kernel
-  -> CEL D2H
-  -> SDD D2H
-  -> MI D2H
-  -> sync
+  -> CEL kernel -> SDD kernel -> MI kernel
+  -> CEL D2H -> SDD D2H -> MI D2H
+  -> sync and collect
 ```
 
-This groups compute and copy submissions while preserving stream order.
-
-### Interleaved model
+Interleaved mode:
 
 ```text
 H2D
   -> CEL kernel -> CEL D2H
   -> SDD kernel -> SDD D2H
   -> MI kernel  -> MI D2H
-  -> sync
+  -> sync and collect
 ```
 
-Both models use the same algorithm-owned output buffers and exactly one
-host-side CUDA wait per frame.
+Hot-path invariants are:
 
-## 6. NUMA and context discipline
+- no CUDA or host allocation;
+- no vector resize or ownership transfer;
+- no manager mutex;
+- no `cudaDeviceSynchronize()`;
+- exactly one host-side stream synchronization per frame;
+- no concurrent use of a task's mutable resources.
 
-- Explicit `numaHint` pins the Graph worker before slot allocation.
-- Pinned input and algorithm output allocations occur after pinning.
-- `registerThread()` binds the selected CUDA device on the calling thread.
-- Algorithm `init()` calls `cudaSetDevice()` for the slot GPU.
-- Slot registration, scratch preparation, and teardown are cold paths protected
-  by the manager mutex.
-- Kernel launch and transfer operations use no manager mutex.
-- A slot must be used and unregistered by its recorded `ownerTid`.
+## 9. Failure semantics
 
-NUMA node and CUDA context are separate concepts. NUMA placement controls CPU
-affinity and host-memory locality; CUDA context identity controls GPU resource
-visibility.
+The graph uses fail-fast process-wide cancellation. If a task lifecycle or
+execution operation fails:
 
-## 7. Hot-path rules
+1. the shared cancellation flag is set;
+2. queued slots become `Cancelled` with failed results;
+3. in-flight slots finish as `Failed` or `Cancelled`;
+4. each slot is delivered exactly once;
+5. all workers wake and join;
+6. every task unloads;
+7. the executable returns nonzero without performance output.
 
-The following rules are non-negotiable during `DummyGraph::execute()`:
+Graph teardown is valid after success, cancellation, partial initialization,
+or an explicit repeated shutdown.
 
-- no `cudaMalloc`, `cudaFree`, `cudaHostAlloc`, or `cudaFreeHost`;
-- no vector resize, reserve, or result ownership transfer;
-- no `cudaDeviceSynchronize`;
-- no process-wide queue or manager mutex;
-- no synchronous CUDA copies;
-- no algorithm-shared mutable state across Graph threads;
-- exactly one `cudaStreamSynchronize()` per frame.
+## 10. Verification
 
-CUDA allocations, vector growth, and output preparation are allowed only
-during `load()` or teardown. Parameter notification runs after `load()` and
-before warmup while the worker is quiescent.
+`gpuinfra_protocol_tests` verifies on a real GPU:
 
-## 8. Adding an algorithm
+- typed parameter schemas, values, sealing, and snapshots;
+- lifecycle rejection and idempotent cleanup;
+- one task moving sequentially across two live NUMA-local threads;
+- rejection of simultaneous calls on one task;
+- full CPU-reference matrices in Batched and Interleaved modes;
+- malformed-frame rejection;
+- one-task/two-worker and two-task/one-worker bottlenecks;
+- fail-fast execution cancellation and terminal delivery;
+- multi-NUMA graph creation when suitable hardware is present.
 
-To add algorithm D:
-
-1. implement `IAlgo`;
-2. validate geometry, allocate and first-touch owned outputs, prepare the
-   pageable destination, and write scratch demand from `init()`;
-3. validate and store parameters in `notifyParameter()`;
-4. enqueue compute in `launchKernels()`;
-5. enqueue D2H in `launchD2H()`;
-6. copy into the prepared pageable destination in `collectResult()`;
-7. include the implementation and add `make_unique<AlgorithmD>()` to
-   `DummyGraph::load()` at the required execution position.
-
-No change to `ThreadSlot` or the execution loops is required.
-
-If the algorithm needs temporary storage, write its size through
-`scratchBytes` in `init()` and use `slot.d_scratch` during execution. `init()`
-may report scratch demand but must not use the scratch pointer because
-allocation happens after all algorithms return. If it needs immutable per-GPU
-model data, add an explicit
-shared-resource type owned by `GpuContext`; do not place a separate copy in
-every `DummyGraph`.
-
-## 9. Verification
-
-The repository verifies:
-
-- the default Batched run;
-- Interleaved execution;
-- minimum and maximum valid size factors;
-- rejection of unaligned and oversized factors.
+The existing executable tests also cover default execution, both models,
+factor boundaries, and invalid factors.
 
 Use:
 
@@ -343,23 +281,3 @@ Use:
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
-
-For performance validation:
-
-1. inspect the `nsys` timeline for one row per slot;
-2. confirm one H2D, three kernels, three D2H operations, and one synchronization
-   per frame;
-3. use `numastat -p <pid>` to check pinned-host locality;
-4. use `nvidia-smi dmon` to compare SM utilization and PCIe traffic;
-5. sweep thread count and size factor rather than assuming more streams improve
-   throughput.
-
-## 10. Mental model
-
-`GpuContext` represents one GPU and its process-wide context identity.
-`ThreadSlot` represents one Graph worker's CUDA lane and owns every mutable CUDA
-buffer shared by that worker's algorithms. `DummyGraph` owns private algorithm
-objects and drives them in order. Each algorithm owns its output buffers and
-frees them during `close()`. This keeps state and teardown local while leaving
-a clear place in `GpuContext` for future immutable resources that should be
-shared across workers.

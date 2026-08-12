@@ -7,11 +7,11 @@ public:
     Sdd() = default;
     ~Sdd() override;
 
-    bool init(const AlgoRuntimeInfo& info, const ThreadSlot& slot, AlgoOutput& output, std::size_t& scratchBytes) override;
+    bool init(const AlgoRuntimeInfo& info, const TaskGpuResources& resources, std::size_t& scratchBytes) override;
     bool notifyParameter(const AlgoParams& params) override;
-    bool launchKernels(const ThreadSlot& slot, cudaStream_t stream) override;
-    bool launchD2H(const ThreadSlot& slot, cudaStream_t stream) override;
-    bool collectResult(const ThreadSlot& slot, AlgoOutput& output) const override;
+    bool launchKernels(const TaskGpuResources& resources, cudaStream_t stream) override;
+    bool launchD2H(const TaskGpuResources& resources, cudaStream_t stream) override;
+    bool collectResult(const TaskGpuResources& resources, AlgoOutput& output) const override;
     bool close() override;
 
     Sdd(const Sdd&) = delete;
@@ -20,7 +20,7 @@ public:
 private:
     int gpuId = -1;
     int numaNode = -1;
-    int threadId = -1;
+    int resourceId = -1;
     int frameW = 0;
     int frameH = 0;
     int matrixSize = 0;

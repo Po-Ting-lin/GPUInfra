@@ -7,7 +7,7 @@
 
 #include <cuda_runtime.h>
 
-struct ThreadSlot;
+struct TaskGpuResources;
 
 struct AlgoParams {
     std::string name;
@@ -39,17 +39,17 @@ class IAlgo {
 public:
     virtual ~IAlgo() = default;
 
-    virtual bool init(const AlgoRuntimeInfo& info, const ThreadSlot& slot, AlgoOutput& output, std::size_t& scratchBytes) = 0;
+    virtual bool init(const AlgoRuntimeInfo& info, const TaskGpuResources& resources, std::size_t& scratchBytes) = 0;
     virtual bool notifyParameter(const AlgoParams& params) = 0;
 
     // Enqueue compute only. D2H is deliberately kept out of this method so
     // the infrastructure can enqueue every algorithm's compute first.
-    virtual bool launchKernels(const ThreadSlot& slot, cudaStream_t stream) = 0;
+    virtual bool launchKernels(const TaskGpuResources& resources, cudaStream_t stream) = 0;
 
     // Enqueue this algorithm's output transfer after the whole kernel batch.
-    virtual bool launchD2H(const ThreadSlot& slot, cudaStream_t stream) = 0;
+    virtual bool launchD2H(const TaskGpuResources& resources, cudaStream_t stream) = 0;
 
     // Copy into the prepared output without resizing or allocating.
-    virtual bool collectResult(const ThreadSlot& slot, AlgoOutput& output) const = 0;
+    virtual bool collectResult(const TaskGpuResources& resources, AlgoOutput& output) const = 0;
     virtual bool close() = 0;
 };

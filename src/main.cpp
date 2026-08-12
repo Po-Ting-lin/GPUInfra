@@ -2,14 +2,13 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <condition_variable>
-#include <functional>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <map>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <thread>
+#include <utility>
 #include <vector>
 
 #include "GpuContextManager.h"
@@ -18,39 +17,9 @@
 
 namespace {
 
-constexpr int THREADS_PER_GPU = 4;
+constexpr std::size_t TASKS_PER_GPU = 4;
 constexpr std::uint64_t DEFAULT_TIMED_FRAMES_PER_GPU = 200;
 constexpr std::uint64_t DEFAULT_WARMUP_FRAMES_PER_GPU = 20;
-
-class WorkerGate {
-public:
-    void arriveAndWait() {
-        std::unique_lock<std::mutex> guard(lock);
-        ++arrivedWorkers;
-        arrivalCondition.notify_one();
-        releaseCondition.wait(guard, [this] { return released; });
-    }
-
-    void waitForWorkers(std::size_t expectedWorkers) {
-        std::unique_lock<std::mutex> guard(lock);
-        arrivalCondition.wait(guard, [this, expectedWorkers] { return arrivedWorkers >= expectedWorkers; });
-    }
-
-    void releaseAll() {
-        {
-            std::lock_guard<std::mutex> guard(lock);
-            released = true;
-        }
-        releaseCondition.notify_all();
-    }
-
-private:
-    std::mutex lock;
-    std::condition_variable arrivalCondition;
-    std::condition_variable releaseCondition;
-    std::size_t arrivedWorkers = 0;
-    bool released = false;
-};
 
 bool parseFrameCount(const char* text, bool allowZero, std::uint64_t& output) {
     try {
@@ -100,53 +69,50 @@ bool parseSizeFactor(const char* text, int& output) {
 }
 
 const char* executionModelName(ExecutionModel model) {
-    if (model == ExecutionModel::Batched) {
-        return "batched";
-    }
-    return "interleaved";
+    return model == ExecutionModel::Batched ? "batched" : "interleaved";
 }
 
-bool executeFrames(DummyGraph& graph, GraphFrameSource& source, const char* phase, int gpuId, std::atomic<int>& workerFailures) {
-    Frame frame;
-    while (source.nextFrame(frame)) {
-        if (!graph.execute(frame)) {
-            std::cerr << phase << " frame execution failed: gpu=" << gpuId << " frame=" << frame.id << '\n';
-            ++workerFailures;
-            return false;
+bool runPhase(std::vector<std::unique_ptr<DummyGraph>>& graphs, FramePhase phase, std::atomic<bool>& cancellation) {
+    PhaseGate gate;
+    std::vector<bool> started(graphs.size(), false);
+    bool ok = true;
+    for (std::size_t index = 0; index < graphs.size(); ++index) {
+        started[index] = graphs[index]->startPhase(phase, gate);
+        if (!started[index]) {
+            ok = false;
+            cancellation.store(true, std::memory_order_release);
         }
     }
-    return true;
+    gate.release();
+    for (std::size_t index = 0; index < graphs.size(); ++index) {
+        if (started[index] && !graphs[index]->waitForPhase()) {
+            ok = false;
+        }
+    }
+    return ok && !cancellation.load(std::memory_order_acquire);
 }
 
-void runGraphWorker(
-    int numaNode,
-    int gpuId,
-    ExecutionModel executionModel,
-    const AlgoRuntimeInfo& runtime,
-    const AlgoParams& params,
-    GraphFrameSource& warmupSource,
-    GraphFrameSource& timedSource,
-    GraphSink& sink,
-    WorkerGate& startGate,
-    WorkerGate& finishGate,
-    std::atomic<int>& workerFailures
-) {
-    DummyGraph graph(numaNode, gpuId, executionModel, runtime, params, sink);
-    bool canRun = graph.registerParameters() && graph.load() && graph.notifyParameters();
-    if (!canRun) {
-        std::cerr << "worker setup failed: gpu=" << gpuId << " numa=" << numaNode << '\n';
-        ++workerFailures;
+bool startPhase(std::vector<std::unique_ptr<DummyGraph>>& graphs, FramePhase phase, PhaseGate& gate, std::vector<bool>& started, std::atomic<bool>& cancellation) {
+    bool ok = true;
+    started.assign(graphs.size(), false);
+    for (std::size_t index = 0; index < graphs.size(); ++index) {
+        started[index] = graphs[index]->startPhase(phase, gate);
+        if (!started[index]) {
+            ok = false;
+            cancellation.store(true, std::memory_order_release);
+        }
     }
-    if (canRun) {
-        canRun = executeFrames(graph, warmupSource, "warmup", gpuId, workerFailures);
-    }
+    return ok;
+}
 
-    startGate.arriveAndWait();
-    if (canRun) {
-        executeFrames(graph, timedSource, "timed", gpuId, workerFailures);
+bool waitForPhase(std::vector<std::unique_ptr<DummyGraph>>& graphs, const std::vector<bool>& started) {
+    bool ok = true;
+    for (std::size_t index = 0; index < graphs.size(); ++index) {
+        if (started[index] && !graphs[index]->waitForPhase()) {
+            ok = false;
+        }
     }
-    finishGate.arriveAndWait();
-    graph.unload();
+    return ok;
 }
 
 }  // namespace
@@ -160,6 +126,12 @@ int main(int argc, char* argv[]) {
         std::cerr << "Usage: " << argv[0] << " [timed_frames_per_gpu] [warmup_frames_per_gpu] [batched|interleaved] [size_factor:16-256,multiple-of-16]\n";
         return 2;
     }
+    if (warmupFramesPerGpu > std::numeric_limits<std::uint64_t>::max() - timedFramesPerGpu) {
+        std::cerr << "combined frame count is too large\n";
+        return 2;
+    }
+    const std::uint64_t totalFramesPerGpu = warmupFramesPerGpu + timedFramesPerGpu;
+
     const int frameWidth = ImageSizing::scaledDimension(sizeFactor, ImageSizing::INPUT_MULTIPLIER);
     const int frameHeight = frameWidth;
     const int celSize = ImageSizing::scaledDimension(sizeFactor, ImageSizing::CEL_MULTIPLIER);
@@ -167,12 +139,9 @@ int main(int argc, char* argv[]) {
     const int miSize = ImageSizing::scaledDimension(sizeFactor, ImageSizing::MI_MULTIPLIER);
     const std::size_t frameBytes = ImageSizing::squareBytes(frameWidth, sizeof(std::uint8_t));
 
-    GpuInfraConfig config;
-    config.threadsPerGpu = THREADS_PER_GPU;
-    config.requireNuma = true;
-    config.inputBytes = frameBytes;
-
-    if (!GpuContextManager::init(config)) {
+    GpuInfraConfig infrastructureConfig;
+    infrastructureConfig.requireNuma = true;
+    if (!GpuContextManager::init(infrastructureConfig)) {
         std::cerr << "GpuContextManager::init failed\n";
         return 1;
     }
@@ -184,64 +153,102 @@ int main(int argc, char* argv[]) {
     runtime.frameH = frameHeight;
     runtime.frameDtype = 1;
 
-    AlgoParams params;
-    params.name = "demo";
+    AlgoParams parameters;
+    parameters.name = "demo";
 
-    const std::size_t gpuCount = GpuContextManager::gpuCount();
+    const std::vector<GpuLocation> locations = GpuContextManager::gpuLocations();
+    std::map<int, std::vector<int>> gpusByNumaNode;
+    for (const GpuLocation& location : locations) {
+        gpusByNumaNode[location.numaNode].push_back(location.gpuId);
+    }
+
     GraphSink sink;
-    std::atomic<int> workerFailures{0};
-    WorkerGate startGate;
-    WorkerGate finishGate;
-
-    std::vector<std::unique_ptr<GraphFrameSource>> warmupSources;
-    std::vector<std::unique_ptr<GraphFrameSource>> timedSources;
-    warmupSources.reserve(gpuCount);
-    timedSources.reserve(gpuCount);
-    for (std::size_t gpu = 0; gpu < gpuCount; ++gpu) {
-        const int node = GpuContextManager::numaNodeForGpu(static_cast<int>(gpu));
-        if (node < 0) {
-            std::cerr << "No NUMA mapping for GPU " << gpu << '\n';
-            GpuContextManager::shutdown();
-            return 1;
+    std::atomic<bool> cancellation{false};
+    std::vector<std::unique_ptr<DummyGraph>> graphs;
+    graphs.reserve(gpusByNumaNode.size());
+    std::uint64_t firstFrameId = 0;
+    bool graphConfigsValid = true;
+    for (const auto& entry : gpusByNumaNode) {
+        if (totalFramesPerGpu > std::numeric_limits<std::uint64_t>::max() / static_cast<std::uint64_t>(entry.second.size())) {
+            graphConfigsValid = false;
+            break;
         }
-        const std::uint64_t idBase = static_cast<std::uint64_t>(gpu) * (warmupFramesPerGpu + timedFramesPerGpu);
-        warmupSources.push_back(std::make_unique<GraphFrameSource>(warmupFramesPerGpu, frameBytes, node, idBase));
-        timedSources.push_back(std::make_unique<GraphFrameSource>(timedFramesPerGpu, frameBytes, node, idBase + warmupFramesPerGpu));
+        const std::uint64_t graphFrameCount = totalFramesPerGpu * static_cast<std::uint64_t>(entry.second.size());
+        if (firstFrameId > std::numeric_limits<std::uint64_t>::max() - graphFrameCount) {
+            graphConfigsValid = false;
+            break;
+        }
+        GraphConfig graphConfig;
+        graphConfig.numaNode = entry.first;
+        graphConfig.gpuIds = entry.second;
+        graphConfig.taskInstancesPerGpu = TASKS_PER_GPU;
+        graphConfig.graphThreads = TASKS_PER_GPU * entry.second.size();
+        graphConfig.warmupFramesPerGpu = warmupFramesPerGpu;
+        graphConfig.timedFramesPerGpu = timedFramesPerGpu;
+        graphConfig.firstFrameId = firstFrameId;
+        graphConfig.executionModel = executionModel;
+        graphConfig.runtime = runtime;
+        graphConfig.parameters = parameters;
+        graphs.push_back(std::make_unique<DummyGraph>(graphConfig, sink, cancellation));
+        firstFrameId += graphFrameCount;
     }
 
-    const std::size_t workerCount = gpuCount * static_cast<std::size_t>(THREADS_PER_GPU);
-    std::vector<std::thread> workers;
-    workers.reserve(workerCount);
-    for (std::size_t gpu = 0; gpu < gpuCount; ++gpu) {
-        const int gpuId = static_cast<int>(gpu);
-        const int node = GpuContextManager::numaNodeForGpu(gpuId);
-        for (int worker = 0; worker < THREADS_PER_GPU; ++worker) {
-            // std::cref(x) share x as a const reference
-            // std::ref(x): share x as a mutable reference.
-            workers.emplace_back(runGraphWorker, node, gpuId, executionModel, std::cref(runtime), std::cref(params), std::ref(*warmupSources[gpu]), std::ref(*timedSources[gpu]), std::ref(sink), std::ref(startGate), std::ref(finishGate), std::ref(workerFailures));
+    bool runSucceeded = graphConfigsValid && !graphs.empty() && graphs.size() == gpusByNumaNode.size();
+    if (runSucceeded) {
+        for (const std::unique_ptr<DummyGraph>& graph : graphs) {
+            if (!graph->initialize()) {
+                runSucceeded = false;
+                cancellation.store(true, std::memory_order_release);
+                break;
+            }
         }
     }
 
-    startGate.waitForWorkers(workerCount);
-    const auto timedStart = std::chrono::steady_clock::now();
-    startGate.releaseAll();
-    finishGate.waitForWorkers(workerCount);
-    const auto timedEnd = std::chrono::steady_clock::now();
-    finishGate.releaseAll();
-
-    for (std::thread& worker : workers) {
-        worker.join();
+    if (runSucceeded) {
+        runSucceeded = runPhase(graphs, FramePhase::Warmup, cancellation);
     }
 
+    std::chrono::steady_clock::time_point timedStart;
+    std::chrono::steady_clock::time_point timedEnd;
+    if (runSucceeded) {
+        PhaseGate timedGate;
+        std::vector<bool> started;
+        runSucceeded = startPhase(graphs, FramePhase::Timed, timedGate, started, cancellation);
+        timedStart = std::chrono::steady_clock::now();
+        timedGate.release();
+        if (!waitForPhase(graphs, started)) {
+            runSucceeded = false;
+        }
+        timedEnd = std::chrono::steady_clock::now();
+        if (cancellation.load(std::memory_order_acquire)) {
+            runSucceeded = false;
+        }
+    }
+
+    bool shutdownSucceeded = true;
+    for (const std::unique_ptr<DummyGraph>& graph : graphs) {
+        if (!graph->shutdown()) {
+            shutdownSucceeded = false;
+        }
+    }
+    GpuContextManager::shutdown();
+
+    const std::size_t gpuCount = locations.size();
     const std::size_t delivered = sink.count();
     const std::size_t failedResults = sink.failureCount();
-    const std::size_t expected = gpuCount * static_cast<std::size_t>(warmupFramesPerGpu + timedFramesPerGpu);
+    const bool expectedFits = totalFramesPerGpu <= std::numeric_limits<std::size_t>::max() / gpuCount;
+    const std::size_t expected = expectedFits ? gpuCount * static_cast<std::size_t>(totalFramesPerGpu) : 0;
+    runSucceeded = runSucceeded && shutdownSucceeded && expectedFits && delivered == expected && failedResults == 0;
+    if (!runSucceeded) {
+        std::cerr << "graph run failed: expected=" << expected << " delivered=" << delivered << " failures=" << failedResults << '\n';
+        return 1;
+    }
+
     const std::uint64_t measuredFrames = static_cast<std::uint64_t>(gpuCount) * timedFramesPerGpu;
     const double elapsedSeconds = std::chrono::duration<double>(timedEnd - timedStart).count();
     const double elapsedMilliseconds = elapsedSeconds * 1000.0;
     const double throughput = static_cast<double>(measuredFrames) / elapsedSeconds;
     const double millisecondsPerFrame = elapsedMilliseconds / static_cast<double>(measuredFrames);
-    GpuContextManager::shutdown();
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "execution_model=" << executionModelName(executionModel) << '\n';
@@ -249,10 +256,5 @@ int main(int argc, char* argv[]) {
     std::cout << "warmup " << warmupFramesPerGpu << " frames/GPU, timed " << timedFramesPerGpu << " frames/GPU (" << measuredFrames << " total) in " << elapsedMilliseconds << " ms\n";
     std::cout << "throughput=" << throughput << " frames/s, average=" << millisecondsPerFrame << " ms/frame\n";
     std::cout << "delivered " << delivered << " frames across " << gpuCount << " CUDA GPU(s), failures=" << failedResults << '\n';
-
-    if (delivered != expected || failedResults != 0 || workerFailures.load() != 0) {
-        std::cerr << "expected=" << expected << " worker_failures=" << workerFailures.load() << '\n';
-        return 1;
-    }
     return 0;
 }

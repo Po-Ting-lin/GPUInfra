@@ -8,7 +8,7 @@
 
 #include "CudaCheck.h"
 #include "ImageSizing.h"
-#include "ThreadSlot.h"
+#include "TaskGpuResources.h"
 
 namespace {
 
@@ -41,9 +41,9 @@ Mi::~Mi() {
     close();
 }
 
-bool Mi::init(const AlgoRuntimeInfo& info, const ThreadSlot& slot, AlgoOutput& output, std::size_t& scratchBytes) {
+bool Mi::init(const AlgoRuntimeInfo& info, const TaskGpuResources& resources, std::size_t& scratchBytes) {
     scratchBytes = 0;
-    if (slot.threadId < 0 || slot.gpuId < 0 || slot.numaNode < 0 || slot.stream == nullptr || !ImageSizing::isValidFactor(info.sizeFactor)) {
+    if (resources.resourceId < 0 || resources.gpuId < 0 || resources.numaNode < 0 || resources.stream == nullptr || !ImageSizing::isValidFactor(info.sizeFactor)) {
         return false;
     }
     const int outputSize = ImageSizing::scaledDimension(info.sizeFactor, ImageSizing::MI_MULTIPLIER);
@@ -58,19 +58,14 @@ bool Mi::init(const AlgoRuntimeInfo& info, const ThreadSlot& slot, AlgoOutput& o
     if (!close()) {
         return false;
     }
-    gpuId = slot.gpuId;
-    numaNode = slot.numaNode;
-    threadId = slot.threadId;
+    gpuId = resources.gpuId;
+    numaNode = resources.numaNode;
+    resourceId = resources.resourceId;
     frameW = info.frameW;
     frameH = info.frameH;
     matrixSize = outputSize;
     inBytes = info.inBytes;
     matrixBytes = ImageSizing::squareBytes(matrixSize, sizeof(std::uint32_t));
-
-    output.algoName = "mi";
-    output.width = matrixSize;
-    output.height = matrixSize;
-    output.data.resize(matrixBytes);
 
     CUDA_CHECK(cudaSetDevice(gpuId), return false);
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_outputMatrix), matrixBytes), {
@@ -82,7 +77,7 @@ bool Mi::init(const AlgoRuntimeInfo& info, const ThreadSlot& slot, AlgoOutput& o
         return false;
     });
     std::memset(h_outputMatrix, 0, matrixBytes);
-    CUDA_CHECK(cudaMemsetAsync(d_outputMatrix, 0, matrixBytes, slot.stream), {
+    CUDA_CHECK(cudaMemsetAsync(d_outputMatrix, 0, matrixBytes, resources.stream), {
         close();
         return false;
     });
@@ -100,12 +95,12 @@ bool Mi::notifyParameter(const AlgoParams& params) {
     return true;
 }
 
-bool Mi::launchKernels(const ThreadSlot& slot, cudaStream_t stream) {
-    if (!initialized || slot.threadId != threadId || slot.gpuId != gpuId || slot.d_in == nullptr || stream == nullptr || stream != slot.stream) {
+bool Mi::launchKernels(const TaskGpuResources& resources, cudaStream_t stream) {
+    if (!initialized || resources.resourceId != resourceId || resources.gpuId != gpuId || resources.d_in == nullptr || stream == nullptr || stream != resources.stream) {
         return false;
     }
 
-    const auto* d_input = static_cast<const std::uint8_t*>(slot.d_in);
+    const auto* d_input = static_cast<const std::uint8_t*>(resources.d_in);
     dim3 block(MI_BLOCK_DIM, MI_BLOCK_DIM);
     dim3 grid((matrixSize + block.x - 1U) / block.x, (matrixSize + block.y - 1U) / block.y);
     miMatrixMultiplicationKernel << <grid, block, 0, stream >> > (d_input, d_outputMatrix, matrixSize, frameW);
@@ -113,8 +108,8 @@ bool Mi::launchKernels(const ThreadSlot& slot, cudaStream_t stream) {
     return true;
 }
 
-bool Mi::launchD2H(const ThreadSlot& slot, cudaStream_t stream) {
-    if (!initialized || slot.threadId != threadId || slot.gpuId != gpuId || stream == nullptr || stream != slot.stream) {
+bool Mi::launchD2H(const TaskGpuResources& resources, cudaStream_t stream) {
+    if (!initialized || resources.resourceId != resourceId || resources.gpuId != gpuId || stream == nullptr || stream != resources.stream) {
         return false;
     }
 
@@ -122,12 +117,12 @@ bool Mi::launchD2H(const ThreadSlot& slot, cudaStream_t stream) {
     return true;
 }
 
-bool Mi::collectResult(const ThreadSlot& slot, AlgoOutput& output) const {
-    if (!initialized || slot.threadId != threadId || slot.gpuId != gpuId) {
+bool Mi::collectResult(const TaskGpuResources& resources, AlgoOutput& output) const {
+    if (!initialized || resources.resourceId != resourceId || resources.gpuId != gpuId) {
         return false;
     }
 
-    if (output.data.size() != matrixBytes) {
+    if (output.algoName != "mi" || output.width != matrixSize || output.height != matrixSize || output.data.size() != matrixBytes) {
         return false;
     }
 
@@ -150,7 +145,7 @@ bool Mi::close() {
     }
     gpuId = -1;
     numaNode = -1;
-    threadId = -1;
+    resourceId = -1;
     frameW = 0;
     frameH = 0;
     matrixSize = 0;

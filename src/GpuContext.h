@@ -5,34 +5,25 @@
 
 #include <cuda.h>
 
-#include "ThreadSlot.h"
+#include "TaskGpuResources.h"
 
 class GpuContext {
 public:
     int gpuId = -1;
     int numaNode = -1;
-    int maxThreadsPerGpu = 0;
-    std::size_t inputBytes = 0;
-
     CUdevice device = 0;
     CUcontext primaryCtx = nullptr;
 
-    // Fixed-size slot table. Empty entries are reused without renumbering
-    // surviving workers.
-    std::vector<ThreadSlot*> threadSlots;
+    // Task resource IDs are stable while registered. Empty entries are reused
+    // without renumbering surviving tasks.
+    std::vector<TaskGpuResources*> taskResources;
 
     GpuContext() = default;
 
-    ~GpuContext() {
-        for (ThreadSlot* slot : threadSlots) {
-            delete slot;
-        }
-    }
-
-    std::size_t activeSlotCount() const {
+    std::size_t activeTaskCount() const {
         std::size_t count = 0;
-        for (const ThreadSlot* slot : threadSlots) {
-            if (slot != nullptr) {
+        for (const TaskGpuResources* resources : taskResources) {
+            if (resources != nullptr) {
                 ++count;
             }
         }
