@@ -31,6 +31,10 @@ FrameMetadata makeFrameMetadata(std::uint64_t frameId, const AlgoRuntimeInfo& ru
     return metadata;
 }
 
+bool validFramePhase(FramePhase phase) {
+    return phase == FramePhase::Warmup || phase == FramePhase::Timed;
+}
+
 }  // namespace
 
 void PhaseGate::wait() {
@@ -165,20 +169,21 @@ bool DummyGraph::initialize() {
 
 bool DummyGraph::startPhase(FramePhase phase, PhaseGate& gate) {
     std::lock_guard<std::mutex> guard(schedulerLock);
-    if (!initialized || phaseActive || stopping || cancellation->load(std::memory_order_acquire)) {
+    if (!initialized || !validFramePhase(phase) || phaseActive || stopping || cancellation->load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    bool& phaseSubmitted = phase == FramePhase::Warmup ? warmupSubmitted : timedSubmitted;
+    if (phaseSubmitted) {
         return false;
     }
 
     std::vector<std::unique_ptr<FrameCpuAtom>>& phaseAtoms = atomsForPhase(phase);
-    if (phaseAtoms.size() != staticData.frameCount(phase)) {
-        return false;
-    }
-
     std::deque<ReadyFrame> pendingFrames;
     try {
         for (std::size_t index = 0; index < phaseAtoms.size(); ++index) {
             const std::unique_ptr<FrameCpuAtom>& atom = phaseAtoms[index];
-            if (atom == nullptr || !staticData.matchesFrame(atom->metadata, phase, FrameState::Prepared)) {
+            if (atom == nullptr || !staticData.validateFrame(atom->metadata, config.numaNode)) {
                 return false;
             }
             pendingFrames.push_back({atom.get()});
@@ -187,10 +192,12 @@ bool DummyGraph::startPhase(FramePhase phase, PhaseGate& gate) {
         cancellation->store(true, std::memory_order_release);
         return false;
     }
-    if (!staticData.preparePhase(phase)) {
-        return false;
+    for (const std::unique_ptr<FrameCpuAtom>& atom : phaseAtoms) {
+        atom->result.id = atom->metadata.id;
+        atom->result.ok = true;
     }
     readyFrames = std::move(pendingFrames);
+    phaseSubmitted = true;
 
     phaseGate = &gate;
     phaseTotal = phaseAtoms.size();
@@ -220,7 +227,7 @@ bool DummyGraph::waitForPhase() {
 bool DummyGraph::shutdown() {
     {
         std::lock_guard<std::mutex> guard(schedulerLock);
-        if (!initialized && workers.empty() && tasks.empty() && warmupAtoms.empty() && timedAtoms.empty() && staticData.frameSlotPoolSize() == 0) {
+        if (!initialized && workers.empty() && tasks.empty() && warmupAtoms.empty() && timedAtoms.empty() && staticData.frameCount() == 0 && staticData.frameCacheSlotCount() == 0) {
             return true;
         }
         stopping = true;
@@ -285,10 +292,6 @@ bool DummyGraph::initializeOnNumaNode() {
         return false;
     }
     const std::size_t totalFrameCount = warmupCount + timedCount;
-    if (totalFrameCount > StaticData::FRAME_SLOT_POOL_SIZE) {
-        std::fprintf(stderr, "[GPUInfra] configured frames exceed StaticData capacity numa=%d configured=%zu capacity=%zu\n", config.numaNode, totalFrameCount, StaticData::FRAME_SLOT_POOL_SIZE);
-        return false;
-    }
     if (totalFrameCount > static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max()) || config.firstFrameId > std::numeric_limits<std::uint64_t>::max() - static_cast<std::uint64_t>(totalFrameCount)) {
         return false;
     }
@@ -328,18 +331,19 @@ bool DummyGraph::initializeOnNumaNode() {
         staticDataConfig.numaNode = config.numaNode;
         staticDataConfig.gpuIds = config.gpuIds;
         staticDataConfig.runtime = config.runtime;
+        staticDataConfig.frameCacheSlots = config.frameCacheSlots;
         staticDataConfig.frames.reserve(totalFrameCount);
         std::uint64_t nextId = config.firstFrameId;
         for (std::size_t index = 0; index < warmupCount; ++index) {
             const FrameMetadata metadata = makeFrameMetadata(nextId, config.runtime);
-            warmupAtoms.push_back(std::make_unique<FrameCpuAtom>(metadata));
-            staticDataConfig.frames.push_back({metadata, FramePhase::Warmup});
+            warmupAtoms.push_back(std::make_unique<FrameCpuAtom>(metadata, config.runtime));
+            staticDataConfig.frames.push_back(metadata);
             ++nextId;
         }
         for (std::size_t index = 0; index < timedCount; ++index) {
             const FrameMetadata metadata = makeFrameMetadata(nextId, config.runtime);
-            timedAtoms.push_back(std::make_unique<FrameCpuAtom>(metadata));
-            staticDataConfig.frames.push_back({metadata, FramePhase::Timed});
+            timedAtoms.push_back(std::make_unique<FrameCpuAtom>(metadata, config.runtime));
+            staticDataConfig.frames.push_back(metadata);
             ++nextId;
         }
         if (!staticData.init(staticDataConfig)) {
@@ -359,6 +363,8 @@ bool DummyGraph::unloadOnNumaNode() {
     }
     warmupAtoms.clear();
     timedAtoms.clear();
+    warmupSubmitted = false;
+    timedSubmitted = false;
 
     for (const std::unique_ptr<DummyTask>& task : tasks) {
         if (!task->unload()) {
@@ -388,7 +394,6 @@ void DummyGraph::workerLoop() {
         ReadyFrame readyFrame;
         DummyTask* task = nullptr;
         PhaseGate* gate = nullptr;
-        bool frameStarted = false;
         {
             std::unique_lock<std::mutex> guard(schedulerLock);
             workCondition.wait(guard, [this] {
@@ -409,10 +414,6 @@ void DummyGraph::workerLoop() {
             // The task stays exclusively checked out until execute() finishes.
             freeTasks.pop_back();
             gate = phaseGate;
-            frameStarted = staticData.beginFrameExecution(readyFrame.atom->metadata);
-            if (!frameStarted) {
-                cancellation->store(true, std::memory_order_release);
-            }
             ++inFlight;
             lastMaxInFlight = std::max(lastMaxInFlight, inFlight);
         }
@@ -426,12 +427,10 @@ void DummyGraph::workerLoop() {
             cancellation->store(true, std::memory_order_release);
         }
         const bool cancelled = cancellation->load(std::memory_order_acquire);
-        const bool terminalRecorded = frameStarted ? staticData.finishFrameExecution(readyFrame.atom->metadata, succeeded, cancelled) : staticData.cancelFrame(readyFrame.atom->metadata, FrameState::Ready);
-        if (!terminalRecorded) {
-            cancellation->store(true, std::memory_order_release);
-            succeeded = false;
+        if (!succeeded || cancelled) {
+            readyFrame.atom->result.ok = false;
         }
-        deliverFrameResult(readyFrame.atom->metadata);
+        deliverFrameResult(*readyFrame.atom);
 
         {
             std::lock_guard<std::mutex> guard(schedulerLock);
@@ -452,36 +451,32 @@ void DummyGraph::cancelReadyFramesLocked() {
     while (!readyFrames.empty()) {
         ReadyFrame readyFrame = readyFrames.front();
         readyFrames.pop_front();
-        staticData.cancelFrame(readyFrame.atom->metadata, FrameState::Ready);
-        deliverFrameResult(readyFrame.atom->metadata);
+        readyFrame.atom->result.ok = false;
+        deliverFrameResult(*readyFrame.atom);
         ++phaseTerminal;
     }
     phaseSucceeded = false;
 }
 
 void DummyGraph::cancelPreparedFramesLocked() {
-    auto cancelAtoms = [this](std::vector<std::unique_ptr<FrameCpuAtom>>& atoms) {
+    auto cancelAtoms = [this](std::vector<std::unique_ptr<FrameCpuAtom>>& atoms, bool& submitted) {
+        if (submitted) {
+            return;
+        }
+        submitted = true;
         for (const std::unique_ptr<FrameCpuAtom>& atom : atoms) {
-            if (atom != nullptr && staticData.cancelFrame(atom->metadata, FrameState::Prepared)) {
-                deliverFrameResult(atom->metadata);
+            if (atom != nullptr) {
+                atom->result.ok = false;
+                deliverFrameResult(*atom);
             }
         }
     };
-    cancelAtoms(warmupAtoms);
-    cancelAtoms(timedAtoms);
+    cancelAtoms(warmupAtoms, warmupSubmitted);
+    cancelAtoms(timedAtoms, timedSubmitted);
 }
 
-void DummyGraph::deliverFrameResult(const FrameMetadata& metadata) {
-    const JobResult* result = staticData.resultFor(metadata);
-    if (result != nullptr) {
-        sink->deliver(*result);
-        return;
-    }
-
-    JobResult failedResult;
-    failedResult.id = metadata.id;
-    failedResult.ok = false;
-    sink->deliver(failedResult);
+void DummyGraph::deliverFrameResult(const FrameCpuAtom& atom) {
+    sink->deliver(atom.result);
 }
 
 void DummyGraph::finishPhaseIfCompleteLocked() {

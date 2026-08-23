@@ -1,3 +1,3 @@
-`NumFrameSlots = NumWarmupFrames + NumTimedFrames`
-`TotalTaskGpuResourcesSize = NumTaskInstances × (InputBufferSize + MaxScratchSize)`
-`TotalAlgoPrivateSize = NumTaskInstances × Σ(PrivateBufferSizePerAlgo)`
+`NumFrameSlots = min(ConfiguredFrameCacheSlots, NumConfiguredFrames)`
+`TotalTaskGpuResourcesSize = NumTaskInstances × (HostInputBufferSize + DeviceFallbackInputSize + MaxScratchSize)`
+`TotalAlgoPrivateSize = NumTaskInstances × Σ(EachAlgoDevicePrivateSize + EachAlgoHostStagingSize)`

@@ -1,17 +1,17 @@
 #include "FrameGpuAccess.h"
 
 #include "CudaCheck.h"
-#include "FrameGpuData.h"
+#include "FrameGpuCache.h"
 
-FrameGpuAccess::FrameGpuAccess(FrameGpuData* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, std::uint64_t targetFrameId, cudaStream_t accessStream, int gpuId, FrameGpuAccessMode accessMode)
+FrameGpuAccess::FrameGpuAccess(FrameGpuCache* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, std::uint64_t targetFrameId, cudaStream_t accessStream, int gpuId, FrameGpuAccessSource source)
     : owner(accessOwner),
       d_data(deviceData),
       dataBytes(bytes),
-      replicaIndex(index),
+      slotIndex(index),
       frameId(targetFrameId),
       stream(accessStream),
       deviceId(gpuId),
-      mode(accessMode) {}
+      accessSource(source) {}
 
 FrameGpuAccess::~FrameGpuAccess() {
     if (owner == nullptr) {
@@ -32,7 +32,7 @@ const void* FrameGpuAccess::data() const {
 }
 
 void* FrameGpuAccess::writableData() const {
-    return mode == FrameGpuAccessMode::Upload ? d_data : nullptr;
+    return needsUpload() ? d_data : nullptr;
 }
 
 std::size_t FrameGpuAccess::bytes() const {
@@ -41,6 +41,14 @@ std::size_t FrameGpuAccess::bytes() const {
 
 int FrameGpuAccess::gpuId() const {
     return deviceId;
+}
+
+bool FrameGpuAccess::needsUpload() const {
+    return accessSource == FrameGpuAccessSource::CacheFill || accessSource == FrameGpuAccessSource::TaskFallback;
+}
+
+FrameGpuAccessSource FrameGpuAccess::source() const {
+    return accessSource;
 }
 
 bool FrameGpuAccess::complete(bool submittedSuccessfully) {
@@ -57,9 +65,9 @@ void FrameGpuAccess::reset() {
     owner = nullptr;
     d_data = nullptr;
     dataBytes = 0;
-    replicaIndex = 0;
+    slotIndex = 0;
     frameId = 0;
     stream = nullptr;
     deviceId = -1;
-    mode = FrameGpuAccessMode::Read;
+    accessSource = FrameGpuAccessSource::Invalid;
 }

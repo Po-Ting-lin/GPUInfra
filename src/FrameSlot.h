@@ -1,31 +1,36 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "FrameGpuData.h"
 #include "FrameMetadata.h"
-#include "GraphTypes.h"
-#include "IAlgo.h"
 
-struct FrameSlot {
+enum class FrameCacheState {
+    Empty,
+    Loading,
+    Valid,
+};
+
+// Reusable GPU cache entry. It does not own logical frame state or CPU bytes.
+class FrameSlot {
+public:
     FrameSlot() = default;
-    FrameSlot(const FrameMetadata& frameMetadata, int graphNumaNode, FramePhase framePhase, const AlgoRuntimeInfo& runtime);
 
-    bool bind(const FrameMetadata& frameMetadata, int graphNumaNode, FramePhase framePhase, const AlgoRuntimeInfo& runtime);
-    bool initializeGpuData(const std::vector<int>& gpuIds);
+    bool initializeGpuData(const std::vector<int>& gpuIds, std::size_t bytes);
     bool releaseGpuData();
-    bool isBound() const;
-
-    FrameMetadata metadata;
-    int numaNode = -1;
-    FramePhase phase = FramePhase::Warmup;
-    FrameState state = FrameState::Prepared;
-    FrameGpuData deviceData;
-    JobResult result;
+    bool isInitialized() const;
 
     FrameSlot(const FrameSlot&) = delete;
     FrameSlot& operator=(const FrameSlot&) = delete;
 
 private:
-    bool bound = false;
+    friend class FrameGpuCache;
+
+    FrameMetadata metadata;
+    FrameCacheState cacheState = FrameCacheState::Empty;
+    std::size_t activeAccesses = 0;
+    std::uint64_t lastUse = 0;
+    FrameGpuData deviceData;
 };

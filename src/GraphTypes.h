@@ -9,12 +9,3 @@ enum class FramePhase {
     Warmup,
     Timed,
 };
-
-enum class FrameState {
-    Prepared,
-    Ready,
-    Executing,
-    Completed,
-    Failed,
-    Cancelled,
-};

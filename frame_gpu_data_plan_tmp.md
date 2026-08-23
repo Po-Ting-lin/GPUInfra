@@ -1,477 +1,269 @@
-# FrameSlot GPU Data Plan: Temporary One-GPU-per-NUMA Scope
+# Best-Effort Frame GPU Cache Plan: Temporary One-GPU-per-NUMA Scope
 
-**Implementation status:** Implemented for the repository's current
-`start -> DummyTask -> end` graph. The implementation establishes frame-owned
-GPU storage, `Upload`/`Read` access, frame-ID residency, graph-lifetime device
-allocation, graph-owned `FrameCpuAtom` inputs, `StaticData`-owned FrameSlot
-storage, hash-indexed task-side selection, synchronous RAII completion, and an
-explicit one-GPU topology guard. Multi-stage scheduling, pool recycling, and
-cross-GPU replica migration remain deferred.
+**Implementation status:** Implemented.
 
-## 1. Scope
+## 1. Scope and goal
 
-The temporary implementation assumes:
+The current graph copy explicitly supports exactly one eligible GPU per NUMA
+node. The goal is to preserve GPU input across different task instances when
+possible, while keeping correctness independent of cache residency:
 
 ```text
-one NUMA graph copy -> exactly one eligible GPU
+RAM / immutable FrameCpuAtom
+  ├─ cache miss -> H2D -> task-private d_input -> algorithms
+  └─ cache fill -> H2D -> FrameSlot.deviceData
+                              |
+                    later task instance
+                              |
+                         cache hit
 ```
 
-Its interfaces deliberately remain GPU-keyed so this can later become:
+The cache is a performance bonus. A miss never changes scheduler selection and
+never fails merely because all cache entries are busy.
+
+## 2. Golden constraints
+
+[`graph.md`](graph.md) remains authoritative.
+
+- Scheduler selection still matches a ready frame, a free task instance, and a
+  free NUMA-local worker without consulting GPU residency.
+- Workers are NUMA-bound, not GPU-bound.
+- Every task instance remains permanently bound to one GPU.
+- `DummyTask::execute()` remains synchronous.
+- The hot path performs no `cudaMalloc()` or `cudaFree()`.
+- `TaskGpuResources` continues to own stream, pinned staging, scratch,
+  task-private resources, and the new fallback input buffer.
+- Algorithms read the input; they do not mutate it.
+
+## 3. Two independent layers
 
 ```text
-one NUMA graph copy -> two eligible GPUs
-```
-
-without changing scheduler selection or task call sites. The long-term
-multi-GPU extension is described in `frame_gpu_data_plan.md`.
-
-## 2. Goal
-
-GPU-resident frame data belongs to `FrameSlot`, not to a `DummyTask`
-instance:
-
-```text
-RAM
-  -> Upload/H2D on the graph GPU
-  -> TaskA instance N reads
-  -> same FrameSlot GPU payload
-  -> TaskB instance M reads
-  -> TaskC instance K reads
-```
-
-A task stage does not modify the logical frame payload. The only mutable
-operation is `Upload`, which completely replaces the allocation's contents
-when the slot begins representing a new logical frame. After a successful
-upload, every stage uses `Read`.
-
-## 3. Golden constraints
-
-`graph.md` remains authoritative.
-
-- The scheduler still selects a ready frame, a free task instance, and a free
-  NUMA-local worker without consulting GPU residency.
-- Workers remain NUMA-bound only.
-- Each task instance remains permanently bound to one GPU.
-- A frame may move between task instances and workers.
-- Stages for one frame execute in graph order and do not overlap.
-- GPU frame data has `FrameSlot` lifetime.
-- `TaskGpuResources` continues to own the task stream, scratch, pinned
-  staging, and task-private buffers.
-- No `cudaMalloc()` or `cudaFree()` occurs in `execute()`,
-  `FrameGpuData::acquire()`, or `FrameGpuAccess::complete()`.
-- `execute()` remains synchronous.
-
-## 4. Ownership and allocation lifetime
-
-```text
-DummyGraph
-  -> owns one FrameCpuAtom per configured logical frame
-  -> ReadyFrame carries only FrameCpuAtom during dispatch
-
 StaticData
-  -> one instance per graph copy
-  -> owns a fixed pool of 220 FrameSlot objects
-  -> binds one slot per configured logical frame
-  -> owns an immutable frame-ID-to-slot-index hash
-  -> owns frame state/result plumbing
-
-FrameCpuAtom
-  -> owns CPU frame bytes
-  -> owns intrinsic FrameMetadata
-
-FrameSlot
-  -> owns an equal FrameMetadata copy, graph state, and results
-  -> contains no FrameCpuAtom or FrameCpuAtom pointer
-  -> embeds FrameGpuData
-
-FrameGpuData
-  -> owns GPU-keyed replica metadata
-  -> owns the device allocation
-  -> owns resident frame ID and validity state
-
-FrameGpuAccess
-  -> temporarily refers to one replica
-  -> owns stream synchronization and publish-or-abort handling
-
-TaskGpuResources
-  -> owns GPU identity, stream, staging, scratch, and private buffers
+  ├─ registered FrameMetadata[NumConfiguredFrames]
+  │    immutable frame-ID index + graph NUMA
+  │
+  └─ FrameGpuCache
+       └─ FrameSlot[K]
+            cached metadata + cache state + leases + LRU
+            └─ FrameGpuData
+                 └─ FrameGpuReplica(gpuId, d_data, valid)
 ```
 
-For every bound slot:
+`K` is:
 
 ```text
-graph initialization
-  -> cudaMalloc once
-  -> zero or more Upload/Read accesses using the same pointer
-  -> graph workers stop
-  -> graph teardown
-  -> cudaFree once
+min(GraphConfig::frameCacheSlots, NumConfiguredFrames)
 ```
 
-`Upload` never allocates or frees memory. It overwrites the existing device
-buffer. `FrameGpuData::release()` is invoked by `StaticData` on the NUMA-pinned
-teardown path, after workers have joined and before retained CUDA contexts are
-released.
+The default configured value is 4. Zero is valid and means pure task fallback.
+There is no longer a fixed 220-frame capacity.
 
-The checked-in graph currently owns one atom per configured frame. `StaticData`
-constructs 220 slot objects, binds and allocates one for every configured frame,
-and leaves the remaining entries unbound. More than 220 combined warmup/timed
-frames in one graph copy is rejected. Slots are not recycled yet. The GPU API
-nevertheless supports overwriting an existing allocation for a future recycled
-slot.
+### `FrameCpuAtom`
 
-## 5. Temporary topology contract
+- Owns CPU bytes and intrinsic `FrameMetadata`.
+- Owns the preallocated `JobResult` and CEL/SDD/MI output vectors.
+- Remains graph-owned and valid for the configured logical frame lifetime.
+- Is the reconstruction source on cache miss.
 
-Initialization requires:
+### `StaticData` frame registry
+
+- Stores one immutable `FrameMetadata` entry per configured frame, one graph
+  NUMA node, and an immutable `frame ID -> metadata index` hash.
+- Performs complete metadata and NUMA validation.
+- Stores no execution state or `FramePhase`; graph-owned collections, queues,
+  counters, and submitted flags define them.
+- Stores no `JobResult`; result lifetime follows `FrameCpuAtom`.
+- Owns no CPU bytes and no per-frame device allocation.
+
+### `FrameSlot`
+
+- Is a reusable GPU cache entry, not a logical frame record.
+- Owns one `FrameGpuData` allocation set.
+- Temporarily stores cached metadata, `Empty`/`Loading`/`Valid` state, active
+  lease count, and LRU sequence.
+- Can represent different logical frames over graph lifetime without
+  reallocating its device buffer.
+
+### `FrameGpuData`
+
+- Encapsulates GPU-keyed persistent allocation and per-replica validity.
+- Does not own logical state, results, streams, scratch, or fallback storage.
+- Currently allocates exactly one replica because the temporary topology has
+  one GPU per NUMA graph copy.
+
+### `TaskGpuResources`
+
+- Owns `stream`, `h_in`, `d_input`, `d_scratch`, GPU/NUMA identity, and context
+  reference.
+- Allocates `d_input` once in `DummyTask::load()` and frees it in `unload()`.
+- Uses `d_input` whenever the frame cache cannot immediately provide a slot.
+
+## 4. Cache capacity and allocation lifetime
+
+Cold initialization:
 
 ```text
-config.gpuIds.size() == 1
+DummyTask::load()
+  -> allocate one d_input fallback per task instance
+
+StaticData::init()
+  -> copy registered FrameMetadata and build immutable ID index
+  -> compute effective cache capacity K
+  -> allocate K FrameSlots
+  -> allocate one persistent FrameGpuData replica per slot
 ```
 
-The only GPU need not be CUDA device 0. Empty or multi-GPU lists fail before
-slot allocation and before workers start. The implementation must not silently
-drop extra GPUs, split a NUMA graph into GPU-specific schedulers, or defer this
-error to the hot path.
+Teardown happens only after workers stop:
 
-## 6. Data model
-
-The checked-in model is:
-
-```cpp
-struct FrameMetadata {
-    std::uint64_t id = 0;
-    std::size_t bytes = 0;
-    int width = 0;
-    int height = 0;
-    int dtype = 0;
-};
-
-struct FrameCpuAtom {
-    FrameMetadata metadata;
-    std::vector<std::uint8_t> data;
-};
-
-struct FrameSlot {
-    FrameMetadata metadata;
-    FrameGpuData deviceData;
-    // NUMA, phase/state, and result fields
-};
-
-class StaticData {
-public:
-    static constexpr std::size_t FRAME_SLOT_POOL_SIZE = 220;
-    bool init(const StaticDataConfig& config);
-    bool execute() const;
-    std::size_t frameSlotCount() const;
-    FrameSlot* frameSlotAt(std::size_t index);
-    FrameSlot* findFrameSlot(const FrameMetadata& metadata);
-    bool release();
-
-private:
-    std::unordered_map<std::uint64_t, std::size_t> frameIdToSlotIndex;
-};
-
-struct FrameGpuReplica {
-    int gpuId = -1;
-    void* d_data = nullptr;
-    std::uint64_t frameId = 0;
-    bool valid = false;
-};
-
-class FrameGpuData {
-public:
-    bool initialize(const std::vector<int>& gpuIds, std::size_t bytes);
-    FrameGpuAccess acquire(FrameGpuAccessMode mode,
-                           std::uint64_t frameId,
-                           const TaskGpuResources& resources);
-    bool release();
-
-    bool hasData(std::uint64_t frameId) const;
-    std::uint64_t frameId() const;
-
-private:
-    std::vector<FrameGpuReplica> replicas;
-    std::size_t dataBytes = 0;
-    std::uint64_t residentFrameId = 0;
-    bool payloadValid = false;
-    bool initialized = false;
-};
+```text
+StaticData::release()
+  -> release all cache-slot device allocations
+DummyTask::unload()
+  -> release d_input, scratch, algorithm resources, staging, stream
 ```
 
-`FrameCpuAtom` remains graph-owned; `FrameSlot` is owned by the graph copy's
-`StaticData`. Their metadata is copied from the same cold-path value.
-`ReadyFrame` carries only the atom. `DummyTask::execute(FrameCpuAtom&,
-StaticData&)` requests an average O(1) lookup by unique frame ID, after which
-`StaticData` requires a complete metadata match. `FrameSlot` itself has no CPU
-atom association.
+No allocation, free, vector growth, hash insert, or hash rehash occurs during
+cache acquire or task execute.
 
-`frameId` answers a concrete question: “which logical frame does this device
-payload contain?” It avoids a generic mutation counter that does not match the
-immutable payload contract.
+`DummyGraph` keeps separate `warmupAtoms` and `timedAtoms` collections. Those
+collections are the only `FramePhase` authority. Phase-submitted flags and the
+ready/in-flight/terminal bookkeeping own execution progress; `StaticDataConfig`
+and `StaticData` contain no phase or execution-state field.
 
-`payloadValid` and `FrameGpuReplica::valid` remain separate from the ID
-because frame ID 0 is legal. The ID is meaningful only while the corresponding
-valid flag is true.
+## 5. Access contract
 
-Frame IDs must uniquely identify logical frames during one graph lifetime. If
-an integration reuses frame IDs while old slots can still exist, it must
-provide a separate unique generation/epoch rather than treating a repeated ID
-as the same payload.
+`FrameGpuAccess` reports its source:
 
-Although there is currently one replica, lookup is by exact GPU ID rather than
-using the CUDA device ID as a vector index. This keeps future multi-GPU
-behavior inside `FrameGpuData`.
-
-## 7. Access contract
-
-Only two access modes exist:
-
-| Mode | Existing matching payload required | Mutable pointer | Completion effect |
+| Source | Meaning | `needsUpload()` | Writable pointer |
 | --- | --- | --- | --- |
-| `Upload` | No | Yes, only as the H2D destination | Publishes the requested frame ID after successful synchronization |
-| `Read` | Yes | No | Validates the same resident frame ID; logical payload is unchanged |
+| `CacheHit` | Matching valid cache entry | false | no |
+| `CacheFill` | Miss reserved an inactive cache entry | true | cache slot buffer |
+| `TaskFallback` | No entry can be used immediately, or capacity is zero | true | task `d_input` |
+| `Invalid` | Contract/metadata/GPU validation failed | n/a | no |
 
-Typical task usage:
+The scoped access owns neither allocation nor stream. `complete()` synchronizes
+the captured stream once and then releases or publishes the lease. Destruction
+of an incomplete access synchronizes submitted work and aborts it.
+
+## 6. Lookup and replacement
+
+`FrameGpuCache::acquire(metadata, resources)` holds a short cache metadata
+mutex and scans the fixed slot array. With default `K=4`, this is bounded
+`O(K)` and performs no allocation.
+
+Rules are evaluated in order:
+
+1. A non-empty entry with the same ID but different complete metadata is an
+   invalid request.
+2. A matching `Valid` entry with a valid local replica returns `CacheHit` and
+   increments its active-reader count.
+3. A matching `Loading` entry returns `TaskFallback`; it does not wait.
+4. On a miss, prefer an `Empty` entry.
+5. Otherwise choose the least-recently-used `Valid` entry whose active-reader
+   count is zero.
+6. If every entry is active/loading, return `TaskFallback`.
+
+CUDA work never runs while this mutex is held. Multiple immutable cache-hit
+readers may coexist. An active entry cannot be evicted.
+
+## 7. Fill publication and failure
+
+A reserved cache entry transitions:
+
+```text
+Empty or inactive Valid
+  -> Loading
+  -> task enqueues H2D and algorithms
+  -> stream synchronization succeeds
+  -> Valid
+```
+
+Only successful `FrameGpuAccess::complete(true)` publishes the new cached
+metadata/replica. Submission failure, synchronization failure, or RAII abort
+resets a fill entry to `Empty`.
+
+A failed `CacheHit` releases its reader count but preserves the existing
+immutable payload. A fallback completion never mutates cache state. Cache
+release rejects all active cache and fallback leases.
+
+## 8. Task execution
+
+The scheduler still calls:
 
 ```cpp
-FrameSlot* selectedFrame = staticData.findFrameSlot(atom.metadata);
-if (selectedFrame == nullptr) {
-    return false;
-}
-FrameSlot& frame = *selectedFrame;
-
-if (!atom.matchesMetadata(frame.metadata)) {
-    return false;
-}
-
-const std::uint64_t frameId = frame.metadata.id;
-const bool needsUpload = !frame.deviceData.hasData(frameId);
-const FrameGpuAccessMode mode =
-    needsUpload ? FrameGpuAccessMode::Upload : FrameGpuAccessMode::Read;
-
-FrameGpuAccess access =
-    frame.deviceData.acquire(mode, frameId, resources);
-if (!access) {
-    return false;
-}
-
-if (needsUpload) {
-    enqueueH2D(access.writableData(), atom.data, resources.stream);
-}
-launchReadOnlyStage(access.data(), resources.stream);
-return access.complete(submittedSuccessfully);
+bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData);
 ```
 
-Rules:
-
-- `Read` succeeds only when the global payload and selected replica are valid
-  for the requested frame ID.
-- `Read::writableData()` returns `nullptr`.
-- Starting `Upload` invalidates metadata for the previous logical payload,
-  but leaves all device pointers allocated.
-- A successful `Upload` publishes its requested frame ID and marks its replica
-  valid.
-- A failed or abandoned `Upload` publishes no frame ID. The old payload stays
-  invalid because slot reuse has already begun.
-- `FrameGpuAccess::complete()` synchronizes the captured task stream before
-  publishing or validating state.
-- If the caller leaves scope without `complete()`, the destructor synchronizes
-  already-submitted work and aborts the access.
-- `FrameGpuAccess` owns neither the stream nor the allocation.
-
-There is no mutable stage mode because downstream tasks have no requirement to
-change the frame payload. If a future algorithm produces a distinct payload for
-later stages, that output should be modeled as another frame-owned plane or an
-explicit new payload contract, not as implicit in-place mutation.
-
-## 8. Current data flow
-
-### New logical frame
+The task performs:
 
 ```text
-FrameCpuAtom.data
-  -> memcpy into task-owned pinned staging
-  -> acquire Upload(frame.metadata.id)
-  -> asynchronous H2D into the existing frame-owned allocation
-  -> CEL / SDD / MI read that allocation on the same stream
-  -> result D2H
-  -> complete() synchronizes
-  -> publish residentFrameId = frame.metadata.id
+validate registered metadata through StaticData's immutable hash
+  -> validate atom metadata, NUMA, layout, and preallocated outputs
+  -> make the task GPU current
+  -> StaticData::acquireFrameGpuAccess(metadata, resources)
+  -> if needsUpload: atom.data -> h_in -> access.writableData()
+  -> CEL / SDD / MI read access.data()
+  -> algorithm D2H
+  -> access.complete(result.ok), including one stream sync
+  -> collect into FrameCpuAtom.result
 ```
 
-### Another task instance or stage
+CEL, SDD, and MI interfaces are unchanged. They do not know whether their
+input came from a cache slot or `TaskGpuResources::d_input`.
 
-```text
-same FrameSlot
-  -> acquire Read(frame.metadata.id)
-  -> same device pointer
-  -> no repeated H2D
-  -> read-only CUDA work
-  -> complete() validates the unchanged frame ID
+## 9. Correctness boundary
+
+This best-effort cache is correct because the current GPU input is immutable
+and reproducible from `FrameCpuAtom` on every miss.
+
+If a future TaskA produces a mutable GPU-only intermediate needed by TaskB,
+that intermediate cannot use this eviction/fallback rule unless it has a
+defined host spill or recomputation source. It needs a separate frame-owned
+authoritative output plane or a different non-evictable lifetime contract.
+
+## 10. Configuration and scheduler impact
+
+`GraphConfig` contains:
+
+```cpp
+std::size_t frameCacheSlots = 4;
 ```
 
-Task identity and worker identity do not affect the allocation or its lifetime.
-Only a final stage that needs a host-visible result performs D2H; intermediate
-stages do not round-trip frame payload data through RAM.
+`DummyGraph::initializeOnNumaNode()` copies this value into
+`StaticDataConfig`. It does not add a CLI option. The ready-frame queue,
+`freeTasks`, worker selection, checkout/return order, phase gate, and
+cancellation logic are unchanged.
 
-### Slot reused for another frame
+## 11. Verification
 
-```text
-existing device allocation contains old frame ID
-  -> acquire Upload(newFrameId)
-  -> invalidate old residency metadata
-  -> H2D overwrites the same device pointer
-  -> complete()
-  -> publish newFrameId
-```
+CUDA integration tests cover:
 
-## 9. Synchronization and serialization
+- more than 220 registered frames with only two cache entries;
+- duplicate IDs and full-metadata mismatch rejection;
+- capacity clamping and capacity zero;
+- first fill, later hit, and stable cache device pointer;
+- same-frame `Loading` fallback;
+- all-active fallback and release rejection with live leases;
+- fill failure and RAII abort returning an entry to `Empty`;
+- inactive LRU eviction;
+- wrong-GPU rejection;
+- cached input surviving a task-instance change;
+- end-to-end correctness using only task fallback;
+- both execution models, cancellation, task checkout, and teardown.
 
-The temporary design retains one host synchronization per `execute()`:
+## 12. Future two-GPU-per-NUMA path
 
-```text
-stage N enqueues its CUDA work
-  -> FrameGpuAccess::complete()
-  -> cudaStreamSynchronize(stage N stream)
-  -> publish/validate frame ID
-  -> execute() returns
-  -> graph may dispatch stage N+1
-```
+The public task API and scheduler stay unchanged. The future implementation
+extends cache-slot internals:
 
-This is sufficient when consecutive stages use different task streams because
-the producer stream has completed before the next stage becomes eligible. An
-asynchronous `execute()` design would require CUDA events and is out of scope.
+1. Allocate one `FrameGpuReplica` per eligible GPU for every cache slot.
+2. Discover P2P capability and warm transfer paths during cold initialization.
+3. On a matching frame with an invalid local replica, reserve a per-replica
+   fill and lazily copy from another valid replica.
+4. If migration cannot be reserved immediately, use task fallback.
+5. Publish local replica validity only after stream synchronization.
+6. Keep eviction at whole-entry granularity and forbid eviction while any
+   replica lease/fill is active.
 
-`FrameGpuData` intentionally contains no scheduling mutex, atomic, or
-`accessActive` flag. The graph protocol owns both protections, while
-`StaticData` exposes frame-state transitions:
-
-- one task instance is removed from `freeTasks` for the entire
-  `execute()` call;
-- stages of one `FrameSlot` do not overlap.
-
-Direct concurrent access outside that graph contract is unsupported.
-
-## 10. Initialization and teardown
-
-Initialization on the NUMA-pinned setup thread:
-
-1. Validate exactly one eligible GPU.
-2. Validate at most 220 configured frames, unique IDs, payload sizes, and
-   checked VRAM arithmetic.
-3. Construct one graph-owned `FrameCpuAtom` for every configured frame.
-4. `StaticData` constructs 220 slot objects and binds one per configured frame.
-5. Build and reserve the immutable frame-ID-to-slot-index hash.
-6. Allocate one replica for every bound slot; unbound slots allocate nothing.
-7. Initialize all bound payload and replica validity flags to false.
-8. Start workers only after `StaticData::init()` succeeds completely.
-
-Partial initialization releases every successfully allocated replica.
-
-Teardown:
-
-1. Stop and join graph workers.
-2. Clear pending graph atom dispatch records.
-3. Call `StaticData::release()` on the NUMA-pinned teardown thread.
-4. Destroy the StaticData slot pool, then graph-owned CPU atoms.
-5. Unload task-private resources and synchronize/destroy their streams.
-6. Release retained CUDA contexts only after all allocations are gone.
-
-Cleanup remains idempotent and safe after partial initialization.
-
-## 11. Memory model
-
-Let:
-
-- `S` be the number of bound slots in one graph copy, where `S <= 220`;
-- `B` be the payload bytes per slot.
-
-The temporary scope uses:
-
-```text
-frame replica VRAM = S * B
-```
-
-This memory is reserved for the entire graph lifetime. The cost is intentional:
-it guarantees stable pointers and allocation-free execution.
-
-The host-side index stores `S` entries. Lookup is average O(1), followed by a
-full metadata comparison. It is built before workers start and is never
-inserted into, erased from, or rehashed during execution.
-
-## 12. Verification
-
-The implemented CUDA tests cover:
-
-- fixed 220-slot container capacity and duplicate frame-ID rejection;
-- hash-indexed CPU-atom/slot metadata matching and mismatch rejection,
-  including equal IDs with different layouts;
-- malformed CPU atom size rejection;
-- read rejection before the first successful upload;
-- upload publication of the requested frame ID;
-- frame ID 0 remaining a valid possible ID because validity is explicit;
-- read-only access exposing no mutable pointer;
-- read preserving the resident frame ID;
-- abandoned and failed uploads publishing no new frame ID;
-- upload for a new frame reusing the exact same device pointer;
-- rejection of an old frame ID after replacement;
-- rejection of a GPU without a replica;
-- data continuity across different task instances on the same GPU;
-- idempotent release and temporary topology rejection;
-- graph-level task exclusivity with multiple workers.
-
-The hot-path test contract also requires no `cudaMalloc()`, `cudaFree()`,
-vector growth, or replica-table mutation during access or execution.
-
-## 13. Future two-GPU-per-NUMA extension
-
-The scheduler and `execute(FrameCpuAtom&, StaticData&)` API remain unchanged.
-Extend only the cold-path topology and `FrameGpuData` internals:
-
-1. Permit two eligible GPU IDs.
-2. Allocate one persistent replica per slot on each GPU.
-3. Discover and warm direct-P2P or staged-copy paths during initialization.
-4. On `Read(frameId)`, return immediately if the local replica is valid for
-   that ID.
-5. Otherwise, copy from any valid replica for the same resident frame ID into
-   the selected GPU's preallocated replica on the task stream.
-6. Mark the copied replica valid only after successful synchronization.
-7. On `Upload(newFrameId)`, invalidate all replica metadata, overwrite one
-   existing allocation, and publish the new ID after completion.
-8. Add checked per-GPU and graph-wide VRAM budgets plus transfer diagnostics.
-
-Because a frame payload is immutable after upload, multiple GPU replicas may be
-valid for the same frame ID. No replica becomes stale merely because another
-task reads the frame.
-
-The extension must not:
-
-- prefer tasks based on residency;
-- bind workers to GPUs;
-- move stream or scratch ownership into `FrameGpuData`;
-- allocate or free replicas in the hot path;
-- introduce in-place task-stage mutation.
-
-## 14. Acceptance criteria
-
-- `FrameSlot` owns authoritative GPU frame data.
-- `FrameCpuAtom` owns CPU bytes; `FrameSlot` contains no atom reference.
-- `DummyGraph` owns CPU atoms; its graph-copy `StaticData` owns the fixed
-  220-slot pool, binds one slot per configured frame, and owns the immutable
-  frame-ID index.
-- `ReadyFrame` carries only an atom; `DummyTask` selects the matching bound slot
-  through `StaticData`'s average O(1) lookup without affecting scheduler choice.
-- `Upload` is the only mutable access and means complete replacement for a
-  logical frame.
-- Later stages receive only `Read`.
-- Resident state is identified by frame ID, not an abstract mutation counter.
-- Device allocations remain stable until graph teardown and are reused when a
-  slot receives a new frame.
-- Task-instance and worker changes do not invalidate frame data.
-- Scheduler selection remains unchanged and GPU-residency unaware.
-- Workers remain NUMA-bound; task instances remain GPU-bound.
-- `TaskGpuResources` retains streams, staging, scratch, and task-private
-  buffers.
-- Synchronous completion is the inter-stage dependency boundary.
-- The current one-GPU limitation fails explicitly and leaves a contained
-  two-GPU extension path.
+No future step may make scheduler selection residency-aware, bind workers to a
+GPU, or allocate device memory in the hot path.

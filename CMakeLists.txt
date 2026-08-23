@@ -23,6 +23,7 @@ add_library(gpuinfra
     src/DummyTask.cpp
     src/FrameCpuAtom.cpp
     src/FrameGpuAccess.cpp
+    src/FrameGpuCache.cpp
     src/FrameGpuData.cpp
     src/FrameSlot.cpp
     src/GpuContextManager.cpp

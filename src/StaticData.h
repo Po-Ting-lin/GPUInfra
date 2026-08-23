@@ -2,33 +2,27 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <unordered_map>
 #include <vector>
 
+#include "FrameGpuCache.h"
 #include "FrameMetadata.h"
-#include "FrameSlot.h"
-#include "GraphTypes.h"
 #include "IAlgo.h"
 
-struct StaticFrameConfig {
-    FrameMetadata metadata;
-    FramePhase phase = FramePhase::Warmup;
-};
+struct TaskGpuResources;
 
 struct StaticDataConfig {
     int numaNode = -1;
     std::vector<int> gpuIds;
     AlgoRuntimeInfo runtime;
-    std::vector<StaticFrameConfig> frames;
+    std::vector<FrameMetadata> frames;
+    std::size_t frameCacheSlots = 0;
 };
 
-// Graph-copy scoped owner of the fixed FrameSlot pool. The graph serializes
-// scheduling-state transitions; workers may inspect distinct bound slots.
+// Graph-copy-scoped owner of an immutable frame registry and a bounded GPU
+// cache. Frame execution state remains owned by the graph scheduler.
 class StaticData {
 public:
-    inline static constexpr std::size_t FRAME_SLOT_POOL_SIZE = 220;
-
     StaticData() = default;
     ~StaticData();
 
@@ -36,20 +30,10 @@ public:
     bool execute() const;
     bool release();
 
-    std::size_t frameSlotCount() const;
-    std::size_t frameSlotPoolSize() const;
-    std::size_t frameCount(FramePhase phase) const;
-    FrameSlot* frameSlotAt(std::size_t index);
-    const FrameSlot* frameSlotAt(std::size_t index) const;
-    FrameSlot* findFrameSlot(const FrameMetadata& metadata);
-    const FrameSlot* findFrameSlot(const FrameMetadata& metadata) const;
-
-    bool matchesFrame(const FrameMetadata& metadata, FramePhase phase, FrameState state) const;
-    bool preparePhase(FramePhase phase);
-    bool beginFrameExecution(const FrameMetadata& metadata);
-    bool finishFrameExecution(const FrameMetadata& metadata, bool succeeded, bool cancelled);
-    bool cancelFrame(const FrameMetadata& metadata, FrameState expectedState);
-    const JobResult* resultFor(const FrameMetadata& metadata) const;
+    std::size_t frameCount() const;
+    std::size_t frameCacheSlotCount() const;
+    bool validateFrame(const FrameMetadata& metadata, int numaNode) const;
+    FrameGpuAccess acquireFrameGpuAccess(const FrameMetadata& metadata, const TaskGpuResources& resources);
 
     bool isInitialized() const;
 
@@ -57,8 +41,11 @@ public:
     StaticData& operator=(const StaticData&) = delete;
 
 private:
-    std::vector<std::unique_ptr<FrameSlot>> frameSlotPool;
-    std::unordered_map<std::uint64_t, std::size_t> frameIdToSlotIndex;
-    std::size_t boundFrameCount = 0;
+    const FrameMetadata* findFrameMetadata(const FrameMetadata& metadata) const;
+
+    std::vector<FrameMetadata> registeredFrames;
+    std::unordered_map<std::uint64_t, std::size_t> frameIdToIndex;
+    FrameGpuCache frameGpuCache;
+    int graphNumaNode = -1;
     bool initialized = false;
 };

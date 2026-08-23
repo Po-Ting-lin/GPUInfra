@@ -1,14 +1,14 @@
 #include "StaticData.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <limits>
-#include <memory>
 #include <unordered_map>
 
 #include <cuda_runtime.h>
 
 #include "CudaCheck.h"
-#include "FrameSlot.h"
+#include "TaskGpuResources.h"
 
 namespace {
 
@@ -20,10 +20,6 @@ bool sameMetadata(const FrameMetadata& first, const FrameMetadata& second) {
     return first.id == second.id && first.bytes == second.bytes && first.width == second.width && first.height == second.height && first.dtype == second.dtype;
 }
 
-bool validPhase(FramePhase phase) {
-    return phase == FramePhase::Warmup || phase == FramePhase::Timed;
-}
-
 }  // namespace
 
 StaticData::~StaticData() {
@@ -31,67 +27,55 @@ StaticData::~StaticData() {
 }
 
 bool StaticData::init(const StaticDataConfig& config) {
-    if (initialized || !frameSlotPool.empty() || !frameIdToSlotIndex.empty() || config.numaNode < 0 || config.gpuIds.size() != 1 || config.gpuIds.front() < 0 || config.runtime.inBytes == 0) {
-        return false;
-    }
-    if (config.frames.size() > FRAME_SLOT_POOL_SIZE) {
-        std::fprintf(stderr, "[GPUInfra] StaticData frame capacity exceeded configured=%zu capacity=%zu\n", config.frames.size(), FRAME_SLOT_POOL_SIZE);
+    if (initialized || !registeredFrames.empty() || !frameIdToIndex.empty() || frameGpuCache.isInitialized() || graphNumaNode >= 0 || config.numaNode < 0 || config.gpuIds.size() != 1 || config.gpuIds.front() < 0 || config.runtime.inBytes == 0) {
         return false;
     }
 
-    std::unordered_map<std::uint64_t, std::size_t> newFrameIdToSlotIndex;
+    std::unordered_map<std::uint64_t, std::size_t> newFrameIdToIndex;
+    std::vector<FrameMetadata> newRegisteredFrames;
     try {
-        newFrameIdToSlotIndex.reserve(config.frames.size());
+        newFrameIdToIndex.reserve(config.frames.size());
+        newRegisteredFrames.reserve(config.frames.size());
         for (std::size_t index = 0; index < config.frames.size(); ++index) {
-            const StaticFrameConfig& frame = config.frames[index];
-            if (!validPhase(frame.phase) || !matchesRuntime(frame.metadata, config.runtime)) {
-                std::fprintf(stderr, "[GPUInfra] invalid StaticData frame definition index=%zu frame_id=%llu\n", index, static_cast<unsigned long long>(frame.metadata.id));
+            const FrameMetadata& metadata = config.frames[index];
+            if (!matchesRuntime(metadata, config.runtime)) {
+                std::fprintf(stderr, "[GPUInfra] invalid StaticData frame definition index=%zu frame_id=%llu\n", index, static_cast<unsigned long long>(metadata.id));
                 return false;
             }
-            if (!newFrameIdToSlotIndex.emplace(frame.metadata.id, index).second) {
-                std::fprintf(stderr, "[GPUInfra] duplicate StaticData frame ID frame_id=%llu\n", static_cast<unsigned long long>(frame.metadata.id));
+            if (!newFrameIdToIndex.emplace(metadata.id, index).second) {
+                std::fprintf(stderr, "[GPUInfra] duplicate StaticData frame ID frame_id=%llu\n", static_cast<unsigned long long>(metadata.id));
                 return false;
             }
+            newRegisteredFrames.push_back(metadata);
         }
     } catch (...) {
         return false;
     }
-    if (!config.frames.empty() && config.runtime.inBytes > std::numeric_limits<std::size_t>::max() / config.frames.size()) {
+
+    const std::size_t effectiveCacheSlots = std::min(config.frameCacheSlots, config.frames.size());
+    if (effectiveCacheSlots != 0 && config.runtime.inBytes > std::numeric_limits<std::size_t>::max() / effectiveCacheSlots) {
         return false;
     }
-
-    const std::size_t frameGpuBytes = config.frames.size() * config.runtime.inBytes;
+    const std::size_t frameGpuBytes = effectiveCacheSlots * config.runtime.inBytes;
     std::size_t freeBytes = 0;
     std::size_t totalBytes = 0;
-    CUDA_CHECK(cudaSetDevice(config.gpuIds.front()), return false);
-    CUDA_CHECK(cudaMemGetInfo(&freeBytes, &totalBytes), return false);
-    if (frameGpuBytes > freeBytes) {
-        std::fprintf(stderr, "[GPUInfra] insufficient StaticData frame GPU memory gpu=%d required=%zu free=%zu total=%zu\n", config.gpuIds.front(), frameGpuBytes, freeBytes, totalBytes);
+    if (frameGpuBytes != 0) {
+        CUDA_CHECK(cudaSetDevice(config.gpuIds.front()), return false);
+        CUDA_CHECK(cudaMemGetInfo(&freeBytes, &totalBytes), return false);
+        if (frameGpuBytes > freeBytes) {
+            std::fprintf(stderr, "[GPUInfra] insufficient StaticData frame cache GPU memory gpu=%d required=%zu free=%zu total=%zu\n", config.gpuIds.front(), frameGpuBytes, freeBytes, totalBytes);
+            return false;
+        }
+    }
+    if (!frameGpuCache.initialize(config.gpuIds, config.runtime.inBytes, effectiveCacheSlots)) {
         return false;
     }
 
-    try {
-        frameSlotPool.reserve(FRAME_SLOT_POOL_SIZE);
-        for (std::size_t index = 0; index < FRAME_SLOT_POOL_SIZE; ++index) {
-            frameSlotPool.push_back(std::make_unique<FrameSlot>());
-        }
-        for (std::size_t index = 0; index < config.frames.size(); ++index) {
-            const StaticFrameConfig& frame = config.frames[index];
-            FrameSlot& slot = *frameSlotPool[index];
-            if (!slot.bind(frame.metadata, config.numaNode, frame.phase, config.runtime) || !slot.initializeGpuData(config.gpuIds)) {
-                release();
-                return false;
-            }
-        }
-    } catch (...) {
-        release();
-        return false;
-    }
-
-    frameIdToSlotIndex.swap(newFrameIdToSlotIndex);
-    boundFrameCount = config.frames.size();
+    registeredFrames.swap(newRegisteredFrames);
+    frameIdToIndex.swap(newFrameIdToIndex);
+    graphNumaNode = config.numaNode;
     initialized = true;
-    std::fprintf(stderr, "[GPUInfra] StaticData frame GPU plan gpu=%d pool_slots=%zu bound_frames=%zu bytes_per_frame=%zu allocated_bytes=%zu\n", config.gpuIds.front(), frameSlotPool.size(), boundFrameCount, config.runtime.inBytes, frameGpuBytes);
+    std::fprintf(stderr, "[GPUInfra] StaticData frame GPU cache plan gpu=%d registered_frames=%zu cache_slots=%zu bytes_per_slot=%zu allocated_bytes=%zu\n", config.gpuIds.front(), registeredFrames.size(), effectiveCacheSlots, config.runtime.inBytes, frameGpuBytes);
     return true;
 }
 
@@ -102,156 +86,48 @@ bool StaticData::execute() const {
 bool StaticData::release() {
     initialized = false;
 
-    bool ok = true;
-    bool allReleased = true;
-    for (const std::unique_ptr<FrameSlot>& slot : frameSlotPool) {
-        if (slot == nullptr) {
-            continue;
-        }
-        if (!slot->releaseGpuData()) {
-            ok = false;
-        }
-        if (slot->deviceData.isInitialized()) {
-            allReleased = false;
-        }
-    }
-    if (allReleased) {
-        frameSlotPool.clear();
-        frameIdToSlotIndex.clear();
-        boundFrameCount = 0;
+    const bool ok = frameGpuCache.release();
+    if (ok && !frameGpuCache.isInitialized()) {
+        registeredFrames.clear();
+        frameIdToIndex.clear();
+        graphNumaNode = -1;
     }
     return ok;
 }
 
-std::size_t StaticData::frameSlotCount() const {
-    return initialized ? boundFrameCount : 0;
+std::size_t StaticData::frameCount() const {
+    return registeredFrames.size();
 }
 
-std::size_t StaticData::frameSlotPoolSize() const {
-    return frameSlotPool.size();
+std::size_t StaticData::frameCacheSlotCount() const {
+    return frameGpuCache.slotCount();
 }
 
-std::size_t StaticData::frameCount(FramePhase phase) const {
-    if (!initialized || !validPhase(phase)) {
-        return 0;
-    }
-
-    std::size_t count = 0;
-    for (std::size_t index = 0; index < boundFrameCount; ++index) {
-        if (frameSlotPool[index]->phase == phase) {
-            ++count;
-        }
-    }
-    return count;
+bool StaticData::validateFrame(const FrameMetadata& metadata, int numaNode) const {
+    return initialized && graphNumaNode == numaNode && findFrameMetadata(metadata) != nullptr;
 }
 
-FrameSlot* StaticData::frameSlotAt(std::size_t index) {
-    if (!initialized || index >= boundFrameCount) {
-        return nullptr;
+FrameGpuAccess StaticData::acquireFrameGpuAccess(const FrameMetadata& metadata, const TaskGpuResources& resources) {
+    if (!validateFrame(metadata, resources.numaNode)) {
+        return FrameGpuAccess();
     }
-    return frameSlotPool[index].get();
-}
-
-const FrameSlot* StaticData::frameSlotAt(std::size_t index) const {
-    if (!initialized || index >= boundFrameCount) {
-        return nullptr;
-    }
-    return frameSlotPool[index].get();
-}
-
-FrameSlot* StaticData::findFrameSlot(const FrameMetadata& metadata) {
-    const StaticData* staticData = this;
-    return const_cast<FrameSlot*>(staticData->findFrameSlot(metadata));
-}
-
-const FrameSlot* StaticData::findFrameSlot(const FrameMetadata& metadata) const {
-    if (!initialized) {
-        return nullptr;
-    }
-
-    const auto match = frameIdToSlotIndex.find(metadata.id);
-    if (match == frameIdToSlotIndex.end() || match->second >= boundFrameCount) {
-        return nullptr;
-    }
-
-    const FrameSlot* slot = frameSlotPool[match->second].get();
-    return slot != nullptr && slot->isBound() && sameMetadata(slot->metadata, metadata) ? slot : nullptr;
-}
-
-bool StaticData::matchesFrame(const FrameMetadata& metadata, FramePhase phase, FrameState state) const {
-    const FrameSlot* slot = findFrameSlot(metadata);
-    return slot != nullptr && slot->phase == phase && slot->state == state;
-}
-
-bool StaticData::preparePhase(FramePhase phase) {
-    if (!initialized || !validPhase(phase)) {
-        return false;
-    }
-
-    for (std::size_t index = 0; index < boundFrameCount; ++index) {
-        const FrameSlot& slot = *frameSlotPool[index];
-        if (slot.phase == phase && slot.state != FrameState::Prepared) {
-            return false;
-        }
-    }
-    for (std::size_t index = 0; index < boundFrameCount; ++index) {
-        FrameSlot& slot = *frameSlotPool[index];
-        if (slot.phase != phase) {
-            continue;
-        }
-        slot.state = FrameState::Ready;
-        slot.result.id = slot.metadata.id;
-        slot.result.ok = true;
-    }
-    return true;
-}
-
-bool StaticData::beginFrameExecution(const FrameMetadata& metadata) {
-    FrameSlot* slot = findFrameSlot(metadata);
-    if (slot == nullptr || slot->state != FrameState::Ready) {
-        return false;
-    }
-
-    slot->state = FrameState::Executing;
-    return true;
-}
-
-bool StaticData::finishFrameExecution(const FrameMetadata& metadata, bool succeeded, bool cancelled) {
-    FrameSlot* slot = findFrameSlot(metadata);
-    if (slot == nullptr || slot->state != FrameState::Executing) {
-        return false;
-    }
-
-    if (cancelled) {
-        slot->state = succeeded ? FrameState::Cancelled : FrameState::Failed;
-        slot->result.ok = false;
-    }
-    else if (succeeded) {
-        slot->state = FrameState::Completed;
-    }
-    else {
-        slot->state = FrameState::Failed;
-        slot->result.ok = false;
-    }
-    return true;
-}
-
-bool StaticData::cancelFrame(const FrameMetadata& metadata, FrameState expectedState) {
-    FrameSlot* slot = findFrameSlot(metadata);
-    if (slot == nullptr || slot->state != expectedState || (expectedState != FrameState::Prepared && expectedState != FrameState::Ready)) {
-        return false;
-    }
-
-    slot->state = FrameState::Cancelled;
-    slot->result.ok = false;
-    return true;
-}
-
-const JobResult* StaticData::resultFor(const FrameMetadata& metadata) const {
-    const FrameSlot* slot = findFrameSlot(metadata);
-    return slot == nullptr ? nullptr : &slot->result;
+    return frameGpuCache.acquire(metadata, resources);
 }
 
 bool StaticData::isInitialized() const {
     return initialized;
+}
+
+const FrameMetadata* StaticData::findFrameMetadata(const FrameMetadata& metadata) const {
+    if (!initialized) {
+        return nullptr;
+    }
+
+    const auto match = frameIdToIndex.find(metadata.id);
+    if (match == frameIdToIndex.end() || match->second >= registeredFrames.size()) {
+        return nullptr;
+    }
+
+    const FrameMetadata& registeredMetadata = registeredFrames[match->second];
+    return sameMetadata(registeredMetadata, metadata) ? &registeredMetadata : nullptr;
 }

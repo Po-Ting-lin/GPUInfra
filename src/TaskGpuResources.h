@@ -15,6 +15,7 @@ struct TaskGpuResources {
     cudaStream_t stream = nullptr;
     void* h_in = nullptr;
     std::size_t inBytes = 0;
+    void* d_input = nullptr;
 
     void* d_scratch = nullptr;
     std::size_t scratchBytes = 0;

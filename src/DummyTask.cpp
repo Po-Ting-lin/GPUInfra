@@ -13,7 +13,6 @@
 #include "Cel.h"
 #include "CudaCheck.h"
 #include "FrameCpuAtom.h"
-#include "FrameSlot.h"
 #include "GpuContextManager.h"
 #include "IAlgo.h"
 #include "ImageSizing.h"
@@ -30,13 +29,13 @@ bool validRuntime(const AlgoRuntimeInfo& runtime) {
     const int expectedFrameSize = ImageSizing::scaledDimension(runtime.sizeFactor, ImageSizing::INPUT_MULTIPLIER);
     const std::size_t expectedInputBytes = ImageSizing::squareBytes(expectedFrameSize, sizeof(std::uint8_t));
 
-    if (runtime.frameW != expectedFrameSize){
+    if (runtime.frameW != expectedFrameSize) {
         return false;
     }
-    if (runtime.frameH != expectedFrameSize){
+    if (runtime.frameH != expectedFrameSize) {
         return false;
     }
-    if (runtime.inBytes != expectedInputBytes){
+    if (runtime.inBytes != expectedInputBytes) {
         return false;
     }
     return true;
@@ -67,14 +66,14 @@ bool DummyTask::load() {
         return false;
     }
     // Check TaskGpuResources ready and cudaSetDevice
-    if (!GpuContextManager::makeTaskCurrent(resources)){
+    if (!GpuContextManager::makeTaskCurrent(resources)) {
         state = TaskLifecycle::Failed;
         releaseResources();
         return false;
     }
 
     resources.inBytes = algoRuntime.inBytes;
-    
+
     // Create CUDA Stream
     bool ok = true;
     CUDA_CHECK(cudaStreamCreateWithFlags(&resources.stream, cudaStreamNonBlocking), ok = false);
@@ -83,6 +82,12 @@ bool DummyTask::load() {
     }
     if (ok) {
         std::memset(resources.h_in, 0, resources.inBytes);
+    }
+    if (ok) {
+        CUDA_CHECK(cudaMalloc(&resources.d_input, resources.inBytes), ok = false);
+    }
+    if (ok) {
+        CUDA_CHECK(cudaMemsetAsync(resources.d_input, 0, resources.inBytes, resources.stream), ok = false);
     }
 
     // Prepare Algo
@@ -157,108 +162,93 @@ bool DummyTask::notifyParameters(const ParameterSnapshot& parameters) {
 }
 
 bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
+    atom.result.id = atom.metadata.id;
     if (state != TaskLifecycle::Notified || !staticData.isInitialized()) {
+        atom.result.ok = false;
         return false;
     }
 
-    FrameSlot* selectedFrame = staticData.findFrameSlot(atom.metadata);
-    if (selectedFrame == nullptr) {
+    // The atom must be registered by the same NUMA-local StaticData instance.
+    if (!staticData.validateFrame(atom.metadata, node)) {
+        atom.result.ok = false;
+        return false;
+    }
+    // The input layout must match the task's cold-path allocation layout.
+    if (atom.data.size() != atom.metadata.bytes || atom.metadata.bytes != resources.inBytes || atom.metadata.width != algoRuntime.frameW || atom.metadata.height != algoRuntime.frameH || atom.metadata.dtype != algoRuntime.frameDtype) {
+        atom.result.ok = false;
+        return false;
+    }
+    if (resources.d_input == nullptr || atom.result.outputs.size() != algorithms.size()) {
+        atom.result.ok = false;
         return false;
     }
 
-    FrameSlot& frame = *selectedFrame;
-    frame.result.id = frame.metadata.id;
-
-    if (!atom.matchesMetadata(frame.metadata)) {
-        frame.result.ok = false;
-        return false;
-    }
-    if (frame.numaNode != node){ // check (node of this task) == (node of FrameSlot)
-        frame.result.ok = false;
-        return false;
-    }
-    if (atom.data.size() != frame.metadata.bytes || frame.metadata.bytes != resources.inBytes || frame.metadata.width != algoRuntime.frameW || frame.metadata.height != algoRuntime.frameH || frame.metadata.dtype != algoRuntime.frameDtype){ // input frame layout == task allocation layout
-        frame.result.ok = false;
-        return false;
-    }
-    if (!frame.deviceData.isInitialized() || frame.deviceData.bytes() != resources.inBytes){
-        frame.result.ok = false;
-        return false;
-    }
-    if (frame.result.outputs.size() != algorithms.size()){ // number of output of FrameSlot == number of algos
-        frame.result.ok = false;
+    atom.result.ok = GpuContextManager::makeTaskCurrent(resources);
+    if (!atom.result.ok) {
         return false;
     }
 
-    frame.result.ok = GpuContextManager::makeTaskCurrent(resources);
-    if (!frame.result.ok) {
-        return false;
-    }
-
-    const bool needsUpload = !frame.deviceData.hasData(frame.metadata.id);
-    const FrameGpuAccessMode accessMode = needsUpload ? FrameGpuAccessMode::Upload : FrameGpuAccessMode::Read;
-    
-    FrameGpuAccess access = frame.deviceData.acquire(accessMode, frame.metadata.id, resources);
+    FrameGpuAccess access = staticData.acquireFrameGpuAccess(atom.metadata, resources);
     if (!access) {
-        frame.result.ok = false;
+        atom.result.ok = false;
         return false;
     }
 
-    // pagable to pin
-    // H2D 
-    if (needsUpload) {
+    // Pageable to pinned staging.
+    // H2D
+    if (access.needsUpload()) {
         std::memcpy(resources.h_in, atom.data.data(), atom.data.size());
-        CUDA_CHECK(cudaMemcpyAsync(access.writableData(), resources.h_in, resources.inBytes, cudaMemcpyHostToDevice, resources.stream), frame.result.ok = false);
+        CUDA_CHECK(cudaMemcpyAsync(access.writableData(), resources.h_in, resources.inBytes, cudaMemcpyHostToDevice, resources.stream), atom.result.ok = false);
     }
 
     // Compute: all kernels -> all D2H
     if (executionModel == ExecutionModel::Batched) {
-        if (frame.result.ok) {
+        if (atom.result.ok) {
             for (const std::unique_ptr<IAlgo>& algorithm : algorithms) {
                 if (!algorithm->launchKernels(resources, access.data(), resources.stream)) {
-                    frame.result.ok = false;
+                    atom.result.ok = false;
                     break;
                 }
             }
         }
-        if (frame.result.ok) {
+        if (atom.result.ok) {
             for (const std::unique_ptr<IAlgo>& algorithm : algorithms) {
                 if (!algorithm->launchD2H(resources, resources.stream)) {
-                    frame.result.ok = false;
+                    atom.result.ok = false;
                     break;
                 }
             }
         }
     }
-    // Compute: kernel A -> H2D A -> kernel B -> H2D B ....  
+    // Compute: kernel A -> D2H A -> kernel B -> D2H B ...
     else if (executionModel == ExecutionModel::Interleaved) {
-        if (frame.result.ok) {
+        if (atom.result.ok) {
             for (const std::unique_ptr<IAlgo>& algorithm : algorithms) {
                 if (!algorithm->launchKernels(resources, access.data(), resources.stream) || !algorithm->launchD2H(resources, resources.stream)) {
-                    frame.result.ok = false;
+                    atom.result.ok = false;
                     break;
                 }
             }
         }
     }
     else {
-        frame.result.ok = false;
+        atom.result.ok = false;
     }
 
-    if (!access.complete(frame.result.ok)) {
-        frame.result.ok = false;
+    if (!access.complete(atom.result.ok)) {
+        atom.result.ok = false;
     }
 
-    // pin to pagable
-    if (frame.result.ok) {
+    // Pinned staging to pageable results.
+    if (atom.result.ok) {
         for (std::size_t index = 0; index < algorithms.size(); ++index) {
-            if (!algorithms[index]->collectResult(resources, frame.result.outputs[index])) {
-                frame.result.ok = false;
+            if (!algorithms[index]->collectResult(resources, atom.result.outputs[index])) {
+                atom.result.ok = false;
                 break;
             }
         }
     }
-    return frame.result.ok;
+    return atom.result.ok;
 }
 
 bool DummyTask::unload() {
@@ -307,6 +297,10 @@ bool DummyTask::releaseResources() {
         resources.d_scratch = nullptr;
     }
     resources.scratchBytes = 0;
+    if (resources.d_input != nullptr) {
+        CUDA_CHECK(cudaFree(resources.d_input), ok = false);
+        resources.d_input = nullptr;
+    }
     if (resources.h_in != nullptr) {
         CUDA_CHECK(cudaFreeHost(resources.h_in), ok = false);
         resources.h_in = nullptr;

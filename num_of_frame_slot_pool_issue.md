@@ -1,228 +1,108 @@
-# Number of FrameSlotPool Entries — Open Issue
+# FrameSlotPool 數量問題
 
-## 問題摘要
+## 狀態
 
-目前 `StaticData::FRAME_SLOT_POOL_SIZE` 固定為 220，但 220 不是由 task
-instance 數量或 GPU concurrency 推導出的架構常數。它來自目前 demo 的預設
-workload：
-
-```text
-20 warmup frames + 200 timed frames = 220 configured frames
-```
-
-目前實作又採用一個 configured logical frame 固定綁定一個 `FrameSlot`，而且
-graph lifetime 內不 recycling，因此需要 220 個 slots 才能執行預設 workload。
-
-這是目前實作的保守容量，不代表所有 graph 都需要 220 個同時存活的 GPU
-frame payloads。
-
-## 目前程式行為
-
-[`main.cpp`](src/main.cpp) 預設每張 GPU 建立：
-
-- 20 個 warmup frames；
-- 200 個 timed frames；
-- 4 個 task instances；
-- 4 個 graph workers。
-
-[`DummyGraph::initializeOnNumaNode()`](src/DummyGraph.cpp) 會在 workers 啟動前
-建立所有 `FrameCpuAtom`，並為每個 atom 建立一筆 `StaticFrameConfig`。
-[`StaticData::init()`](src/StaticData.cpp) 接著：
-
-1. 建立固定 220 個 `FrameSlot` objects；
-2. 為每個 configured frame 綁定一個 slot；
-3. 為每個 bound slot 配置 persistent GPU frame buffer；
-4. 建立 immutable `frame ID -> slot index`；
-5. 保留 slot、GPU allocation、state 和 result 到 graph teardown。
-
-目前 `FrameSlot::bind()` 不支援將 terminal slot 重新綁定至另一個 logical
-frame。因此預設 mapping 是：
+已透過「registered frames 與 GPU cache slots 分離」解決。`220` 現在只
+是 demo 預設 workload 的 logical frame 數量：
 
 ```text
-Warmup Frame 0  ... 19   -> Slot 0  ... 19
-Timed  Frame 20 ... 219  -> Slot 20 ... 219
+20 warmup + 200 timed = 220 FrameCpuAtom / registered metadata entries
 ```
 
-即使 warmup phase 已結束，前 20 個 slots 仍然保持 bound 和 allocated，不會
-提供給 timed frames 使用。
-
-## Task instance 數量不等於 FrameSlot 數量
-
-4 個 `TaskA` instances 只限制同一時間最多有 4 個 `TaskA::execute()` calls，
-不限制 `TaskA` 在整個 run 中能處理多少 frames。Task instance 是 reusable
-execution resource：
+它不再是 `FrameSlotPool` 的固定容量，也不再代表需要 220 個 device input
+buffers。`GraphConfig::frameCacheSlots` 預設為 4；有效容量為：
 
 ```text
-TaskA instance 0: F0, F4, F8,  ... F216
-TaskA instance 1: F1, F5, F9,  ... F217
-TaskA instance 2: F2, F6, F10, ... F218
-TaskA instance 3: F3, F7, F11, ... F219
+min(frameCacheSlots, configured frames)
 ```
 
-每個 instance 依序執行 55 次，4 個 instances 總共仍可處理 220 frames。
+`frameCacheSlots = 0` 也是合法設定，代表完全停用 GPU frame cache。
 
-`TaskGpuResources` 中的 stream、scratch、pinned staging 和 task-private
-buffers 可以在 `execute()` 結束後供下一個 frame 重用。但 frame payload 若
-尚未完成所有 graph stages，必須繼續存放於該 frame 的 `FrameSlot`：
+## 為何 task instances 少，仍可處理 220 frames
+
+4 個 task instances 限制的是 concurrent `execute()` 數量，不是整個 run 的
+frame 總數。每個 instance 完成一次呼叫後即可被 scheduler 重用：
 
 ```text
-TaskA0 executes F0
-  -> F0 GPU data 留在 FrameSlot(F0)，等待 TaskB
-  -> TaskA0 free，可以開始執行 F4
+Task instance 0: F0, F4, F8,  ... F216
+Task instance 1: F1, F5, F9,  ... F217
+Task instance 2: F2, F6, F10, ... F218
+Task instance 3: F3, F7, F11, ... F219
 ```
 
-因此 task instance 數量只代表 stage execution concurrency，不代表同時存活
-的 frame payload 數量。
+因此 graph-owned frame execution state 與 atom-owned result 必須與 task
+lifetime 分離，但不代表每個 logical frame 都必須永久佔用一份 GPU input
+buffer。
 
-## 可能需要 220 個 live slots 的例子
-
-考慮：
+## 目前兩層模型
 
 ```text
-TaskA -> TaskB -> TaskC
+StaticData
+  ├─ registered FrameMetadata[NumConfiguredFrames]
+  │    immutable frame-ID index + graph NUMA
+  │
+  └─ FrameGpuCache
+       └─ FrameSlot[min(ConfiguredFrameCacheSlots, NumConfiguredFrames)]
+            cached metadata + LRU/lease state + FrameGpuData
 ```
 
-假設：
+- `StaticData` 保存 immutable registered metadata，並由
+  `frame ID -> metadata index` hash 查找；不保存 execution state。
+- `FrameCpuAtom` 同時擁有 CPU input、metadata 與預配置的 `JobResult`。
+- `FramePhase` 由 `DummyGraph` 的 `warmupAtoms`／`timedAtoms` collections 表示，
+  ready/in-flight/terminal bookkeeping 則管理 execution progress。
+- `FrameSlot` 是 best-effort GPU cache entry：可被 LRU 替換，並不與某個
+  logical frame 永久綁定。
+- `TaskGpuResources::d_input` 是每個 task instance 的 persistent fallback
+  device buffer，同樣只在 `load()`/`unload()` 配置與釋放。
 
-- 有 220 個 timed frames；
-- TaskA 和 TaskB 各有 4 個 instances；
-- 至少有 8 個可執行這些 tasks 的 graph workers；
-- TaskA 每批 4 frames 花費 1 ms；
-- TaskB 處理一批 frames 花費 100 ms；
-- scheduler 沒有 input admission limit 或 bounded pipeline depth。
+## Cache hit、fill 與 fallback
 
-可能出現：
+`FrameGpuCache::acquire()` 掃描預先配置的少量 slots：
+
+1. 完整 metadata 相符且 entry 為 `Valid`：回傳 `CacheHit`，不做 H2D。
+2. miss 且有 `Empty` 或 inactive LRU entry：保留該 entry，回傳
+   `CacheFill`；task 從 immutable `FrameCpuAtom` 重新 H2D。
+3. 相同 frame 正在 `Loading`，或全部 slots 都有 active leases：立即回傳
+   `TaskFallback`，不等待、不修改 scheduler。
+4. capacity 為 0：所有執行都走 `TaskFallback`。
+
+Cache fill 只會在 task stream 成功同步後成為 `Valid`。失敗或 RAII abort
+會把 entry 恢復成 `Empty`。Cache hit 失敗不會破壞原本 immutable payload。
+
+Lookup 是 `O(K)`，其中 `K = frameCacheSlots`，預設 4；這個固定 array scan
+不配置記憶體，且比在 hot path 維護會 rehash 的 residency map 更單純。
+Registered metadata lookup 仍是平均 `O(1)`。
+
+## 為何 correctness 不再要求 220 GPU slots
+
+目前所有 algorithms 都只讀原始 frame input。Cache miss 時，task 可以從仍
+有效且 immutable 的 `FrameCpuAtom` 重新 H2D 到自己的 `d_input`，所以 cache
+只是避免重複 H2D 的效能優化：
 
 ```text
-t=0~1 ms
-  A0~A3 process F0~F3
-
-t=1~101 ms
-  B0~B3 process F0~F3
-
-t=1~2 ms
-  A0~A3 process F4~F7
-
-t=2~3 ms
-  A0~A3 process F8~F11
-
-...
-
-t=54~55 ms
-  A0~A3 process F216~F219
+cache hit         -> 使用 FrameSlot.deviceData
+cache fill        -> FrameCpuAtom -> H2D -> FrameSlot.deviceData
+cache unavailable -> FrameCpuAtom -> H2D -> TaskGpuResources.d_input
 ```
 
-在 `t=55 ms`：
+這讓 GPU cache 容量可小於 simultaneous live logical frames，而不需要修改
+`graph.md` 的 ready-frame/task/worker selection，也不需要 slot wait/requeue。
 
-```text
-F0~F3       正在 TaskB
-F4~F219     已完成 TaskA，等待 TaskB
-```
+## 重要邊界
 
-此時可能有：
+這個縮小方案成立的必要條件是 GPU payload 可由 immutable CPU atom 重建。
+若未來 `TaskA` 產生只能存在 GPU、且 `TaskB` 必須讀取的 mutable intermediate
+payload，eviction 後便不能靠原始 CPU frame 重建。該資料必須另建
+frame-owned authoritative output plane、明確的 spill/recompute contract，或
+具有足夠容量的非 best-effort storage；不能直接把目前 cache 當成唯一真實
+資料來源。
 
-```text
-4 executing in TaskB + 216 waiting for TaskB = 220 live frame payloads
-```
+## 結論
 
-每個 payload 都不能被下一個 frame 覆蓋，因為 TaskB 或 TaskC 尚未完成讀取。
-在這個沒有 admission control 的例子中，即使每種 task 只有 4 個 instances，
-仍可能需要 220 個 slots。
-
-## 何時不需要 220
-
-上述 220-live-frame 情境不是 task instance 數量必然造成的結果，還需要足夠
-workers、允許 TaskA 持續執行，以及沒有 bounded admission/backpressure。
-
-如果 framework 保證：
-
-- 同時最多只有 `K` 個 frames 進入 graph；
-- downstream stages 具有足夠優先權，不會無限制累積 upstream output；
-- terminal result 已被 consumer 複製或確認不再使用；
-- slot 可以在 terminal callback 後安全 rebind；
-
-則 pool 只需要涵蓋最大 live-frame 數：
-
-```text
-required FrameSlotPool size >= maximum simultaneous live frames
-```
-
-對目前 checked-in 的單一 stage graph：
-
-```text
-start -> DummyTask -> end
-```
-
-在 4 個 tasks、4 個 workers，而且 frame terminal 後立即 recycling 的前提
-下，約 4 個 slots 可能已經足夠。至少在 phase boundary recycling，20 個
-warmup slots 也可以提供給 timed phase 重用，使需求由：
-
-```text
-20 + 200 = 220
-```
-
-降低為：
-
-```text
-max(20, 200) = 200
-```
-
-目前尚未實作上述 recycling。
-
-## 記憶體成本範例
-
-預設 `size_factor=128` 時，input frame 是 `1024 x 1024` 的 `uint8` data：
-
-```text
-每個 GPU frame buffer = 1 MiB
-220 個 bound slots     = 220 MiB GPU memory / graph copy / replica
-```
-
-此外，每個 configured frame 還有約 1 MiB 的 `FrameCpuAtom` input，以及
-預先配置的 CEL、SDD、MI result vectors。固定使用總 frame 數作為 pool size
-會以較高的 host/GPU memory 使用量換取：
-
-- stable slot 和 device pointers；
-- execution hot path 無配置；
-- 不需要 slot acquisition failure 或 retry protocol；
-- 不依賴 scheduler fairness、queue order 或 pipeline depth。
-
-## 為什麼目前採用 total configured frames
-
-[`graph.md`](graph.md) 定義 task instance 和 graph thread 的選擇方式，但沒有
-定義：
-
-- graph 同時最多 admission 多少 frames；
-- stage queue 的最大深度；
-- upstream/downstream scheduling priority；
-- slot 不足時的 wait、retry 或 requeue protocol；
-- terminal result consumer 何時不再引用 slot data。
-
-又因為 scheduler 選擇邏輯不能修改，使用一個 slot 對應一個 configured
-frame 是目前唯一不需要額外 backpressure contract 的保守方案。Hash index
-只把 selection lookup 從 O(number of bound slots) 降為平均 O(1)，不會減少
-live payload 數量，也不會自動提供 recycling safety。
-
-## 待確認事項
-
-決定真正的 pool size 前，需要從真實 framework 取得以下保證：
-
-1. 每個 graph copy 的最大 simultaneously admitted frame 數；
-2. 每個 stage 的最大 queue depth；
-3. graph workers 與各 task type instance 數量；
-4. scheduler 是否保證 downstream priority 或 bounded backlog；
-5. frame 到達 terminal stage 後，GPU payload 何時可被覆寫；
-6. result delivery 是否複製資料，或 consumer 是否仍保存 slot reference；
-7. slot 不足時是否存在不修改 scheduler selection 的安全等待或重試 hook；
-8. frame ID 是否可能重用，以及需要何種 generation/epoch。
-
-## 目前結論
-
-- `220` 是目前預設 workload 加上一-frame-per-slot、不 recycling 政策的結果。
-- `220` 不是 task instance 數量推導出的必要常數。
-- task instance 數量只限制 concurrent `execute()` calls。
-- 真正的 pool size 應由最大 simultaneous live-frame 數決定。
-- 在真實 scheduler 沒有提供 admission/backpressure/lifetime 保證以前，220
-  是安全但記憶體成本較高的 conservative upper bound。
-- 若要縮小 pool，必須先定義 slot acquisition、terminal recycling、index
-  更新與 frame-ID generation contract。
+- `NumConfiguredFrames` 決定 registered metadata 與 atom-owned CPU/result
+  storage 數量。
+- `frameCacheSlots` 決定 best-effort device cache 數量，預設 4。
+- `NumTaskInstances` 決定 task streams、fallback input、scratch 與 algo-private
+  buffers 數量。
+- 三者互相獨立；不再因預設有 220 frames 就配置 220 份 GPU input cache。

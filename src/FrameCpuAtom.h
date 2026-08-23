@@ -4,14 +4,14 @@
 #include <vector>
 
 #include "FrameMetadata.h"
+#include "IAlgo.h"
 
 struct FrameCpuAtom {
-    explicit FrameCpuAtom(const FrameMetadata& frameMetadata);
-
-    bool matchesMetadata(const FrameMetadata& expected) const;
+    FrameCpuAtom(const FrameMetadata& frameMetadata, const AlgoRuntimeInfo& runtime);
 
     FrameMetadata metadata;
     std::vector<std::uint8_t> data;
+    JobResult result;
 
     FrameCpuAtom(const FrameCpuAtom&) = delete;
     FrameCpuAtom& operator=(const FrameCpuAtom&) = delete;

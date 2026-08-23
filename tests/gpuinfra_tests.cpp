@@ -19,8 +19,7 @@
 #include "DummyTask.h"
 #include "FrameCpuAtom.h"
 #include "FrameGpuAccess.h"
-#include "FrameGpuData.h"
-#include "FrameSlot.h"
+#include "FrameGpuCache.h"
 #include "GpuContextManager.h"
 #include "ImageSizing.h"
 #include "ParameterRegistry.h"
@@ -86,37 +85,16 @@ bool unloadTask(DummyTask& task) {
     return unloaded;
 }
 
-bool initializeFrame(FrameSlot& frame, const GpuLocation& location) {
+bool initializeStaticData(StaticData& staticData, const GpuLocation& location, const AlgoRuntimeInfo& runtime, const std::vector<FrameMetadata>& frames, std::size_t frameCacheSlots = 4) {
     bool initialized = false;
-    std::thread setup([&frame, &location, &initialized] {
-        if (GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode)) {
-            initialized = frame.initializeGpuData({location.gpuId});
-        }
-    });
-    setup.join();
-    return initialized;
-}
-
-bool releaseFrame(FrameSlot& frame, const GpuLocation& location) {
-    bool released = false;
-    std::thread teardown([&frame, &location, &released] {
-        if (GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode)) {
-            released = frame.releaseGpuData();
-        }
-    });
-    teardown.join();
-    return released;
-}
-
-bool initializeStaticData(StaticData& staticData, const GpuLocation& location, const AlgoRuntimeInfo& runtime, const std::vector<StaticFrameConfig>& frames) {
-    bool initialized = false;
-    std::thread setup([&staticData, &location, &runtime, &frames, &initialized] {
+    std::thread setup([&staticData, &location, &runtime, &frames, frameCacheSlots, &initialized] {
         if (GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode)) {
             StaticDataConfig config;
             config.numaNode = location.numaNode;
             config.gpuIds = {location.gpuId};
             config.runtime = runtime;
             config.frames = frames;
+            config.frameCacheSlots = frameCacheSlots;
             initialized = staticData.init(config);
         }
     });
@@ -135,8 +113,36 @@ bool releaseStaticData(StaticData& staticData, const GpuLocation& location) {
     return released;
 }
 
-FrameSlot* findFrameSlot(StaticData& staticData, const FrameMetadata& metadata) {
-    return staticData.findFrameSlot(metadata);
+bool initializeAccessResources(TaskGpuResources& resources, const GpuLocation& location, std::size_t bytes) {
+    resources.gpuId = location.gpuId;
+    resources.numaNode = location.numaNode;
+    resources.inBytes = bytes;
+    if (cudaSetDevice(location.gpuId) != cudaSuccess || cudaStreamCreateWithFlags(&resources.stream, cudaStreamNonBlocking) != cudaSuccess) {
+        return false;
+    }
+    if (cudaMalloc(&resources.d_input, bytes) != cudaSuccess) {
+        cudaStreamDestroy(resources.stream);
+        resources.stream = nullptr;
+        return false;
+    }
+    return true;
+}
+
+bool releaseAccessResources(TaskGpuResources& resources) {
+    bool ok = true;
+    if (resources.stream != nullptr && cudaStreamSynchronize(resources.stream) != cudaSuccess) {
+        ok = false;
+    }
+    if (resources.d_input != nullptr && cudaFree(resources.d_input) != cudaSuccess) {
+        ok = false;
+    }
+    resources.d_input = nullptr;
+    if (resources.stream != nullptr && cudaStreamDestroy(resources.stream) != cudaSuccess) {
+        ok = false;
+    }
+    resources.stream = nullptr;
+    resources.inBytes = 0;
+    return ok;
 }
 
 bool executeTask(DummyTask& task, FrameCpuAtom& atom, StaticData& staticData, const GpuLocation& location) {
@@ -195,108 +201,123 @@ void testParameterRegistry(TestContext& test) {
 
 void testStaticDataValidation(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
-    std::vector<StaticFrameConfig> overflowFrames;
-    overflowFrames.reserve(StaticData::FRAME_SLOT_POOL_SIZE + 1);
-    for (std::size_t index = 0; index <= StaticData::FRAME_SLOT_POOL_SIZE; ++index) {
-        overflowFrames.push_back({makeFrameMetadata(static_cast<std::uint64_t>(index), runtime), FramePhase::Timed});
+    const GraphConfig defaultGraphConfig;
+    test.expect(defaultGraphConfig.frameCacheSlots == 4, "graph cache capacity defaults to four entries");
+
+    std::vector<FrameMetadata> manyFrames;
+    manyFrames.reserve(221);
+    for (std::size_t index = 0; index < 221; ++index) {
+        manyFrames.push_back(makeFrameMetadata(static_cast<std::uint64_t>(index), runtime));
     }
 
-    StaticData overflowData;
-    test.expect(!initializeStaticData(overflowData, location, runtime, overflowFrames), "reject more than 220 configured StaticData frames");
-    test.expect(overflowData.frameSlotPoolSize() == 0 && overflowData.release(), "capacity rejection leaves StaticData empty");
+    StaticData manyFrameData;
+    test.expect(initializeStaticData(manyFrameData, location, runtime, manyFrames, 2), "accept more than 220 registered frames with a bounded cache");
+    test.expect(manyFrameData.frameCount() == manyFrames.size() && manyFrameData.frameCacheSlotCount() == 2, "registered frame count is independent from cache capacity");
+    test.expect(manyFrameData.validateFrame(manyFrames.back(), location.numaNode), "validate a registered sparse frame through the immutable index");
+    test.expect(!manyFrameData.validateFrame(manyFrames.back(), location.numaNode + 1), "reject a registered frame from another NUMA graph copy");
+    test.expect(releaseStaticData(manyFrameData, location), "release large registered frame set and bounded cache");
 
     const FrameMetadata duplicateMetadata = makeFrameMetadata(41, runtime);
     StaticData duplicateData;
-    test.expect(!initializeStaticData(duplicateData, location, runtime, {{duplicateMetadata, FramePhase::Warmup}, {duplicateMetadata, FramePhase::Timed}}), "reject duplicate StaticData frame IDs");
-    test.expect(duplicateData.frameSlotPoolSize() == 0 && duplicateData.release(), "duplicate rejection leaves StaticData empty");
+    test.expect(!initializeStaticData(duplicateData, location, runtime, {duplicateMetadata, duplicateMetadata}), "reject duplicate StaticData frame IDs");
+    test.expect(duplicateData.frameCount() == 0 && duplicateData.frameCacheSlotCount() == 0 && duplicateData.release(), "duplicate rejection leaves StaticData empty");
+
+    StaticData smallData;
+    test.expect(initializeStaticData(smallData, location, runtime, {duplicateMetadata}, 4), "initialize fewer frames than requested cache slots");
+    test.expect(smallData.frameCount() == 1 && smallData.frameCacheSlotCount() == 1, "effective cache capacity is limited by configured frame count");
+    test.expect(releaseStaticData(smallData, location), "release capacity-limited cache");
 }
 
 void testFrameGpuAccessState(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
-    const FrameMetadata metadata = makeFrameMetadata(0, runtime);
-    FrameSlot frame(metadata, location.numaNode, FramePhase::Timed, runtime);
-    const bool initialized = initializeFrame(frame, location);
-    test.expect(initialized, "initialize frame GPU access state");
-    if (!initialized) {
-        return;
-    }
-
+    const FrameMetadata firstMetadata = makeFrameMetadata(0, runtime);
+    const FrameMetadata secondMetadata = makeFrameMetadata(1, runtime);
+    FrameGpuCache cache;
     TaskGpuResources resources;
-    resources.gpuId = location.gpuId;
-    resources.numaNode = location.numaNode;
-    bool streamReady = cudaSetDevice(location.gpuId) == cudaSuccess;
-    if (streamReady) {
-        streamReady = cudaStreamCreateWithFlags(&resources.stream, cudaStreamNonBlocking) == cudaSuccess;
-    }
-    test.expect(streamReady, "create frame GPU access test stream");
-    if (!streamReady) {
-        test.expect(releaseFrame(frame, location), "release frame after stream setup failure");
+    const bool initialized = initializeAccessResources(resources, location, runtime.inBytes) && cache.initialize({location.gpuId}, runtime.inBytes, 1);
+    test.expect(initialized, "initialize bounded frame GPU cache and fallback buffer");
+    if (!initialized) {
+        cache.release();
+        releaseAccessResources(resources);
         return;
     }
 
-    test.expect(frame.deviceData.replicaCount() == 1 && frame.deviceData.bytes() == runtime.inBytes, "frame GPU data has one correctly sized replica");
-    FrameGpuAccess prematureRead = frame.deviceData.acquire(FrameGpuAccessMode::Read, frame.metadata.id, resources);
-    test.expect(!prematureRead, "reject read before first frame upload");
-
-    FrameGpuAccess firstUpload = frame.deviceData.acquire(FrameGpuAccessMode::Upload, frame.metadata.id, resources);
-    const bool beganFirstUpload = static_cast<bool>(firstUpload);
-    test.expect(beganFirstUpload, "acquire first frame upload");
-    void* d_frameData = nullptr;
-    if (beganFirstUpload) {
-        d_frameData = firstUpload.writableData();
-        test.expect(firstUpload.data() != nullptr && d_frameData != nullptr, "upload access exposes tracked readable and writable views");
-        const bool memsetSucceeded = cudaMemsetAsync(d_frameData, 0x2a, firstUpload.bytes(), resources.stream) == cudaSuccess;
-        test.expect(firstUpload.complete(memsetSucceeded), "commit first frame upload");
-    }
-    test.expect(frame.deviceData.hasData(frame.metadata.id) && frame.deviceData.frameId() == frame.metadata.id, "uploaded GPU payload records the logical frame ID");
-
-    FrameGpuAccess read = frame.deviceData.acquire(FrameGpuAccessMode::Read, frame.metadata.id, resources);
-    const bool beganRead = static_cast<bool>(read);
-    test.expect(beganRead, "acquire same-GPU frame read");
-    if (beganRead) {
-        test.expect(read.data() != nullptr && read.writableData() == nullptr, "read access does not expose a mutable frame pointer");
-        test.expect(read.complete(true), "finish same-GPU frame read");
-    }
-    test.expect(frame.deviceData.hasData(frame.metadata.id) && frame.deviceData.frameId() == frame.metadata.id, "read keeps the same resident frame ID");
-
-    const std::uint64_t nextFrameId = frame.metadata.id + 1;
+    test.expect(cache.slotCount() == 1 && cache.bytes() == runtime.inBytes, "cache owns one correctly sized preallocated slot");
+    void* cacheDeviceData = nullptr;
     {
-        FrameGpuAccess abandonedUpload = frame.deviceData.acquire(FrameGpuAccessMode::Upload, nextFrameId, resources);
-        test.expect(static_cast<bool>(abandonedUpload), "acquire next-frame upload used for scope abort");
-    }
-    test.expect(!frame.deviceData.hasData(frame.metadata.id) && !frame.deviceData.hasData(nextFrameId), "starting a new upload invalidates the previous frame payload");
+        FrameGpuAccess firstFill = cache.acquire(firstMetadata, resources);
+        test.expect(static_cast<bool>(firstFill) && firstFill.source() == FrameGpuAccessSource::CacheFill && firstFill.needsUpload(), "first miss reserves a cache fill");
+        cacheDeviceData = firstFill.writableData();
+        test.expect(cacheDeviceData != nullptr && firstFill.data() == cacheDeviceData, "cache fill exposes the preallocated device pointer");
 
-    FrameGpuAccess failedUpload = frame.deviceData.acquire(FrameGpuAccessMode::Upload, nextFrameId, resources);
-    const bool beganFailedUpload = static_cast<bool>(failedUpload);
-    test.expect(beganFailedUpload, "acquire next-frame upload used for explicit failure");
-    if (beganFailedUpload) {
-        test.expect(!failedUpload.complete(false), "failed upload does not publish the next frame ID");
-    }
-    test.expect(!frame.deviceData.hasData(nextFrameId), "failed upload leaves the GPU payload invalid");
+        FrameGpuAccess loadingFallback = cache.acquire(firstMetadata, resources);
+        test.expect(static_cast<bool>(loadingFallback) && loadingFallback.source() == FrameGpuAccessSource::TaskFallback && loadingFallback.needsUpload(), "same frame loading uses task fallback without waiting");
+        test.expect(loadingFallback.writableData() == resources.d_input, "loading fallback uses the task-private input buffer");
+        const bool fallbackMemset = cudaMemsetAsync(loadingFallback.writableData(), 0x19, loadingFallback.bytes(), resources.stream) == cudaSuccess;
+        test.expect(loadingFallback.complete(fallbackMemset), "complete loading fallback without publishing cache state");
 
-    FrameGpuAccess secondUpload = frame.deviceData.acquire(FrameGpuAccessMode::Upload, nextFrameId, resources);
-    const bool beganSecondUpload = static_cast<bool>(secondUpload);
-    test.expect(beganSecondUpload, "acquire successful next-frame upload");
-    if (beganSecondUpload) {
-        test.expect(secondUpload.writableData() == d_frameData, "next frame reuses the existing device allocation");
-        const bool memsetSucceeded = cudaMemsetAsync(secondUpload.writableData(), 0x17, secondUpload.bytes(), resources.stream) == cudaSuccess;
-        test.expect(secondUpload.complete(memsetSucceeded), "commit successful next-frame upload");
+        const bool fillMemset = cudaMemsetAsync(firstFill.writableData(), 0x2a, firstFill.bytes(), resources.stream) == cudaSuccess;
+        test.expect(firstFill.complete(fillMemset), "publish cache fill after stream synchronization");
     }
-    test.expect(frame.deviceData.hasData(nextFrameId) && frame.deviceData.frameId() == nextFrameId, "successful upload publishes the next logical frame ID");
 
-    FrameGpuAccess staleFrameRead = frame.deviceData.acquire(FrameGpuAccessMode::Read, frame.metadata.id, resources);
-    test.expect(!staleFrameRead, "reject read using the previous logical frame ID");
+    FrameMetadata mismatchedMetadata = firstMetadata;
+    ++mismatchedMetadata.width;
+    FrameGpuAccess mismatchedAccess = cache.acquire(mismatchedMetadata, resources);
+    test.expect(!mismatchedAccess, "reject the same frame ID with different metadata");
+
+    FrameGpuAccess failedHit = cache.acquire(firstMetadata, resources);
+    test.expect(static_cast<bool>(failedHit) && failedHit.source() == FrameGpuAccessSource::CacheHit && !failedHit.complete(false), "failed cache reader releases its lease without publishing state");
+    FrameGpuAccess hitAfterFailure = cache.acquire(firstMetadata, resources);
+    test.expect(static_cast<bool>(hitAfterFailure) && hitAfterFailure.source() == FrameGpuAccessSource::CacheHit && hitAfterFailure.complete(true), "failed cache reader preserves the immutable cached payload");
+
+    FrameGpuAccess activeHit = cache.acquire(firstMetadata, resources);
+    test.expect(static_cast<bool>(activeHit) && activeHit.source() == FrameGpuAccessSource::CacheHit && !activeHit.needsUpload(), "valid matching entry returns a cache hit");
+    test.expect(activeHit.data() == cacheDeviceData && activeHit.writableData() == nullptr, "cache hit is immutable and reuses the cached pointer");
+    FrameGpuAccess secondReader = cache.acquire(firstMetadata, resources);
+    test.expect(static_cast<bool>(secondReader) && secondReader.source() == FrameGpuAccessSource::CacheHit && secondReader.complete(true), "matching immutable cache readers may coexist");
+
+    FrameGpuAccess busyFallback = cache.acquire(secondMetadata, resources);
+    test.expect(static_cast<bool>(busyFallback) && busyFallback.source() == FrameGpuAccessSource::TaskFallback, "all active cache entries force task fallback");
+    test.expect(busyFallback.complete(true), "complete busy-cache fallback");
+    test.expect(!cache.release(), "cache release rejects an active reader");
+    test.expect(activeHit.complete(true), "release active cache reader");
+
+    {
+        FrameGpuAccess abandonedFill = cache.acquire(secondMetadata, resources);
+        test.expect(static_cast<bool>(abandonedFill) && abandonedFill.source() == FrameGpuAccessSource::CacheFill, "inactive LRU entry can be reused for another frame");
+    }
+    FrameGpuAccess retryAfterAbort = cache.acquire(secondMetadata, resources);
+    test.expect(static_cast<bool>(retryAfterAbort) && retryAfterAbort.source() == FrameGpuAccessSource::CacheFill && retryAfterAbort.writableData() == cacheDeviceData, "aborted fill returns the same allocation to the cache");
+    test.expect(!retryAfterAbort.complete(false), "failed fill is not published");
+
+    FrameGpuAccess successfulRetry = cache.acquire(secondMetadata, resources);
+    test.expect(static_cast<bool>(successfulRetry) && successfulRetry.source() == FrameGpuAccessSource::CacheFill, "failed fill leaves an empty reusable entry");
+    if (successfulRetry) {
+        const bool memsetSucceeded = cudaMemsetAsync(successfulRetry.writableData(), 0x17, successfulRetry.bytes(), resources.stream) == cudaSuccess;
+        test.expect(successfulRetry.complete(memsetSucceeded), "successful retry publishes the new frame");
+    }
 
     TaskGpuResources wrongGpuResources = resources;
     wrongGpuResources.gpuId = location.gpuId + 1;
-    FrameGpuAccess wrongGpuRead = frame.deviceData.acquire(FrameGpuAccessMode::Read, nextFrameId, wrongGpuResources);
+    FrameGpuAccess wrongGpuRead = cache.acquire(secondMetadata, wrongGpuResources);
     test.expect(!wrongGpuRead, "reject access from a GPU without a replica");
 
-    test.expect(cudaStreamDestroy(resources.stream) == cudaSuccess, "destroy frame GPU access test stream");
-    resources.stream = nullptr;
-    test.expect(releaseFrame(frame, location), "release frame GPU access state");
-    test.expect(!frame.deviceData.isInitialized() && frame.deviceData.replicaCount() == 0, "frame GPU release resets state");
-    test.expect(frame.releaseGpuData(), "repeated frame GPU release is harmless");
+    test.expect(cache.release(), "release bounded frame GPU cache");
+    test.expect(!cache.isInitialized() && cache.slotCount() == 0, "cache release resets allocation state");
+    test.expect(cache.release(), "repeated cache release is harmless");
+
+    FrameGpuCache zeroCapacityCache;
+    test.expect(zeroCapacityCache.initialize({location.gpuId}, runtime.inBytes, 0), "initialize a zero-capacity cache");
+    FrameGpuAccess zeroCapacityAccess = zeroCapacityCache.acquire(firstMetadata, resources);
+    test.expect(static_cast<bool>(zeroCapacityAccess) && zeroCapacityAccess.source() == FrameGpuAccessSource::TaskFallback && zeroCapacityAccess.writableData() == resources.d_input, "zero cache capacity always uses task fallback");
+    test.expect(!zeroCapacityCache.release(), "cache release rejects an active fallback lease");
+    test.expect(zeroCapacityAccess.complete(true), "complete zero-capacity fallback");
+    {
+        FrameGpuAccess abandonedFallback = zeroCapacityCache.acquire(firstMetadata, resources);
+        test.expect(static_cast<bool>(abandonedFallback) && abandonedFallback.source() == FrameGpuAccessSource::TaskFallback, "acquire fallback used for RAII abort");
+    }
+    test.expect(zeroCapacityCache.release(), "release zero-capacity cache");
+    test.expect(releaseAccessResources(resources), "release frame cache test resources");
 }
 
 void testFrameDataAcrossTaskInstances(TestContext& test, const GpuLocation& location) {
@@ -307,31 +328,29 @@ void testFrameDataAcrossTaskInstances(TestContext& test, const GpuLocation& loca
     test.expect(tasksReady, "prepare two task instances for frame GPU continuity");
 
     const FrameMetadata metadata = makeFrameMetadata(29, runtime);
-    FrameCpuAtom atom(metadata);
+    FrameCpuAtom atom(metadata, runtime);
     StaticData staticData;
-    const bool frameReady = initializeStaticData(staticData, location, runtime, {{metadata, FramePhase::Timed}});
-    FrameSlot* frame = findFrameSlot(staticData, metadata);
-    test.expect(frameReady && frame != nullptr, "initialize shared StaticData frame GPU data");
-    test.expect(staticData.frameSlotPoolSize() == StaticData::FRAME_SLOT_POOL_SIZE && staticData.frameSlotCount() == 1, "StaticData owns a fixed 220-slot pool with one bound frame");
+    const bool frameReady = initializeStaticData(staticData, location, runtime, {metadata}, 1);
+    const bool frameRegistered = staticData.validateFrame(metadata, location.numaNode);
+    test.expect(frameReady && frameRegistered, "initialize shared StaticData frame GPU data");
+    test.expect(staticData.frameCount() == 1 && staticData.frameCacheSlotCount() == 1, "StaticData separates one registered frame from one cache entry");
 
     bool firstSucceeded = false;
     std::vector<AlgoOutput> firstOutputs;
-    if (tasksReady && frameReady && frame != nullptr) {
+    if (tasksReady && frameReady && frameRegistered) {
         firstSucceeded = executeTask(firstTask, atom, staticData, location);
-        firstOutputs = frame->result.outputs;
+        firstOutputs = atom.result.outputs;
     }
     test.expect(firstSucceeded, "first task instance uploads and processes the frame");
-    test.expect(frame != nullptr && frame->deviceData.hasData(frame->metadata.id) && frame->deviceData.frameId() == frame->metadata.id, "first task instance publishes the resident frame ID");
 
     std::fill(atom.data.begin(), atom.data.end(), 0);
-    const bool secondSucceeded = tasksReady && frameReady && frame != nullptr && executeTask(secondTask, atom, staticData, location);
+    const bool secondSucceeded = tasksReady && frameReady && frameRegistered && executeTask(secondTask, atom, staticData, location);
     test.expect(secondSucceeded, "second task instance consumes existing frame GPU data");
-    test.expect(frame != nullptr && frame->deviceData.hasData(frame->metadata.id) && frame->deviceData.frameId() == frame->metadata.id, "read-only second task keeps the resident frame ID");
 
-    bool outputsMatch = frame != nullptr && firstOutputs.size() == frame->result.outputs.size();
+    bool outputsMatch = firstSucceeded && firstOutputs.size() == atom.result.outputs.size();
     for (std::size_t index = 0; outputsMatch && index < firstOutputs.size(); ++index) {
         const AlgoOutput& expected = firstOutputs[index];
-        const AlgoOutput& actual = frame->result.outputs[index];
+        const AlgoOutput& actual = atom.result.outputs[index];
         outputsMatch = expected.algoName == actual.algoName && expected.width == actual.width && expected.height == actual.height && expected.data == actual.data;
     }
     test.expect(outputsMatch, "second task reads frame-owned GPU data instead of modified host input");
@@ -340,6 +359,69 @@ void testFrameDataAcrossTaskInstances(TestContext& test, const GpuLocation& loca
     const bool firstTaskUnloaded = unloadTask(firstTask);
     const bool secondTaskUnloaded = unloadTask(secondTask);
     test.expect(firstTaskUnloaded && secondTaskUnloaded, "unload both frame continuity task instances");
+}
+
+void testFrameGpuCacheLru(TestContext& test, const GpuLocation& location) {
+    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    const FrameMetadata firstMetadata = makeFrameMetadata(10, runtime);
+    const FrameMetadata secondMetadata = makeFrameMetadata(11, runtime);
+    const FrameMetadata thirdMetadata = makeFrameMetadata(12, runtime);
+    FrameGpuCache cache;
+    TaskGpuResources resources;
+    const bool initialized = initializeAccessResources(resources, location, runtime.inBytes) && cache.initialize({location.gpuId}, runtime.inBytes, 2);
+    test.expect(initialized, "initialize two-entry cache for LRU test");
+    if (!initialized) {
+        cache.release();
+        releaseAccessResources(resources);
+        return;
+    }
+
+    auto fillFrame = [&cache, &resources](const FrameMetadata& metadata) {
+        FrameGpuAccess access = cache.acquire(metadata, resources);
+        if (!access || access.source() != FrameGpuAccessSource::CacheFill) {
+            return false;
+        }
+        const bool submitted = cudaMemsetAsync(access.writableData(), static_cast<int>(metadata.id), access.bytes(), resources.stream) == cudaSuccess;
+        return access.complete(submitted);
+    };
+
+    test.expect(fillFrame(firstMetadata) && fillFrame(secondMetadata), "fill both cache entries");
+    FrameGpuAccess firstHit = cache.acquire(firstMetadata, resources);
+    test.expect(static_cast<bool>(firstHit) && firstHit.source() == FrameGpuAccessSource::CacheHit && firstHit.complete(true), "touch first frame so second frame becomes LRU");
+    test.expect(fillFrame(thirdMetadata), "third frame evicts one inactive cache entry");
+    FrameGpuAccess secondAgain = cache.acquire(secondMetadata, resources);
+    test.expect(static_cast<bool>(secondAgain) && secondAgain.source() == FrameGpuAccessSource::CacheFill, "least-recently-used second frame was evicted");
+    if (secondAgain) {
+        test.expect(secondAgain.complete(true), "complete refill after LRU eviction");
+    }
+
+    test.expect(cache.release(), "release LRU test cache");
+    test.expect(releaseAccessResources(resources), "release LRU test resources");
+}
+
+void testTaskFallbackExecution(TestContext& test, const GpuLocation& location) {
+    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    DummyTask task(92, location.numaNode, location.gpuId, ExecutionModel::Batched, runtime);
+    const bool taskReady = loadTask(task) && notifyTask(task);
+    test.expect(taskReady, "prepare task for zero-capacity fallback execution");
+
+    const FrameMetadata metadata = makeFrameMetadata(30, runtime);
+    FrameCpuAtom atom(metadata, runtime);
+    StaticData staticData;
+    const bool frameReady = initializeStaticData(staticData, location, runtime, {metadata}, 0);
+    const bool frameRegistered = staticData.validateFrame(metadata, location.numaNode);
+    test.expect(frameReady && frameRegistered && staticData.frameCacheSlotCount() == 0, "initialize registered frame with GPU cache disabled");
+
+    const bool succeeded = taskReady && frameReady && executeTask(task, atom, staticData, location);
+    test.expect(succeeded, "task executes correctly through its fallback input buffer");
+    if (frameRegistered) {
+        for (const AlgoOutput& output : atom.result.outputs) {
+            test.expect(verifyOutput(atom, output, runtime.frameW), "fallback execution matches CPU reference");
+        }
+    }
+
+    test.expect(releaseStaticData(staticData, location), "release zero-capacity StaticData");
+    test.expect(unloadTask(task), "unload fallback execution task");
 }
 
 void testLifecycleAndResults(TestContext& test, const GpuLocation& location, ExecutionModel model, int taskId) {
@@ -352,34 +434,35 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
     const FrameMetadata secondMetadata = makeFrameMetadata(19, runtime);
     const FrameMetadata malformedMetadata = makeFrameMetadata(23, runtime);
     const FrameMetadata mismatchedAtomMetadata = makeFrameMetadata(24, runtime);
-    const FrameMetadata mismatchedSlotMetadata = makeFrameMetadata(25, runtime);
-    FrameCpuAtom prematureAtom(prematureMetadata);
+    const FrameMetadata mismatchedRecordMetadata = makeFrameMetadata(25, runtime);
+    FrameCpuAtom prematureAtom(prematureMetadata, runtime);
+    test.expect(prematureAtom.result.id == prematureMetadata.id && prematureAtom.result.ok && prematureAtom.result.outputs.size() == 3, "FrameCpuAtom owns a preallocated result");
     test.expect(!task.registerParameters(prematureRegistry), "reject registerParameters before load");
     test.expect(!task.notifyParameters(prematureSnapshot), "reject notifyParameters before registration");
     test.expect(loadTask(task), "load task resources");
 
     StaticData staticData;
-    const std::vector<StaticFrameConfig> frameConfigs = {
-        {prematureMetadata, FramePhase::Timed},
-        {firstMetadata, FramePhase::Timed},
-        {secondMetadata, FramePhase::Timed},
-        {malformedMetadata, FramePhase::Timed},
-        {mismatchedSlotMetadata, FramePhase::Timed},
+    const std::vector<FrameMetadata> frameConfigs = {
+        prematureMetadata,
+        firstMetadata,
+        secondMetadata,
+        malformedMetadata,
+        mismatchedRecordMetadata,
     };
     test.expect(initializeStaticData(staticData, location, runtime, frameConfigs), "initialize task StaticData pool");
     FrameMetadata wrongLayoutMetadata = firstMetadata;
     ++wrongLayoutMetadata.width;
-    test.expect(staticData.findFrameSlot(firstMetadata) != nullptr, "find sparse frame ID through StaticData index");
-    test.expect(staticData.findFrameSlot(wrongLayoutMetadata) == nullptr, "reject indexed frame ID with mismatched metadata");
+    test.expect(staticData.validateFrame(firstMetadata, location.numaNode), "find sparse frame ID through StaticData index");
+    test.expect(!staticData.validateFrame(wrongLayoutMetadata, location.numaNode), "reject indexed frame ID with mismatched metadata");
     test.expect(staticData.execute() && !task.execute(prematureAtom, staticData), "reject execute before notification");
     test.expect(!task.load(), "reject repeated load");
     test.expect(notifyTask(task), "register and notify shared parameters");
 
-    FrameCpuAtom firstAtom(firstMetadata);
-    FrameCpuAtom secondAtom(secondMetadata);
-    FrameSlot* firstFrame = findFrameSlot(staticData, firstMetadata);
-    FrameSlot* secondFrame = findFrameSlot(staticData, secondMetadata);
-    test.expect(firstFrame != nullptr && secondFrame != nullptr, "find bound task frames in StaticData");
+    FrameCpuAtom firstAtom(firstMetadata, runtime);
+    FrameCpuAtom secondAtom(secondMetadata, runtime);
+    const bool firstFrameRegistered = staticData.validateFrame(firstMetadata, location.numaNode);
+    const bool secondFrameRegistered = staticData.validateFrame(secondMetadata, location.numaNode);
+    test.expect(firstFrameRegistered && secondFrameRegistered, "find registered task frames in StaticData");
     bool firstSucceeded = false;
     bool secondSucceeded = false;
     std::thread::id firstThreadId;
@@ -414,29 +497,29 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
 
     test.expect(firstThreadId != secondThreadId, "mobility test uses distinct live host threads");
     test.expect(firstSucceeded && secondSucceeded, "one task executes sequential frames on different threads");
-    if (firstFrame != nullptr) {
-        for (const AlgoOutput& output : firstFrame->result.outputs) {
+    if (firstFrameRegistered) {
+        for (const AlgoOutput& output : firstAtom.result.outputs) {
             test.expect(verifyOutput(firstAtom, output, runtime.frameW), "first frame matches CPU reference");
         }
     }
-    if (secondFrame != nullptr) {
-        for (const AlgoOutput& output : secondFrame->result.outputs) {
+    if (secondFrameRegistered) {
+        for (const AlgoOutput& output : secondAtom.result.outputs) {
             test.expect(verifyOutput(secondAtom, output, runtime.frameW), "second frame matches CPU reference");
         }
     }
 
-    FrameCpuAtom malformedAtom(malformedMetadata);
-    FrameSlot* malformedFrame = findFrameSlot(staticData, malformedMetadata);
-    test.expect(malformedFrame != nullptr, "find malformed-input frame in StaticData");
+    FrameCpuAtom malformedAtom(malformedMetadata, runtime);
+    const bool malformedFrameRegistered = staticData.validateFrame(malformedMetadata, location.numaNode);
+    test.expect(malformedFrameRegistered, "find malformed-input frame in StaticData");
     malformedAtom.data.pop_back();
     test.expect(staticData.execute() && !task.execute(malformedAtom, staticData), "reject malformed frame input");
-    test.expect(malformedFrame != nullptr && !malformedFrame->result.ok, "malformed frame records failed task status");
+    test.expect(malformedFrameRegistered && !malformedAtom.result.ok, "malformed atom records failed task status");
 
-    FrameCpuAtom mismatchedAtom(mismatchedAtomMetadata);
-    FrameSlot* mismatchedFrame = findFrameSlot(staticData, mismatchedSlotMetadata);
-    test.expect(mismatchedFrame != nullptr, "find intentionally mismatched slot in StaticData");
-    test.expect(staticData.execute() && !task.execute(mismatchedAtom, staticData), "reject atom without matching StaticData slot metadata");
-    test.expect(staticData.resultFor(mismatchedAtomMetadata) == nullptr && mismatchedFrame != nullptr && mismatchedFrame->result.ok, "missing slot does not mutate an unrelated frame result");
+    FrameCpuAtom mismatchedAtom(mismatchedAtomMetadata, runtime);
+    const bool unrelatedFrameRegistered = staticData.validateFrame(mismatchedRecordMetadata, location.numaNode);
+    test.expect(unrelatedFrameRegistered, "find intentionally unrelated metadata in StaticData");
+    test.expect(staticData.execute() && !task.execute(mismatchedAtom, staticData), "reject atom without matching StaticData registry metadata");
+    test.expect(!mismatchedAtom.result.ok && staticData.validateFrame(mismatchedRecordMetadata, location.numaNode), "missing frame fails its atom result without affecting unrelated registered metadata");
 
     test.expect(releaseStaticData(staticData, location), "release task StaticData pool");
     test.expect(unloadTask(task), "unload task resources");
@@ -485,7 +568,13 @@ void testIndependentPools(TestContext& test, const GpuLocation& location) {
         std::atomic<bool> cancellation{false};
         DummyGraph graph(makeGraphConfig(location, 1, 2, ExecutionModel::Batched), sink, cancellation);
         test.expect(graph.initialize(), "initialize one-task two-worker graph");
+        PhaseGate invalidPhaseGate;
+        test.expect(!graph.startPhase(static_cast<FramePhase>(99), invalidPhaseGate), "reject an invalid graph-owned frame phase");
+        invalidPhaseGate.release();
         test.expect(runGraphPhase(graph, FramePhase::Timed), "run one-task two-worker graph");
+        PhaseGate repeatedPhaseGate;
+        test.expect(!graph.startPhase(FramePhase::Timed, repeatedPhaseGate), "graph-owned phase state rejects repeated submission");
+        repeatedPhaseGate.release();
         test.expect(graph.lastMaxConcurrentExecutions() == 1, "DummyGraph free-task pool prevents concurrent reuse of its sole task instance");
         test.expect(sink.count() == 8 && sink.failureCount() == 0, "one-task graph completes every frame once");
         test.expect(graph.shutdown(), "shutdown one-task graph");
@@ -588,7 +677,9 @@ int main() {
     testLifecycleAndResults(test, locations.front(), ExecutionModel::Interleaved, 2);
     testStaticDataValidation(test, locations.front());
     testFrameGpuAccessState(test, locations.front());
+    testFrameGpuCacheLru(test, locations.front());
     testFrameDataAcrossTaskInstances(test, locations.front());
+    testTaskFallbackExecution(test, locations.front());
     testTemporaryTopologyGuard(test, locations.front());
     testIndependentPools(test, locations.front());
     testConditionalNumaGraphs(test, locations);

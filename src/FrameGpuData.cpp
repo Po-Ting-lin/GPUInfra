@@ -3,15 +3,6 @@
 #include <cuda_runtime.h>
 
 #include "CudaCheck.h"
-#include "TaskGpuResources.h"
-
-namespace {
-
-bool validAccessMode(FrameGpuAccessMode mode) {
-    return mode == FrameGpuAccessMode::Read || mode == FrameGpuAccessMode::Upload;
-}
-
-}  // namespace
 
 FrameGpuData::~FrameGpuData() {
     release();
@@ -25,7 +16,7 @@ bool FrameGpuData::initialize(const std::vector<int>& gpuIds, std::size_t bytes)
     try {
         replicas.reserve(gpuIds.size());
         for (int gpuId : gpuIds) {
-            replicas.push_back({gpuId, nullptr, 0, false});
+            replicas.push_back({gpuId, nullptr, false});
         }
     } catch (...) {
         replicas.clear();
@@ -45,78 +36,8 @@ bool FrameGpuData::initialize(const std::vector<int>& gpuIds, std::size_t bytes)
         }
     }
 
-    residentFrameId = 0;
-    payloadValid = false;
     initialized = true;
     return true;
-}
-
-FrameGpuAccess FrameGpuData::acquire(FrameGpuAccessMode mode, std::uint64_t frameId, const TaskGpuResources& resources) {
-    if (!initialized || !validAccessMode(mode) || resources.gpuId < 0 || resources.stream == nullptr) {
-        return FrameGpuAccess();
-    }
-
-    std::size_t replicaIndex = replicas.size();
-    for (std::size_t index = 0; index < replicas.size(); ++index) {
-        if (replicas[index].gpuId == resources.gpuId) {
-            replicaIndex = index;
-            break;
-        }
-    }
-    if (replicaIndex == replicas.size()) {
-        return FrameGpuAccess();
-    }
-
-    const FrameGpuReplica& replica = replicas[replicaIndex];
-    if (mode == FrameGpuAccessMode::Read && (!payloadValid || residentFrameId != frameId || !replica.valid || replica.frameId != frameId)) {
-        // A future two-GPU implementation will enqueue replica migration here.
-        return FrameGpuAccess();
-    }
-    if (mode == FrameGpuAccessMode::Upload) {
-        payloadValid = false;
-        for (FrameGpuReplica& currentReplica : replicas) {
-            currentReplica.valid = false;
-        }
-    }
-
-    return FrameGpuAccess(this, replica.d_data, dataBytes, replicaIndex, frameId, resources.stream, replica.gpuId, mode);
-}
-
-bool FrameGpuData::completeAccess(FrameGpuAccess& access, bool succeeded) {
-    if (access.owner != this) {
-        return false;
-    }
-
-    bool valid = initialized && access.replicaIndex < replicas.size();
-    if (valid) {
-        const FrameGpuReplica& replica = replicas[access.replicaIndex];
-        valid = access.d_data == replica.d_data && access.dataBytes == dataBytes && access.deviceId == replica.gpuId;
-    }
-
-    if (valid && succeeded) {
-        FrameGpuReplica& replica = replicas[access.replicaIndex];
-        if (access.mode == FrameGpuAccessMode::Read) {
-            valid = payloadValid && residentFrameId == access.frameId && replica.valid && replica.frameId == access.frameId;
-        }
-        else if (access.mode == FrameGpuAccessMode::Upload) {
-            residentFrameId = access.frameId;
-            payloadValid = true;
-            replica.frameId = access.frameId;
-            replica.valid = true;
-        }
-        else {
-            valid = false;
-        }
-    }
-
-    access.reset();
-    return valid && succeeded;
-}
-
-void FrameGpuData::abortAccess(FrameGpuAccess& access) {
-    if (access.owner == this) {
-        access.reset();
-    }
 }
 
 bool FrameGpuData::release() {
@@ -137,6 +58,7 @@ bool FrameGpuData::release() {
         CUDA_CHECK(cudaFree(replica.d_data), freed = false);
         if (freed) {
             replica.d_data = nullptr;
+            replica.valid = false;
         }
         else {
             ok = false;
@@ -153,8 +75,6 @@ bool FrameGpuData::release() {
     if (allReleased) {
         replicas.clear();
         dataBytes = 0;
-        residentFrameId = 0;
-        payloadValid = false;
         initialized = false;
     }
     return ok;
@@ -162,10 +82,6 @@ bool FrameGpuData::release() {
 
 bool FrameGpuData::isInitialized() const {
     return initialized;
-}
-
-bool FrameGpuData::hasData(std::uint64_t frameId) const {
-    return initialized && payloadValid && residentFrameId == frameId;
 }
 
 std::size_t FrameGpuData::bytes() const {
@@ -176,6 +92,41 @@ std::size_t FrameGpuData::replicaCount() const {
     return replicas.size();
 }
 
-std::uint64_t FrameGpuData::frameId() const {
-    return residentFrameId;
+void* FrameGpuData::dataForGpu(int gpuId) {
+    const FrameGpuData* data = this;
+    return const_cast<void*>(data->dataForGpu(gpuId));
+}
+
+const void* FrameGpuData::dataForGpu(int gpuId) const {
+    for (const FrameGpuReplica& replica : replicas) {
+        if (replica.gpuId == gpuId) {
+            return replica.d_data;
+        }
+    }
+    return nullptr;
+}
+
+bool FrameGpuData::replicaValid(int gpuId) const {
+    for (const FrameGpuReplica& replica : replicas) {
+        if (replica.gpuId == gpuId) {
+            return replica.valid;
+        }
+    }
+    return false;
+}
+
+void FrameGpuData::invalidateReplicas() {
+    for (FrameGpuReplica& replica : replicas) {
+        replica.valid = false;
+    }
+}
+
+bool FrameGpuData::markReplicaValid(int gpuId) {
+    for (FrameGpuReplica& replica : replicas) {
+        if (replica.gpuId == gpuId) {
+            replica.valid = true;
+            return true;
+        }
+    }
+    return false;
 }

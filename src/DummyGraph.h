@@ -48,6 +48,7 @@ struct GraphConfig {
     std::vector<int> gpuIds;
     std::size_t taskInstancesPerGpu = 4;
     std::size_t graphThreads = 0;
+    std::size_t frameCacheSlots = 4;
     std::uint64_t warmupFramesPerGpu = 0;
     std::uint64_t timedFramesPerGpu = 0;
     std::uint64_t firstFrameId = 0;
@@ -84,7 +85,7 @@ private:
     void workerLoop();
     void cancelReadyFramesLocked();
     void cancelPreparedFramesLocked();
-    void deliverFrameResult(const FrameMetadata& metadata);
+    void deliverFrameResult(const FrameCpuAtom& atom);
     void finishPhaseIfCompleteLocked();
     std::vector<std::unique_ptr<FrameCpuAtom>>& atomsForPhase(FramePhase phase);
 
@@ -112,6 +113,8 @@ private:
     std::size_t inFlight = 0;
     std::size_t lastMaxInFlight = 0;
     bool workerStartupFailed = false;
+    bool warmupSubmitted = false;
+    bool timedSubmitted = false;
     bool phaseActive = false;
     bool phaseSucceeded = true;
     bool initialized = false;
