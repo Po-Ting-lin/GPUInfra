@@ -12,26 +12,16 @@
 
 #include "Cel.h"
 #include "CudaCheck.h"
+#include "FrameCpuAtom.h"
+#include "FrameSlot.h"
 #include "GpuContextManager.h"
 #include "IAlgo.h"
 #include "ImageSizing.h"
 #include "Mi.h"
 #include "Sdd.h"
+#include "StaticData.h"
 
 namespace {
-
-class ExecutionGuard {
-public:
-    explicit ExecutionGuard(std::atomic<bool>& target)
-        : executing(target) {}
-
-    ~ExecutionGuard() {
-        executing.store(false, std::memory_order_release);
-    }
-
-private:
-    std::atomic<bool>& executing;
-};
 
 bool validRuntime(const AlgoRuntimeInfo& runtime) {
     if (!ImageSizing::isValidFactor(runtime.sizeFactor)) {
@@ -39,7 +29,17 @@ bool validRuntime(const AlgoRuntimeInfo& runtime) {
     }
     const int expectedFrameSize = ImageSizing::scaledDimension(runtime.sizeFactor, ImageSizing::INPUT_MULTIPLIER);
     const std::size_t expectedInputBytes = ImageSizing::squareBytes(expectedFrameSize, sizeof(std::uint8_t));
-    return runtime.frameW == expectedFrameSize && runtime.frameH == expectedFrameSize && runtime.inBytes == expectedInputBytes;
+
+    if (runtime.frameW != expectedFrameSize){
+        return false;
+    }
+    if (runtime.frameH != expectedFrameSize){
+        return false;
+    }
+    if (runtime.inBytes != expectedInputBytes){
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -59,13 +59,23 @@ bool DummyTask::load() {
     if (state != TaskLifecycle::Constructed || id < 0 || node < 0 || gpu < 0 || !validRuntime(algoRuntime)) {
         return false;
     }
-    if (!GpuContextManager::registerTask(node, gpu, resources) || !GpuContextManager::makeTaskCurrent(resources)) {
+
+    // GpuContextManager register
+    if (!GpuContextManager::registerTask(node, gpu, resources)) {
+        state = TaskLifecycle::Failed;
+        releaseResources();
+        return false;
+    }
+    // Check TaskGpuResources ready and cudaSetDevice
+    if (!GpuContextManager::makeTaskCurrent(resources)){
         state = TaskLifecycle::Failed;
         releaseResources();
         return false;
     }
 
     resources.inBytes = algoRuntime.inBytes;
+    
+    // Create CUDA Stream
     bool ok = true;
     CUDA_CHECK(cudaStreamCreateWithFlags(&resources.stream, cudaStreamNonBlocking), ok = false);
     if (ok) {
@@ -73,12 +83,9 @@ bool DummyTask::load() {
     }
     if (ok) {
         std::memset(resources.h_in, 0, resources.inBytes);
-        CUDA_CHECK(cudaMalloc(&resources.d_in, resources.inBytes), ok = false);
-    }
-    if (ok) {
-        CUDA_CHECK(cudaMemsetAsync(resources.d_in, 0, resources.inBytes, resources.stream), ok = false);
     }
 
+    // Prepare Algo
     if (ok) {
         algorithms.reserve(3);
         algorithms.push_back(std::make_unique<Cel>());
@@ -86,6 +93,7 @@ bool DummyTask::load() {
         algorithms.push_back(std::make_unique<Mi>());
     }
 
+    // Get the max common buffer size
     std::size_t scratchBytes = 0;
     if (ok) {
         for (const std::unique_ptr<IAlgo>& algorithm : algorithms) {
@@ -97,6 +105,8 @@ bool DummyTask::load() {
             scratchBytes = std::max(scratchBytes, algorithmScratchBytes);
         }
     }
+
+    // Allocate the max common buffer size
     if (ok && scratchBytes > 0) {
         CUDA_CHECK(cudaMalloc(&resources.d_scratch, scratchBytes), ok = false);
         if (ok) {
@@ -134,6 +144,8 @@ bool DummyTask::notifyParameters(const ParameterSnapshot& parameters) {
     if (!parameters.getString(NAME_PARAMETER, values.name) || !parameters.getBytes(BLOB_PARAMETER, values.blob)) {
         return false;
     }
+
+    // notify each parameter
     for (const std::unique_ptr<IAlgo>& algorithm : algorithms) {
         if (!algorithm->notifyParameter(values)) {
             return false;
@@ -144,32 +156,66 @@ bool DummyTask::notifyParameters(const ParameterSnapshot& parameters) {
     return true;
 }
 
-bool DummyTask::execute(FrameSlot& frame) {
-    frame.result.id = frame.id;
-    if (state != TaskLifecycle::Notified || frame.numaNode != node || frame.input.size() != resources.inBytes || frame.result.outputs.size() != algorithms.size()) {
-        frame.result.ok = false;
+bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
+    if (state != TaskLifecycle::Notified || !staticData.isInitialized()) {
         return false;
     }
 
-    bool expected = false;
-    if (!executing.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+    FrameSlot* selectedFrame = staticData.findFrameSlot(atom.metadata);
+    if (selectedFrame == nullptr) {
+        return false;
+    }
+
+    FrameSlot& frame = *selectedFrame;
+    frame.result.id = frame.metadata.id;
+
+    if (!atom.matchesMetadata(frame.metadata)) {
         frame.result.ok = false;
         return false;
     }
-    ExecutionGuard executionGuard(executing);
+    if (frame.numaNode != node){ // check (node of this task) == (node of FrameSlot)
+        frame.result.ok = false;
+        return false;
+    }
+    if (atom.data.size() != frame.metadata.bytes || frame.metadata.bytes != resources.inBytes || frame.metadata.width != algoRuntime.frameW || frame.metadata.height != algoRuntime.frameH || frame.metadata.dtype != algoRuntime.frameDtype){ // input frame layout == task allocation layout
+        frame.result.ok = false;
+        return false;
+    }
+    if (!frame.deviceData.isInitialized() || frame.deviceData.bytes() != resources.inBytes){
+        frame.result.ok = false;
+        return false;
+    }
+    if (frame.result.outputs.size() != algorithms.size()){ // number of output of FrameSlot == number of algos
+        frame.result.ok = false;
+        return false;
+    }
 
     frame.result.ok = GpuContextManager::makeTaskCurrent(resources);
     if (!frame.result.ok) {
         return false;
     }
 
-    std::memcpy(resources.h_in, frame.input.data(), frame.input.size());
-    CUDA_CHECK(cudaMemcpyAsync(resources.d_in, resources.h_in, resources.inBytes, cudaMemcpyHostToDevice, resources.stream), frame.result.ok = false);
+    const bool needsUpload = !frame.deviceData.hasData(frame.metadata.id);
+    const FrameGpuAccessMode accessMode = needsUpload ? FrameGpuAccessMode::Upload : FrameGpuAccessMode::Read;
+    
+    FrameGpuAccess access = frame.deviceData.acquire(accessMode, frame.metadata.id, resources);
+    if (!access) {
+        frame.result.ok = false;
+        return false;
+    }
 
+    // pagable to pin
+    // H2D 
+    if (needsUpload) {
+        std::memcpy(resources.h_in, atom.data.data(), atom.data.size());
+        CUDA_CHECK(cudaMemcpyAsync(access.writableData(), resources.h_in, resources.inBytes, cudaMemcpyHostToDevice, resources.stream), frame.result.ok = false);
+    }
+
+    // Compute: all kernels -> all D2H
     if (executionModel == ExecutionModel::Batched) {
         if (frame.result.ok) {
             for (const std::unique_ptr<IAlgo>& algorithm : algorithms) {
-                if (!algorithm->launchKernels(resources, resources.stream)) {
+                if (!algorithm->launchKernels(resources, access.data(), resources.stream)) {
                     frame.result.ok = false;
                     break;
                 }
@@ -184,10 +230,11 @@ bool DummyTask::execute(FrameSlot& frame) {
             }
         }
     }
+    // Compute: kernel A -> H2D A -> kernel B -> H2D B ....  
     else if (executionModel == ExecutionModel::Interleaved) {
         if (frame.result.ok) {
             for (const std::unique_ptr<IAlgo>& algorithm : algorithms) {
-                if (!algorithm->launchKernels(resources, resources.stream) || !algorithm->launchD2H(resources, resources.stream)) {
+                if (!algorithm->launchKernels(resources, access.data(), resources.stream) || !algorithm->launchD2H(resources, resources.stream)) {
                     frame.result.ok = false;
                     break;
                 }
@@ -198,7 +245,11 @@ bool DummyTask::execute(FrameSlot& frame) {
         frame.result.ok = false;
     }
 
-    CUDA_CHECK(cudaStreamSynchronize(resources.stream), frame.result.ok = false);
+    if (!access.complete(frame.result.ok)) {
+        frame.result.ok = false;
+    }
+
+    // pin to pagable
     if (frame.result.ok) {
         for (std::size_t index = 0; index < algorithms.size(); ++index) {
             if (!algorithms[index]->collectResult(resources, frame.result.outputs[index])) {
@@ -213,9 +264,6 @@ bool DummyTask::execute(FrameSlot& frame) {
 bool DummyTask::unload() {
     if (state == TaskLifecycle::Unloaded) {
         return true;
-    }
-    if (executing.load(std::memory_order_acquire)) {
-        return false;
     }
 
     const bool ok = releaseResources();
@@ -259,10 +307,6 @@ bool DummyTask::releaseResources() {
         resources.d_scratch = nullptr;
     }
     resources.scratchBytes = 0;
-    if (resources.d_in != nullptr) {
-        CUDA_CHECK(cudaFree(resources.d_in), ok = false);
-        resources.d_in = nullptr;
-    }
     if (resources.h_in != nullptr) {
         CUDA_CHECK(cudaFreeHost(resources.h_in), ok = false);
         resources.h_in = nullptr;

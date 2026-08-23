@@ -1,15 +1,16 @@
 #pragma once
 
-#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <vector>
 
 #include "GraphTypes.h"
+#include "IAlgo.h"
 #include "ParameterRegistry.h"
 #include "TaskGpuResources.h"
 
-class IAlgo;
+struct FrameCpuAtom;
+class StaticData;
 
 enum class TaskLifecycle {
     Constructed,
@@ -31,7 +32,9 @@ public:
     bool load();
     bool registerParameters(ParameterRegistry& registry);
     bool notifyParameters(const ParameterSnapshot& parameters);
-    bool execute(FrameSlot& frame);
+
+    // DummyGraph owns execute/unload serialization. Direct concurrent calls are unsupported.
+    bool execute(FrameCpuAtom& atom, StaticData& staticData);
     bool unload();
 
     int instanceId() const;
@@ -52,6 +55,5 @@ private:
     AlgoRuntimeInfo algoRuntime;
     TaskGpuResources resources;
     std::vector<std::unique_ptr<IAlgo>> algorithms;
-    std::atomic<bool> executing{false};
     TaskLifecycle state = TaskLifecycle::Constructed;
 };

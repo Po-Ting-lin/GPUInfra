@@ -9,27 +9,44 @@ start -> DummyTask -> end
 
 `DummyTask` contains three ordered synthetic operations—CEL, SDD, and MI—but
 they are not separate graph tasks. The graph scheduler independently matches a
-ready `FrameSlot`, a free `DummyTask` instance, and a free NUMA-local graph
-thread for each `execute()` call.
+ready CPU atom, a free `DummyTask` instance, and a free NUMA-local graph thread
+for each `execute()` call. The task then finds the atom's matching `FrameSlot`
+inside graph-copy-scoped `StaticData`; slot residency does not affect scheduling.
 
 The implementation demonstrates:
 
 - one `DummyGraph` copy per GPU-bearing NUMA node;
+- a temporary topology contract of exactly one GPU per NUMA graph copy;
 - independently sized task-instance and graph-thread pools;
 - four GPU-bound `DummyTask` instances per GPU by default;
 - task instances that move between graph threads on the same NUMA node;
-- task-owned CUDA streams, staging buffers, device input, scratch, and
-  CEL/SDD/MI resources;
-- graph-owned, fully preallocated frame inputs and results;
+- task-owned CUDA streams, pinned staging, scratch, and CEL/SDD/MI resources;
+- graph-owned, fully preallocated `FrameCpuAtom` input objects;
+- a `StaticData`-owned fixed pool of 220 `FrameSlot` objects;
+- one bound slot with metadata, device input, state, and results for every
+  configured logical frame;
 - graph-wide lifecycle barriers in the golden order;
 - fail-fast cancellation across every NUMA graph copy;
-- one H2D transfer and one `cudaStreamSynchronize()` per frame.
+- one initial H2D transfer per frame payload and one
+  `cudaStreamSynchronize()` per `execute()` call.
 
 The synthetic algorithms launch real CUDA matrix-multiplication kernels over a
 shared square byte input. For size factor `F`, the input is `(8F)x(8F)`, CEL
 operates on `(2F)x(2F)`, and SDD and MI operate on `(3F)x(3F)`. Each result is a
 row-major `uint32_t` matrix. All three operations consume the original input;
 `CEL -> SDD -> MI` specifies submission order, not an output-to-input chain.
+
+## Design references
+
+- `graph.md` is the golden scheduler and task-lifecycle protocol.
+- `architecture.md` documents the implemented ownership and execution model.
+- `gpuinfra_class_diagram.html` visualizes class ownership and frame GPU access.
+- `gpuinfra_resource_plot.html` visualizes NUMA topology and first/repeated
+  frame-device access.
+- `frame_gpu_data_plan_tmp.md` records the implemented one-GPU-per-NUMA scope.
+- `frame_gpu_data_plan.md` remains the deferred multi-GPU replica/migration
+  design.
+- `open_issues.md` records the required real-framework integration hooks.
 
 ## Requirements
 
@@ -38,6 +55,8 @@ row-major `uint32_t` matrix. All three operations consume the original input;
 - A C++17 compiler
 - NVIDIA CUDA Toolkit and compatible driver
 - At least one CUDA GPU with a discoverable PCI NUMA node
+- Exactly one discovered CUDA GPU per NUMA node for the temporary
+  implementation
 
 `libnuma-dev` is not required. CPU affinity uses pthreads and Linux NUMA sysfs.
 
@@ -86,7 +105,9 @@ gpuinfra_demo [timed_frames_per_gpu] [warmup_frames_per_gpu]
 ```
 
 Defaults are 200 timed frames, 20 warmup frames, Batched execution, and size
-factor 128. The factor must be a multiple of 16 from 16 through 256.
+factor 128. The factor must be a multiple of 16 from 16 through 256. The
+temporary `StaticData` capacity limits each graph copy to at most 220 combined
+warmup and timed frames.
 
 Run the complete test suite:
 
@@ -95,11 +116,14 @@ ctest --test-dir build --output-on-failure
 ```
 
 `gpuinfra_protocol_tests` uses a real CUDA GPU to verify lifecycle ordering,
-typed parameter registration, task movement between two live host threads,
-concurrent-use rejection, CPU-reference results for both execution models,
-independent task/thread bottlenecks, malformed input, cancellation, and cleanup.
-Multi-NUMA coverage runs conditionally and reports a skip when the topology is
-not available.
+typed parameter registration, `StaticData` capacity and unique-frame
+validation, hash-indexed CPU-atom/slot matching, frame-ID residency and RAII access
+behavior, device data surviving a task-instance change, task movement between
+two live host threads, temporary topology rejection, graph-level exclusive task
+checkout, CPU-reference results for both execution models, independent
+task/thread bottlenecks, malformed input, cancellation, and cleanup. Multi-NUMA
+coverage runs conditionally when each participating NUMA graph copy has exactly
+one GPU.
 
 Run the existing size-factor benchmark:
 
@@ -135,6 +159,10 @@ or teardown fails.
 
 The startup thread is not NUMA-pinned. The manager groups no graph work itself;
 `main.cpp` creates one `DummyGraph` for every distinct GPU-bearing NUMA node.
+The temporary implementation rejects a graph copy containing more than one GPU
+before allocating tasks or starting workers. The GPU-keyed frame-replica interface is retained so
+two GPUs per NUMA can later be enabled without changing scheduler selection or
+task call sites.
 
 ### 2. Graph-copy cold path
 
@@ -147,7 +175,10 @@ load every DummyTask
   -> registerParameters on every DummyTask
   -> seal one shared parameter snapshot
   -> notifyParameters on every DummyTask
-  -> preallocate every warmup and timed FrameSlot
+  -> preallocate one FrameCpuAtom per logical frame
+  -> StaticData creates its fixed 220-slot pool
+  -> bind and allocate one FrameSlot per configured logical frame
+  -> build an immutable frame-ID-to-slot index
   -> start and pin graph workers
 ```
 
@@ -158,35 +189,48 @@ the graph seals the snapshot, and every task instance receives the same values.
 ### 3. Scheduling
 
 Workers are persistent and pinned to their graph copy's NUMA node. Under the
-graph scheduler lock, a free worker atomically claims the first ready frame and
-one free task. The lock is released before CUDA work begins.
+graph scheduler lock, a free worker atomically claims the first ready
+`FrameCpuAtom` and one free task. The lock is released before CUDA work begins.
 
 ```text
-ready FrameSlot + free DummyTask + free graph thread
-                         |
-                         v
-                DummyTask::execute(slot)
+ready FrameCpuAtom + free DummyTask + free graph thread
+                            |
+                            v
+                  StaticData::execute()
+                            |
+                            v
+             DummyTask::execute(atom, staticData)
+                            |
+                            v
+        task performs indexed FrameSlot lookup and validates full metadata
 ```
 
 A task remains bound to one GPU because its reusable allocations belong to
 that device. It is not bound to a host thread. Before each execution, the
 selected worker calls `cudaSetDevice(taskGpu)` and then uses the task's stream
-and buffers. Any worker in the same NUMA graph copy may run any local-GPU task.
+and private buffers. Any worker in the same NUMA graph copy may run any task
+bound to the copy's sole GPU.
 
-Warmup completes on every graph copy before timed slots are released through a
+Exclusive task-instance use belongs to `DummyGraph`: the scheduler removes a
+task from `freeTasks` while holding `schedulerLock` and returns it only after
+`execute()` finishes. `DummyTask` has no independent concurrent-execution guard
+and is not a thread-safe scheduling boundary.
+
+Warmup completes on every graph copy before timed frames are released through a
 shared `PhaseGate`.
 
 ### 4. Frame execution
 
-`DummyTask::execute()` is allocation-free:
+`DummyTask::execute(FrameCpuAtom&, StaticData&)` is allocation-free:
 
 ```text
-FrameSlot input
+FrameCpuAtom.data
+  -> average O(1) StaticData lookup by frame ID plus complete metadata validation
   -> memcpy to task-owned pinned input
-  -> one asynchronous H2D copy
-  -> CEL, SDD, and MI CUDA work
+  -> Upload performs asynchronous H2D into FrameSlot.deviceData for a new frame ID
+  -> CEL, SDD, and MI CUDA work reading FrameSlot.deviceData
   -> D2H into each algorithm's task-owned pinned staging buffer
-  -> one stream synchronization
+  -> FrameGpuAccess::complete() synchronizes and publishes or validates the frame ID
   -> memcpy into the FrameSlot's preallocated result buffers
   -> return task and thread independently to their pools
   -> DummyGraph publishes the result to GraphSink
@@ -218,11 +262,11 @@ Normal teardown is:
 
 ```text
 stop and join graph workers
-  -> synchronize every task stream
+  -> StaticData releases frame-owned device inputs on the NUMA teardown thread
+  -> synchronize every task stream during task unload
   -> close CEL/SDD/MI resources
-  -> free task scratch, input, and stream
+  -> free task scratch, pinned staging, and stream
   -> unregister task resources
-  -> release frame payloads
   -> release retained primary contexts
 ```
 
@@ -231,11 +275,29 @@ stop and join graph workers
 | Owner | Resources |
 | --- | --- |
 | `GpuContext` | GPU/NUMA identity, retained primary context, registered-task table |
-| `DummyGraph` | NUMA-local workers, task pool, ready queue, frame slots, parameter registry |
-| `FrameSlot` | Frame identity/state, input bytes, CEL/SDD/MI result vectors |
-| `DummyTask` | GPU binding, stream, pinned/device input, scratch, CEL/SDD/MI objects |
+| `DummyGraph` | NUMA-local workers, task pool, ready CPU-atom queue, CPU atoms, `StaticData`, parameter registry |
+| `StaticData` | Fixed 220-slot container, immutable frame-ID index, frame state/results, and FrameSlot GPU lifetime |
+| `FrameCpuAtom` | CPU frame bytes and intrinsic metadata: ID, byte count, dimensions, and dtype |
+| `FrameSlot` | Copied frame metadata, scheduling state, frame-owned device data, and CEL/SDD/MI results |
+| `FrameGpuData` | GPU-keyed replica table, device allocation, resident frame ID, and validity state |
+| `FrameGpuAccess` | Scoped non-owning replica view with sync and commit-or-abort behavior |
+| `DummyTask` | GPU binding, stream, pinned input staging, scratch, CEL/SDD/MI objects |
 | CEL/SDD/MI object | Geometry, parameters, device output, pinned D2H staging output |
 | Graph thread | CPU affinity and the duration of one `execute()` call only |
+
+`DummyGraph` owns the configured `FrameCpuAtom` objects, while its `StaticData`
+member owns every `FrameSlot`. `DummyGraph::ReadyFrame` carries only an atom.
+`DummyTask` asks `StaticData` for the atom's frame ID using an immutable hash
+index, then requires a complete metadata match. The returned pointer is
+non-owning and lives only for the current synchronous call. `FrameSlot` stores
+neither an atom nor an atom pointer.
+
+`FrameGpuData` is embedded directly in `FrameSlot`. The separate class
+encapsulates CUDA allocation, GPU-keyed replica metadata, frame-ID residency,
+and access validation; it does not introduce a lifetime independent of the frame.
+`FrameGpuAccess` is an RAII lease, not a buffer owner. The graph protocol
+serializes stages of a frame, so frame storage does not contain its own
+scheduling guard.
 
 The task and worker defaults are equal, but `GraphConfig::taskInstancesPerGpu`
 and `GraphConfig::graphThreads` are independent. Either pool may limit
@@ -243,14 +305,21 @@ concurrency.
 
 ## Memory policy
 
-Every warmup and timed frame owns its full input and three pageable result
-matrices before workers start. This deliberately keeps the hot path free of
-host allocation, but memory grows with total frame count rather than maximum
-concurrency. Large frame counts or factors should be sized with that tradeoff
-in mind.
+Every graph copy constructs a 220-object `FrameSlot` pool. Each configured
+warmup or timed logical frame binds one slot and receives one device input
+replica plus three pageable result matrices before workers start. Unbound pool
+entries own no device/result allocation. This keeps the hot path free of
+allocation while making allocated host/device storage proportional to the
+configured frame count, up to the fixed capacity.
 
-Task-owned CUDA resources scale with task count. Frame-owned pageable storage
-scales with total frames. No frame owns a CUDA stream or device allocation.
+Each device replica is allocated once during graph initialization and retained
+until graph teardown. Reusing a slot for a new logical frame performs `Upload`
+into the same device pointer; it does not call `cudaMalloc()` or `cudaFree()`.
+After that upload completes, stages may only request `Read` for that frame ID.
+
+Task-owned CUDA resources scale with task count. Atom-owned CPU storage and
+bound-slot device/result storage scale one-to-one with configured frames.
+Neither an atom nor a slot owns a CUDA stream.
 
 ## Source layout
 
@@ -258,11 +327,17 @@ scales with total frames. No frame owns a CUDA stream or device allocation.
 src/
   GpuContext.*            retained per-GPU context and task registration table
   GpuContextManager.*     discovery, affinity, task registration, device binding
+  FrameCpuAtom.*          CPU frame bytes and intrinsic metadata
+  FrameMetadata.h         metadata shared by CPU atoms and GPU slots
+  FrameGpuAccess.*        scoped RAII replica access and completion handling
+  FrameGpuData.*          frame-owned replicas, resident frame ID, validity state
+  FrameSlot.*             frame metadata, GPU storage, scheduling state, results
+  StaticData.*            fixed FrameSlot pool, immutable ID index, frame state API
   TaskGpuResources.h      one task's reusable CUDA lane
   ParameterRegistry.*     typed registration and immutable run snapshot
-  GraphTypes.*            frame slots, phases, states, execution model
+  GraphTypes.h            shared execution, phase, and frame-state enums
   DummyTask.*             golden lifecycle and CEL/SDD/MI execution
-  GraphStuff.*            NUMA graph copy, scheduler, workers, sink, phase gate
+  DummyGraph.*            NUMA graph copy, scheduler, workers, sink, phase gate
   IAlgo.h                  internal algorithm contract
   Cel.*, Sdd.*, Mi.*      synthetic CUDA algorithms
   main.cpp                topology grouping and benchmark coordination

@@ -9,7 +9,7 @@ public:
 
     bool init(const AlgoRuntimeInfo& info, const TaskGpuResources& resources, std::size_t& scratchBytes) override;
     bool notifyParameter(const AlgoParams& params) override;
-    bool launchKernels(const TaskGpuResources& resources, cudaStream_t stream) override;
+    bool launchKernels(const TaskGpuResources& resources, const void* d_frameData, cudaStream_t stream) override;
     bool launchD2H(const TaskGpuResources& resources, cudaStream_t stream) override;
     bool collectResult(const TaskGpuResources& resources, AlgoOutput& output) const override;
     bool close() override;

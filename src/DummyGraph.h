@@ -11,9 +11,10 @@
 #include <vector>
 
 #include "DummyTask.h"
-#include "GraphTypes.h"
+#include "FrameCpuAtom.h"
 #include "IAlgo.h"
 #include "ParameterRegistry.h"
+#include "StaticData.h"
 
 class PhaseGate {
 public:
@@ -74,13 +75,18 @@ public:
     DummyGraph& operator=(const DummyGraph&) = delete;
 
 private:
+    struct ReadyFrame {
+        FrameCpuAtom* atom = nullptr;
+    };
+
     bool initializeOnNumaNode();
     bool unloadOnNumaNode();
     void workerLoop();
     void cancelReadyFramesLocked();
     void cancelPreparedFramesLocked();
+    void deliverFrameResult(const FrameMetadata& metadata);
     void finishPhaseIfCompleteLocked();
-    std::vector<std::unique_ptr<FrameSlot>>& slotsForPhase(FramePhase phase);
+    std::vector<std::unique_ptr<FrameCpuAtom>>& atomsForPhase(FramePhase phase);
 
     GraphConfig config;
     GraphSink* sink;
@@ -88,15 +94,16 @@ private:
     ParameterRegistry parameterRegistry;
     ParameterSnapshot parameterSnapshot;
     std::vector<std::unique_ptr<DummyTask>> tasks;
-    std::vector<std::unique_ptr<FrameSlot>> warmupSlots;
-    std::vector<std::unique_ptr<FrameSlot>> timedSlots;
+    StaticData staticData;
+    std::vector<std::unique_ptr<FrameCpuAtom>> warmupAtoms;
+    std::vector<std::unique_ptr<FrameCpuAtom>> timedAtoms;
     std::vector<std::thread> workers;
 
     mutable std::mutex schedulerLock;
     std::condition_variable workCondition;
     std::condition_variable phaseCondition;
     std::condition_variable startupCondition;
-    std::deque<FrameSlot*> readyFrames;
+    std::deque<ReadyFrame> readyFrames;
     std::vector<DummyTask*> freeTasks;
     PhaseGate* phaseGate = nullptr;
     std::size_t readyWorkers = 0;

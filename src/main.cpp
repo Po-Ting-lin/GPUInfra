@@ -11,8 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "DummyGraph.h"
 #include "GpuContextManager.h"
-#include "GraphStuff.h"
 #include "ImageSizing.h"
 
 namespace {

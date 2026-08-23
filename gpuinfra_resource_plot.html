@@ -236,6 +236,15 @@
             text-align: center;
         }
 
+        .reuse-flow {
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+        }
+
+        .flow-note {
+            margin: 14px 0 0;
+            color: var(--muted);
+        }
+
         .flow-step small {
             display: block;
             color: var(--muted);
@@ -302,35 +311,36 @@
 <body>
 <main>
     <h1>GPUInfra resource topology</h1>
-    <p class="lede">Illustrative two-node deployment. The runtime discovers the actual topology and creates exactly one graph copy for each NUMA node that has one or more CUDA GPUs.</p>
+    <p class="lede">Illustrative temporary deployment. The runtime creates one graph copy per GPU-bearing NUMA node and currently requires exactly one eligible GPU in each copy. A GPU-keyed frame-replica model keeps the future two-GPU path internal to frame data.</p>
 
     <div class="stats">
-        <div class="stat"><strong>1 / node</strong><span>DummyGraph copy</span></div>
+        <div class="stat"><strong>1 / node</strong><span>DummyGraph copy and eligible GPU</span></div>
         <div class="stat"><strong>4 / GPU</strong><span>default DummyTask instances</span></div>
         <div class="stat"><strong>independent</strong><span>task and thread pool sizes</span></div>
-        <div class="stat"><strong>0</strong><span>frame-owned CUDA lanes</span></div>
+        <div class="stat"><strong>220 / graph</strong><span>fixed StaticData slot capacity</span></div>
     </div>
 
     <section class="panel">
         <h2>NUMA-local graph copies</h2>
         <div class="topology">
             <article class="numa-node node-0">
-                <header><h3>DummyGraph · NUMA 0</h3><span class="badge">local-only scheduling</span></header>
+                <header><h3>DummyGraph · NUMA 0</h3><span class="badge">temporary · one GPU</span></header>
                 <div class="node-body">
                     <div class="resource gpu"><strong>GpuContext · GPU 0</strong><span>Primary context and task registry</span></div>
-                    <div class="resource gpu"><strong>GpuContext · GPU 1</strong><span>Primary context and task registry</span></div>
-                    <div class="resource task"><strong>DummyTask pool</strong><span>GPU-bound streams, input buffers, scratch, CEL/SDD/MI objects</span></div>
-                    <div class="resource thread"><strong>Graph-thread pool</strong><span>Every worker is pinned to NUMA 0 and can run any local task</span></div>
-                    <div class="resource frame"><strong>FrameSlot collections</strong><span>All warmup/timed inputs and results; no GPU affinity</span></div>
+                    <div class="resource task"><strong>DummyTask pool</strong><span>GPU-bound streams, pinned input staging, scratch, and private CEL/SDD/MI objects</span></div>
+                    <div class="resource thread"><strong>Graph-thread pool</strong><span>Every worker is pinned to NUMA 0 and can run any task in this graph copy</span></div>
+                    <div class="resource frame"><strong>FrameCpuAtom collection</strong><span>Graph-owned CPU inputs and metadata</span></div>
+                    <div class="resource frame"><strong>StaticData → FrameSlot[220]</strong><span>Immutable frame-ID index; one bound GPU/result slot per configured frame; one replica on GPU 0</span></div>
                 </div>
             </article>
             <article class="numa-node node-1">
-                <header><h3>DummyGraph · NUMA 1</h3><span class="badge">local-only scheduling</span></header>
+                <header><h3>DummyGraph · NUMA 1</h3><span class="badge">temporary · one GPU</span></header>
                 <div class="node-body">
-                    <div class="resource gpu"><strong>GpuContext · GPU 2</strong><span>Primary context and task registry</span></div>
-                    <div class="resource task"><strong>DummyTask pool</strong><span>GPU-bound streams, input buffers, scratch, CEL/SDD/MI objects</span></div>
-                    <div class="resource thread"><strong>Graph-thread pool</strong><span>Every worker is pinned to NUMA 1 and can run any local task</span></div>
-                    <div class="resource frame"><strong>FrameSlot collections</strong><span>All warmup/timed inputs and results; no GPU affinity</span></div>
+                    <div class="resource gpu"><strong>GpuContext · GPU 1</strong><span>Primary context and task registry</span></div>
+                    <div class="resource task"><strong>DummyTask pool</strong><span>GPU-bound streams, pinned input staging, scratch, and private CEL/SDD/MI objects</span></div>
+                    <div class="resource thread"><strong>Graph-thread pool</strong><span>Every worker is pinned to NUMA 1 and can run any task in this graph copy</span></div>
+                    <div class="resource frame"><strong>FrameCpuAtom collection</strong><span>Graph-owned CPU inputs and metadata</span></div>
+                    <div class="resource frame"><strong>StaticData → FrameSlot[220]</strong><span>Immutable frame-ID index; one bound GPU/result slot per configured frame; one replica on GPU 1</span></div>
                 </div>
             </article>
         </div>
@@ -339,37 +349,55 @@
     <section class="panel">
         <h2>Scheduler rendezvous</h2>
         <div class="assignment">
-            <div class="box" style="border-color: var(--frame)"><strong>Ready FrameSlot</strong><br>logical data + results</div>
+            <div class="box" style="border-color: var(--frame)"><strong>ReadyFrame</strong><br>FrameCpuAtom only</div>
             <div class="plus">+</div>
             <div class="box" style="border-color: var(--task)"><strong>Free DummyTask</strong><br>GPU-bound CUDA resources</div>
             <div class="plus">+</div>
             <div class="box" style="border-color: var(--thread)"><strong>Free graph thread</strong><br>NUMA-local host call</div>
         </div>
-        <div class="execute"><strong>DummyTask::execute(FrameSlot&amp;)</strong><br>The association ends when this call returns.</div>
+        <div class="execute"><strong>StaticData::execute() → DummyTask::execute(FrameCpuAtom&amp;, StaticData&amp;)</strong><br>The task performs an average O(1) frame-ID lookup and validates complete metadata; scheduler selection is unchanged.</div>
     </section>
 
     <section class="panel">
-        <h2>One task execution</h2>
+        <h2>First device access</h2>
         <div class="flow">
-            <div class="flow-step"><div><strong>Frame input</strong><small>pageable, frame-owned</small></div></div>
-            <div class="flow-step"><div><strong>Pinned input</strong><small>task-owned memcpy</small></div></div>
-            <div class="flow-step"><div><strong>H2D</strong><small>task stream</small></div></div>
-            <div class="flow-step"><div><strong>CEL → SDD → MI</strong><small>shared original input</small></div></div>
+            <div class="flow-step"><div><strong>FrameCpuAtom.data</strong><small>atom-owned CPU bytes</small></div></div>
+            <div class="flow-step"><div><strong>StaticData slot lookup</strong><small>immutable hash + full metadata check</small></div></div>
+            <div class="flow-step"><div><strong>Pinned staging</strong><small>task-owned memcpy</small></div></div>
+            <div class="flow-step"><div><strong>Upload + H2D</strong><small>into existing FrameGpuData allocation</small></div></div>
+            <div class="flow-step"><div><strong>CEL → SDD → MI</strong><small>read access.data()</small></div></div>
             <div class="flow-step"><div><strong>D2H staging</strong><small>algorithm-owned pinned buffers</small></div></div>
-            <div class="flow-step"><div><strong>One sync</strong><small>task stream</small></div></div>
-            <div class="flow-step"><div><strong>Frame results</strong><small>preallocated output vectors</small></div></div>
+            <div class="flow-step"><div><strong>RAII complete()</strong><small>sync task stream</small></div></div>
+            <div class="flow-step"><div><strong>Publish + results</strong><small>frame ID becomes resident</small></div></div>
         </div>
+        <p class="flow-note">All device allocations already exist before workers start and remain until graph teardown. Uploading a new logical frame reuses the same pointer; the hot path performs no <code>cudaMalloc()</code> or <code>cudaFree()</code>.</p>
+    </section>
+
+    <section class="panel">
+        <h2>Reuse across task instances or future stages</h2>
+        <div class="flow reuse-flow">
+            <div class="flow-step"><div><strong>Same atom + bound slot</strong><small>task finds the same metadata match</small></div></div>
+            <div class="flow-step"><div><strong>Different task instance</strong><small>same graph GPU</small></div></div>
+            <div class="flow-step"><div><strong>Read access</strong><small>same device pointer</small></div></div>
+            <div class="flow-step"><div><strong>CUDA work</strong><small>no repeated H2D</small></div></div>
+            <div class="flow-step"><div><strong>RAII complete()</strong><small>sync; frame ID is unchanged</small></div></div>
+        </div>
+        <p class="flow-note">The checked-in graph currently has one <code>DummyTask</code> stage. A future integration passes the same graph-copy <code>StaticData</code> through TaskA → TaskB → TaskC; each task finds the same bound slot without changing scheduler selection.</p>
     </section>
 
     <section class="panel">
         <h2>Resource invariants</h2>
         <div class="rules">
-            <div class="rule"><strong style="color: var(--frame)">Frame is movable</strong><span>A slot can use whichever local-GPU task becomes free. It owns no CUDA allocation.</span></div>
-            <div class="rule"><strong style="color: var(--task)">Task is reusable</strong><span>A task keeps its GPU lane but can run sequentially on different host threads.</span></div>
+            <div class="rule"><strong style="color: var(--frame)">Frame owns payload</strong><span>A slot owns its device replica but has no task or worker affinity. Residency does not affect selection.</span></div>
+            <div class="rule"><strong style="color: var(--frame)">StaticData owns slots</strong><span>Each graph copy has a fixed 220-slot container; only configured frames are bound and allocated.</span></div>
+            <div class="rule"><strong style="color: var(--frame)">CPU input is separate</strong><span>FrameCpuAtom owns bytes; FrameSlot keeps only copied metadata and no atom pointer.</span></div>
+            <div class="rule"><strong style="color: var(--frame)">Payload is immutable</strong><span>Upload replaces data only for a new logical frame; all later stages receive read-only access.</span></div>
+            <div class="rule"><strong style="color: var(--frame)">Graph serializes frame access</strong><span>Stages of one slot do not overlap; FrameGpuData does not duplicate scheduling with an access flag or lock.</span></div>
+            <div class="rule"><strong style="color: var(--task)">Task is graph-guarded</strong><span>DummyGraph removes it from freeTasks for the whole execute call; the task owns no atomic scheduling guard.</span></div>
             <div class="rule"><strong style="color: var(--thread)">Thread is temporary</strong><span>A worker owns only CPU affinity and one active call, never task or frame state.</span></div>
             <div class="rule"><strong>Hot path is fixed</strong><span>No allocation, vector growth, manager mutex, or device-wide synchronization.</span></div>
-            <div class="rule"><strong>Lifecycle is copy-wide</strong><span>All tasks load, register, and notify before any frame begins.</span></div>
-            <div class="rule"><strong>Failure is global</strong><span>One graph error cancels queued work across all NUMA copies and suppresses timing.</span></div>
+            <div class="rule"><strong>Topology is explicit</strong><span>Zero or multiple GPUs in one graph copy fail initialization until replica migration is implemented.</span></div>
+            <div class="rule"><strong>Future extension is internal</strong><span>A second GPU adds stale-replica migration inside FrameGpuData, not GPU-aware scheduling.</span></div>
         </div>
     </section>
 </main>

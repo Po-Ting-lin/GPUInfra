@@ -241,8 +241,8 @@
 <body>
 <main>
     <h1>GPUInfra class and ownership model</h1>
-    <p class="lede">The current implementation separates logical frame data, reusable task resources, and host execution. A task is GPU-bound but can move between all graph threads in its NUMA-node graph copy.</p>
-    <div class="golden"><strong>Golden mapping</strong><code>start → DummyTask → end</code></div>
+    <p class="lede">The current implementation separates frame-owned GPU data, reusable task resources, and host execution. The temporary scope accepts exactly one GPU per NUMA graph copy: tasks remain GPU-bound, workers remain NUMA-bound, and frame residency never participates in scheduler selection.</p>
+    <div class="golden"><strong>Golden scheduling</strong><code>start → DummyTask → end · 1 GPU / NUMA graph copy</code></div>
 
     <section class="section">
         <h2>Core classes</h2>
@@ -267,13 +267,30 @@
                 </ul>
             </article>
             <article class="class-card graph-card wide">
-                <header><span class="stereotype">one per GPU-bearing NUMA node</span><h3>DummyGraph</h3></header>
+                <header><span class="stereotype">one per supported NUMA node</span><h3>DummyGraph</h3></header>
                 <ul>
+                    <li><code>DummyGraph.h/.cpp</code></li>
                     <li>NUMA-local worker pool</li>
                     <li>free <code>DummyTask</code> pool and FIFO frame queue</li>
-                    <li>warmup/timed <code>FrameSlot</code> collections</li>
+                    <li>owns configured <code>FrameCpuAtom</code> collections</li>
+                    <li>owns one graph-copy <code>StaticData</code></li>
+                    <li><code>ReadyFrame</code> carries only an atom</li>
+                    <li>temporarily requires exactly one eligible GPU</li>
                     <li>lifecycle barriers, phase gate, and cancellation</li>
                     <li>publishes terminal results to <code>GraphSink</code></li>
+                </ul>
+            </article>
+            <article class="class-card frame-card wide">
+                <header><span class="stereotype">one per graph copy</span><h3>StaticData</h3></header>
+                <ul>
+                    <li><code>StaticData.h/.cpp</code></li>
+                    <li>owns a fixed pool of 220 <code>FrameSlot</code> objects</li>
+                    <li>binds one slot per configured logical frame</li>
+                    <li>unused slots remain unbound and unallocated</li>
+                    <li>owns immutable frame-ID-to-slot-index hash</li>
+                    <li>frame state, cancellation, and result plumbing</li>
+                    <li>cold-path allocation and teardown</li>
+                    <li>does not participate in scheduler selection</li>
                 </ul>
             </article>
             <article class="class-card task-card wide">
@@ -283,24 +300,51 @@
                     <li>permanent GPU binding; no host-thread binding</li>
                     <li>owns <code>TaskGpuResources</code></li>
                     <li>owns private CEL, SDD, and MI objects</li>
-                    <li>atomic single-execution guard</li>
+                    <li><code>execute(FrameCpuAtom&amp;, StaticData&amp;)</code></li>
+                    <li>requests indexed slot and validates full metadata</li>
+                    <li>exclusive checkout is owned by <code>DummyGraph</code></li>
+                    <li>not an independent thread-safe scheduling boundary</li>
                 </ul>
             </article>
-            <article class="class-card frame-card">
+            <article class="class-card frame-card wide">
+                <header><span class="stereotype">CPU frame owner</span><h3>FrameCpuAtom</h3></header>
+                <ul>
+                    <li><code>FrameCpuAtom.h/.cpp</code></li>
+                    <li>owns CPU frame byte vector</li>
+                    <li>owns intrinsic <code>FrameMetadata</code></li>
+                    <li>ID, byte count, dimensions, dtype</li>
+                    <li>no GPU data or scheduling state</li>
+                </ul>
+            </article>
+            <article class="class-card frame-card wide">
                 <header><span class="stereotype">logical frame</span><h3>FrameSlot</h3></header>
                 <ul>
-                    <li>ID, NUMA node, phase, state</li>
-                    <li>owning input bytes</li>
+                    <li><code>FrameSlot.h/.cpp</code></li>
+                    <li>copied metadata, NUMA node, phase, state</li>
+                    <li>owns <code>FrameGpuData</code>; no CPU atom reference</li>
                     <li>preallocated <code>JobResult</code></li>
-                    <li>no stream or GPU affinity</li>
+                    <li>no task or worker affinity</li>
+                    <li>device payload follows the slot lifetime</li>
+                </ul>
+            </article>
+            <article class="class-card frame-card wide">
+                <header><span class="stereotype">embedded frame resource</span><h3>FrameGpuData</h3></header>
+                <ul>
+                    <li><code>FrameGpuData.h/.cpp</code></li>
+                    <li>GPU-keyed <code>FrameGpuReplica</code> collection</li>
+                    <li>one device buffer preallocated for graph lifetime</li>
+                    <li>resident frame ID + validity; no scheduling guard</li>
+                    <li>cold-path <code>initialize()</code> / <code>release()</code></li>
+                    <li>future stale-replica migration boundary</li>
                 </ul>
             </article>
             <article class="class-card task-card">
                 <header><span class="stereotype">task CUDA lane</span><h3>TaskGpuResources</h3></header>
                 <ul>
                     <li>GPU/NUMA/resource identity</li>
-                    <li>stream and pinned/device input</li>
+                    <li>stream and pinned input staging</li>
                     <li>optional device scratch</li>
+                    <li>no authoritative frame device buffer</li>
                     <li>non-owning <code>GpuContext*</code></li>
                 </ul>
             </article>
@@ -310,7 +354,7 @@
                     <li>device output matrix</li>
                     <li>pinned D2H staging output</li>
                     <li>geometry and parameters</li>
-                    <li>all consume task <code>d_in</code></li>
+                    <li>consume the acquired frame device view</li>
                 </ul>
             </article>
             <article class="class-card graph-card">
@@ -322,19 +366,56 @@
                     <li>one snapshot for all tasks</li>
                 </ul>
             </article>
+            <article class="class-card frame-card">
+                <header><span class="stereotype">RAII scoped lease</span><h3>FrameGpuAccess</h3></header>
+                <ul>
+                    <li><code>FrameGpuAccess.h/.cpp</code></li>
+                    <li><code>Read</code> or <code>Upload</code></li>
+                    <li>GPU ID, stream, replica index, and frame ID</li>
+                    <li>read access exposes no mutable pointer</li>
+                    <li><code>complete()</code> synchronizes then commits</li>
+                    <li>destructor synchronizes then aborts if incomplete</li>
+                </ul>
+            </article>
         </div>
+    </section>
+
+    <section class="section">
+        <h2>Split CPU/GPU frame ownership</h2>
+        <div class="relationship">
+            <div class="node"><strong style="color: var(--graph)">DummyGraph</strong><span>CPU atom owner</span></div>
+            <div class="arrow">→</div>
+            <div class="node"><strong style="color: var(--frame)">FrameCpuAtom</strong><span>CPU bytes + metadata</span></div>
+            <div class="arrow">+</div>
+            <div class="node"><strong style="color: var(--frame)">StaticData</strong><span>fixed pool owner</span></div>
+            <div class="arrow">→</div>
+            <div class="node"><strong style="color: var(--frame)">FrameSlot</strong><span>metadata + GPU data + result</span></div>
+        </div>
+        <p class="note"><code>ReadyFrame</code> carries only a graph-owned atom. <code>StaticData</code> owns 220 slot objects, binds one for each configured frame, and builds an immutable frame-ID hash. <code>DummyTask</code> performs an average O(1) ID lookup, requires a complete metadata match, and keeps the selected pointer only for the synchronous call.</p>
+    </section>
+
+    <section class="section">
+        <h2>Frame-owned GPU payload</h2>
+        <div class="relationship">
+            <div class="node"><strong style="color: var(--frame)">FrameSlot</strong><span>lifetime owner</span></div>
+            <div class="arrow">→</div>
+            <div class="node"><strong style="color: var(--frame)">FrameGpuData</strong><span>frame ID + validity state</span></div>
+            <div class="arrow">→</div>
+            <div class="node"><strong style="color: var(--gpu)">FrameGpuReplica</strong><span><code>gpuId</code> + <code>d_data</code></span></div>
+        </div>
+        <p class="note"><code>FrameGpuData</code> is embedded in <code>FrameSlot</code>; it is not a second lifetime owner. Its device allocation remains alive from <code>StaticData::init()</code> through <code>StaticData::release()</code>, and a later <code>Upload</code> reuses the same pointer for a new frame ID. <code>FrameGpuAccess</code> is only a scoped non-owning lease.</p>
     </section>
 
     <section class="section">
         <h2>One scheduling assignment</h2>
         <div class="relationship">
-            <div class="node"><strong style="color: var(--frame)">Ready FrameSlot</strong><span>input and results</span></div>
+            <div class="node"><strong style="color: var(--frame)">ReadyFrame</strong><span>FrameCpuAtom only</span></div>
             <div class="arrow">+</div>
             <div class="node"><strong style="color: var(--task)">Free DummyTask</strong><span>GPU-bound CUDA lane</span></div>
             <div class="arrow">+</div>
             <div class="node"><strong style="color: var(--graph)">Free graph thread</strong><span>NUMA-local host execution</span></div>
         </div>
-        <p class="note">The three objects are associated only for one <code>execute()</code>. The task and thread return independently to their pools.</p>
+        <p class="note">After scheduler selection, the graph calls <code>StaticData::execute()</code> and <code>DummyTask::execute(atom, staticData)</code>. The task uses StaticData's immutable index to locate and validate the matching slot without changing ready-frame, task, or worker selection.</p>
     </section>
 
     <section class="section">

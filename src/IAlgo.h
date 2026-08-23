@@ -44,7 +44,7 @@ public:
 
     // Enqueue compute only. D2H is deliberately kept out of this method so
     // the infrastructure can enqueue every algorithm's compute first.
-    virtual bool launchKernels(const TaskGpuResources& resources, cudaStream_t stream) = 0;
+    virtual bool launchKernels(const TaskGpuResources& resources, const void* d_frameData, cudaStream_t stream) = 0;
 
     // Enqueue this algorithm's output transfer after the whole kernel batch.
     virtual bool launchD2H(const TaskGpuResources& resources, cudaStream_t stream) = 0;

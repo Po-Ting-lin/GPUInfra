@@ -95,12 +95,12 @@ bool Sdd::notifyParameter(const AlgoParams& params) {
     return true;
 }
 
-bool Sdd::launchKernels(const TaskGpuResources& resources, cudaStream_t stream) {
-    if (!initialized || resources.resourceId != resourceId || resources.gpuId != gpuId || resources.d_in == nullptr || stream == nullptr || stream != resources.stream) {
+bool Sdd::launchKernels(const TaskGpuResources& resources, const void* d_frameData, cudaStream_t stream) {
+    if (!initialized || resources.resourceId != resourceId || resources.gpuId != gpuId || d_frameData == nullptr || stream == nullptr || stream != resources.stream) {
         return false;
     }
 
-    const auto* d_input = static_cast<const std::uint8_t*>(resources.d_in);
+    const auto* d_input = static_cast<const std::uint8_t*>(d_frameData);
     dim3 block(SDD_BLOCK_DIM, SDD_BLOCK_DIM);
     dim3 grid((matrixSize + block.x - 1U) / block.x, (matrixSize + block.y - 1U) / block.y);
     sddMatrixMultiplicationKernel << <grid, block, 0, stream >> > (d_input, d_outputMatrix, matrixSize, frameW);

@@ -295,8 +295,9 @@ Retaining a primary-context handle does not increase SM utilization, PCIe
 bandwidth, kernel concurrency, or copy-engine concurrency.
 
 Performance comes from the stream and pipeline design: multiple task-owned
-streams, one H2D per task execution, a contiguous kernel batch, a contiguous
-D2H batch, preallocated buffers, and one synchronization per frame.
+streams, one H2D on a frame's first device access, a contiguous kernel batch, a
+contiguous D2H batch, preallocated buffers, and one synchronization per
+`execute()` call.
 
 ### 4. It does not replace `cudaSetDevice()`
 
@@ -308,9 +309,14 @@ make that context current on another host thread.
 
 A context may be used by multiple host threads, but application data still
 needs correct ownership. GPUInfra gives every `DummyTask` a distinct stream,
-input, scratch buffer, and private algorithm objects. The scheduler and the
-task's atomic guard prevent concurrent use while permitting sequential movement
-between host threads.
+pinned input staging, scratch buffer, and private algorithm objects, while
+device frame input belongs to the `FrameGpuData` member embedded in
+`FrameSlot`; graph-copy-scoped `StaticData` owns the fixed slot pool, and a
+scoped, non-owning `FrameGpuAccess` exposes one replica. This composition keeps
+the device allocation on the frame-slot lifetime. The graph
+scheduler's exclusive checkout prevents concurrent use of one task instance
+while permitting sequential movement between host threads; frame stage order
+similarly prevents overlapping access to one slot.
 
 The context handle does not prevent races in task registration, future per-GPU
 shared resources, or mutable task state. Those remain application-level
@@ -347,9 +353,10 @@ thread's context stack. Before GPUInfra releases its reference, it must ensure:
    resources owned by GPUInfra have been released;
 5. no GPUInfra-scoped context binding remains current on a worker thread.
 
-The demo joins graph workers and unloads every task before
-`GpuContextManager::shutdown()`, which satisfies the first requirement. The
-manager rejects shutdown while registered task resources remain active.
+The demo joins graph workers, releases frame-owned device data, and unloads
+every task before `GpuContextManager::shutdown()`, which satisfies the first
+requirement. The manager rejects shutdown while registered task resources
+remain active.
 
 ## Decision rule
 

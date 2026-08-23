@@ -19,13 +19,17 @@ find_package(CUDAToolkit REQUIRED)
 
 add_library(gpuinfra
     src/Cel.cu
+    src/DummyGraph.cpp
     src/DummyTask.cpp
-    src/GraphStuff.cpp
-    src/GraphTypes.cpp
+    src/FrameCpuAtom.cpp
+    src/FrameGpuAccess.cpp
+    src/FrameGpuData.cpp
+    src/FrameSlot.cpp
     src/GpuContextManager.cpp
     src/Mi.cu
     src/ParameterRegistry.cpp
     src/Sdd.cu
+    src/StaticData.cpp
 )
 
 target_include_directories(gpuinfra

@@ -193,3 +193,12 @@ The timeline illustrates the following rules:
 Therefore, within a graph copy, frames, task instances, and NUMA-local graph
 threads are scheduled independently. They are associated only for the duration
 of one `execute()` call.
+
+---
+
+## Graph Structure
+
+There are several layers from top to bottom:
+1. Graph layer: This layers contain how to execute the task. Compilcate stuffs... The logic is described as above. We just simulate it in our test here. We cannot change it.
+2. Task layer: Fix API like the API above and we can define these. It should be clean and easy reading.
+3. Algo layer: Main Algo logic. Fully Flexiable inside.
