@@ -9,6 +9,7 @@
 #include "CudaCheck.h"
 #include "ImageSizing.h"
 #include "TaskGpuResources.h"
+#include "WorkloadSizing.h"
 
 namespace {
 
@@ -24,7 +25,7 @@ __global__ void sddMatrixMultiplicationKernel(const std::uint8_t* d_input, std::
     const std::size_t outputRowOffset = static_cast<std::size_t>(y) * nx;
     std::uint32_t sum = 0;
 
-    for (int r = 0; r < 3; ++r) {
+    for (int repeat = 0; repeat < GPUINFRA_COMPUTE_SIZE_MULTIPLIER; ++repeat) {
         sum = 0;
         for (int k = 0; k < nx; ++k) {
             const std::uint32_t a = d_input[inputRowOffset + k];
@@ -113,7 +114,9 @@ bool Sdd::launchD2H(const TaskGpuResources& resources, cudaStream_t stream) {
         return false;
     }
 
-    CUDA_CHECK(cudaMemcpyAsync(h_outputMatrix, d_outputMatrix, matrixBytes, cudaMemcpyDeviceToHost, stream), return false);
+    for (int repeat = 0; repeat < GPUINFRA_D2H_SIZE_MULTIPLIER; ++repeat) {
+        CUDA_CHECK(cudaMemcpyAsync(h_outputMatrix, d_outputMatrix, matrixBytes, cudaMemcpyDeviceToHost, stream), return false);
+    }
     return true;
 }
 

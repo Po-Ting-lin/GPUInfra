@@ -95,6 +95,30 @@ factor 128. The factor must be a multiple of 16 from 16 through 256. There is no
 as a demo CLI argument. Setting it to zero programmatically disables caching
 and exercises the task fallback path.
 
+## Independent H2D, D2H, and compute sizing
+
+Three positive compile-time macros independently scale the submitted work:
+
+| CMake setting / macro | Default | Effect |
+| --- | ---: | --- |
+| `GPUINFRA_H2D_SIZE_MULTIPLIER` | 1 | Full-buffer H2D copies per upload |
+| `GPUINFRA_D2H_SIZE_MULTIPLIER` | 1 | Full-buffer D2H copies per algorithm |
+| `GPUINFRA_COMPUTE_SIZE_MULTIPLIER` | 3 | Matrix calculations per output element |
+
+For example:
+
+```bash
+./build.sh \
+    -DGPUINFRA_H2D_SIZE_MULTIPLIER=2 \
+    -DGPUINFRA_D2H_SIZE_MULTIPLIER=4 \
+    -DGPUINFRA_COMPUTE_SIZE_MULTIPLIER=6
+```
+
+These multipliers change transfer traffic and compute work without changing
+function APIs, allocation sizes, image dimensions, or result contents. H2D is
+still skipped on a cache hit. The defaults reproduce the previous one H2D,
+one D2H, and three compute repetitions.
+
 ## Runtime topology
 
 `GpuContextManager::init()` discovers Runtime API devices, maps their PCI NUMA
@@ -278,6 +302,7 @@ src/
   StaticData.*            graph-copy metadata index/cache owner
   TaskGpuResources.h      task CUDA lane including fallback d_input
   GpuContextManager.*     GPU discovery, NUMA affinity, task registration
+  WorkloadSizing.h        independent H2D/D2H/compute compile-time controls
   Cel.*, Sdd.*, Mi.*      synthetic algorithms
 tests/
   gpuinfra_tests.cpp      protocol and CUDA integration tests

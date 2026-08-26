@@ -14,6 +14,20 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
 
+set(GPUINFRA_H2D_SIZE_MULTIPLIER 1 CACHE STRING "H2D traffic multiplier")
+set(GPUINFRA_D2H_SIZE_MULTIPLIER 1 CACHE STRING "D2H traffic multiplier")
+set(GPUINFRA_COMPUTE_SIZE_MULTIPLIER 3 CACHE STRING "Compute work multiplier")
+
+foreach(workload_multiplier
+    GPUINFRA_H2D_SIZE_MULTIPLIER
+    GPUINFRA_D2H_SIZE_MULTIPLIER
+    GPUINFRA_COMPUTE_SIZE_MULTIPLIER
+)
+    if(NOT "${${workload_multiplier}}" MATCHES "^[1-9][0-9]*$")
+        message(FATAL_ERROR "${workload_multiplier} must be a positive integer")
+    endif()
+endforeach()
+
 find_package(Threads REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 
@@ -35,6 +49,13 @@ add_library(gpuinfra
 target_include_directories(gpuinfra
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(gpuinfra
+    PUBLIC
+        GPUINFRA_H2D_SIZE_MULTIPLIER=${GPUINFRA_H2D_SIZE_MULTIPLIER}
+        GPUINFRA_D2H_SIZE_MULTIPLIER=${GPUINFRA_D2H_SIZE_MULTIPLIER}
+        GPUINFRA_COMPUTE_SIZE_MULTIPLIER=${GPUINFRA_COMPUTE_SIZE_MULTIPLIER}
 )
 
 target_link_libraries(gpuinfra

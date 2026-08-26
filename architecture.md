@@ -173,6 +173,19 @@ Hot-path invariants:
 - no concurrent use of one task's mutable resources;
 - algorithms receive one const input pointer and do not know its source.
 
+The compile-time macros in `WorkloadSizing.h` independently control submitted
+work without changing any function API or buffer layout:
+
+```text
+effective H2D traffic on upload = input bytes × GPUINFRA_H2D_SIZE_MULTIPLIER
+effective D2H traffic per algo  = output bytes × GPUINFRA_D2H_SIZE_MULTIPLIER
+compute repetitions per element = GPUINFRA_COMPUTE_SIZE_MULTIPLIER
+```
+
+All copies remain ordered on the selected task stream. A cache hit still
+submits no H2D, regardless of the H2D multiplier. These controls affect traffic
+and compute time only; they do not increase persistent GPU or host allocation.
+
 ## 8. Cache correctness
 
 A cache fill is published only after successful stream synchronization. Failed

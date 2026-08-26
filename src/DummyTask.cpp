@@ -19,6 +19,7 @@
 #include "Mi.h"
 #include "Sdd.h"
 #include "StaticData.h"
+#include "WorkloadSizing.h"
 
 namespace {
 
@@ -198,7 +199,9 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
     // H2D
     if (access.needsUpload()) {
         std::memcpy(resources.h_in, atom.data.data(), atom.data.size());
-        CUDA_CHECK(cudaMemcpyAsync(access.writableData(), resources.h_in, resources.inBytes, cudaMemcpyHostToDevice, resources.stream), atom.result.ok = false);
+        for (int repeat = 0; repeat < GPUINFRA_H2D_SIZE_MULTIPLIER && atom.result.ok; ++repeat) {
+            CUDA_CHECK(cudaMemcpyAsync(access.writableData(), resources.h_in, resources.inBytes, cudaMemcpyHostToDevice, resources.stream), atom.result.ok = false);
+        }
     }
 
     // Compute: all kernels -> all D2H

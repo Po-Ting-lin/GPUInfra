@@ -367,13 +367,13 @@
             <div class="flow-step"><div><strong>Registered metadata lookup</strong><small>immutable hash + full metadata check</small></div></div>
             <div class="flow-step"><div><strong>Cache acquire</strong><small>empty / inactive LRU / busy</small></div></div>
             <div class="flow-step"><div><strong>Pinned staging</strong><small>task-owned memcpy</small></div></div>
-            <div class="flow-step"><div><strong>Upload + H2D</strong><small>cache entry or task d_input</small></div></div>
-            <div class="flow-step"><div><strong>CEL → SDD → MI</strong><small>read access.data()</small></div></div>
-            <div class="flow-step"><div><strong>D2H staging</strong><small>algorithm-owned pinned buffers</small></div></div>
+            <div class="flow-step"><div><strong>Upload + H2D</strong><small>full input × H2D macro</small></div></div>
+            <div class="flow-step"><div><strong>CEL → SDD → MI</strong><small>compute × Compute macro</small></div></div>
+            <div class="flow-step"><div><strong>D2H staging</strong><small>each output × D2H macro</small></div></div>
             <div class="flow-step"><div><strong>RAII complete()</strong><small>sync task stream</small></div></div>
             <div class="flow-step"><div><strong>Publish + results</strong><small>fill becomes Valid; fallback changes no cache</small></div></div>
         </div>
-        <p class="flow-note">An empty or inactive LRU entry yields <code>CacheFill</code>. Capacity zero, a matching entry still loading, or all active entries yields <code>TaskFallback</code> immediately. Both buffers already exist, so the hot path performs no <code>cudaMalloc()</code> or <code>cudaFree()</code>.</p>
+        <p class="flow-note">An empty or inactive LRU entry yields <code>CacheFill</code>. Capacity zero, a matching entry still loading, or all active entries yields <code>TaskFallback</code> immediately. <code>GPUINFRA_H2D_SIZE_MULTIPLIER</code>, <code>GPUINFRA_D2H_SIZE_MULTIPLIER</code>, and <code>GPUINFRA_COMPUTE_SIZE_MULTIPLIER</code> independently scale submitted work without changing buffer sizes or APIs. Both buffers already exist, so the hot path performs no <code>cudaMalloc()</code> or <code>cudaFree()</code>.</p>
     </section>
 
     <section class="panel">

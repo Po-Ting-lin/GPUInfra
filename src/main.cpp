@@ -14,6 +14,7 @@
 #include "DummyGraph.h"
 #include "GpuContextManager.h"
 #include "ImageSizing.h"
+#include "WorkloadSizing.h"
 
 namespace {
 
@@ -253,6 +254,7 @@ int main(int argc, char* argv[]) {
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "execution_model=" << executionModelName(executionModel) << '\n';
     std::cout << "size_factor=" << sizeFactor << " input=" << frameWidth << 'x' << frameHeight << " cel=" << celSize << 'x' << celSize << " sdd=" << sddSize << 'x' << sddSize << " mi=" << miSize << 'x' << miSize << '\n';
+    std::cout << "workload_multipliers h2d=" << GPUINFRA_H2D_SIZE_MULTIPLIER << " d2h=" << GPUINFRA_D2H_SIZE_MULTIPLIER << " compute=" << GPUINFRA_COMPUTE_SIZE_MULTIPLIER << '\n';
     std::cout << "warmup " << warmupFramesPerGpu << " frames/GPU, timed " << timedFramesPerGpu << " frames/GPU (" << measuredFrames << " total) in " << elapsedMilliseconds << " ms\n";
     std::cout << "throughput=" << throughput << " frames/s, average=" << millisecondsPerFrame << " ms/frame\n";
     std::cout << "delivered " << delivered << " frames across " << gpuCount << " CUDA GPU(s), failures=" << failedResults << '\n';
