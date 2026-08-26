@@ -317,7 +317,7 @@
         <div class="stat"><strong>1 / node</strong><span>DummyGraph copy and eligible GPU</span></div>
         <div class="stat"><strong>4 / GPU</strong><span>default DummyTask instances</span></div>
         <div class="stat"><strong>independent</strong><span>task and thread pool sizes</span></div>
-        <div class="stat"><strong>4 default</strong><span>best-effort cache slots per graph</span></div>
+        <div class="stat"><strong>4 default</strong><span>best-effort cache entries per graph</span></div>
     </div>
 
     <section class="panel">
@@ -331,7 +331,7 @@
                     <div class="resource thread"><strong>Graph-thread pool</strong><span>Every worker is pinned to NUMA 0 and can run any task in this graph copy</span></div>
                     <div class="resource frame"><strong>Warmup / timed FrameCpuAtom collections</strong><span>Graph-owned CPU inputs, metadata, results, and phase membership</span></div>
                     <div class="resource frame"><strong>StaticData → registered FrameMetadata[N]</strong><span>Immutable frame-ID index and graph NUMA; no scheduler state</span></div>
-                    <div class="resource frame"><strong>FrameGpuCache → FrameSlot[K]</strong><span>K defaults to 4; reusable persistent replicas on GPU 0</span></div>
+                    <div class="resource frame"><strong>GpuCacheManager → GpuCacheEntry[K]</strong><span>K defaults to 4; reusable persistent replicas on GPU 0</span></div>
                 </div>
             </article>
             <article class="numa-node node-1">
@@ -342,7 +342,7 @@
                     <div class="resource thread"><strong>Graph-thread pool</strong><span>Every worker is pinned to NUMA 1 and can run any task in this graph copy</span></div>
                     <div class="resource frame"><strong>Warmup / timed FrameCpuAtom collections</strong><span>Graph-owned CPU inputs, metadata, results, and phase membership</span></div>
                     <div class="resource frame"><strong>StaticData → registered FrameMetadata[N]</strong><span>Immutable frame-ID index and graph NUMA; no scheduler state</span></div>
-                    <div class="resource frame"><strong>FrameGpuCache → FrameSlot[K]</strong><span>K defaults to 4; reusable persistent replicas on GPU 1</span></div>
+                    <div class="resource frame"><strong>GpuCacheManager → GpuCacheEntry[K]</strong><span>K defaults to 4; reusable persistent replicas on GPU 1</span></div>
                 </div>
             </article>
         </div>
@@ -367,7 +367,7 @@
             <div class="flow-step"><div><strong>Registered metadata lookup</strong><small>immutable hash + full metadata check</small></div></div>
             <div class="flow-step"><div><strong>Cache acquire</strong><small>empty / inactive LRU / busy</small></div></div>
             <div class="flow-step"><div><strong>Pinned staging</strong><small>task-owned memcpy</small></div></div>
-            <div class="flow-step"><div><strong>Upload + H2D</strong><small>cache slot or task d_input</small></div></div>
+            <div class="flow-step"><div><strong>Upload + H2D</strong><small>cache entry or task d_input</small></div></div>
             <div class="flow-step"><div><strong>CEL → SDD → MI</strong><small>read access.data()</small></div></div>
             <div class="flow-step"><div><strong>D2H staging</strong><small>algorithm-owned pinned buffers</small></div></div>
             <div class="flow-step"><div><strong>RAII complete()</strong><small>sync task stream</small></div></div>
@@ -392,7 +392,7 @@
         <h2>Resource invariants</h2>
         <div class="rules">
             <div class="rule"><strong style="color: var(--frame)">Graph owns execution state</strong><span>Phase collections, submitted flags, ready queue, and counters remain independent from GPU residency.</span></div>
-            <div class="rule"><strong style="color: var(--frame)">Cache is bounded</strong><span>FrameSlot[K] uses inactive-entry LRU; K defaults to 4 and may be zero.</span></div>
+            <div class="rule"><strong style="color: var(--frame)">Cache is bounded</strong><span>GpuCacheEntry[K] uses inactive-entry LRU; K defaults to 4 and may be zero.</span></div>
             <div class="rule"><strong style="color: var(--frame)">CPU input reconstructs</strong><span>FrameCpuAtom owns immutable bytes used by every fill or fallback H2D.</span></div>
             <div class="rule"><strong style="color: var(--frame)">Active entries are safe</strong><span>Reader/fill leases prevent eviction; incomplete fills return to Empty.</span></div>
             <div class="rule"><strong style="color: var(--task)">Task fallback is persistent</strong><span>Each TaskGpuResources owns one d_input allocated in load and freed in unload.</span></div>

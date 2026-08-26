@@ -1,22 +1,22 @@
-# FrameSlotPool 數量問題
+# GpuCacheEntry 數量問題
 
 ## 狀態
 
-已透過「registered frames 與 GPU cache slots 分離」解決。`220` 現在只
+已透過「registered frames 與 GPU cache entries 分離」解決。`220` 現在只
 是 demo 預設 workload 的 logical frame 數量：
 
 ```text
 20 warmup + 200 timed = 220 FrameCpuAtom / registered metadata entries
 ```
 
-它不再是 `FrameSlotPool` 的固定容量，也不再代表需要 220 個 device input
-buffers。`GraphConfig::frameCacheSlots` 預設為 4；有效容量為：
+`220` 不再是 `GpuCacheManager` 的固定 entry 數量，也不代表需要 220 個
+device input buffers。`GraphConfig::gpuCacheEntries` 預設為 4；有效容量為：
 
 ```text
-min(frameCacheSlots, configured frames)
+min(gpuCacheEntries, configured frames)
 ```
 
-`frameCacheSlots = 0` 也是合法設定，代表完全停用 GPU frame cache。
+`gpuCacheEntries = 0` 也是合法設定，代表完全停用 GPU frame cache。
 
 ## 為何 task instances 少，仍可處理 220 frames
 
@@ -41,9 +41,9 @@ StaticData
   ├─ registered FrameMetadata[NumConfiguredFrames]
   │    immutable frame-ID index + graph NUMA
   │
-  └─ FrameGpuCache
-       └─ FrameSlot[min(ConfiguredFrameCacheSlots, NumConfiguredFrames)]
-            cached metadata + LRU/lease state + FrameGpuData
+  └─ GpuCacheManager
+       └─ GpuCacheEntry[min(ConfiguredGpuCacheEntries, NumConfiguredFrames)]
+            cached metadata + LRU/lease state + GpuReplica
 ```
 
 - `StaticData` 保存 immutable registered metadata，並由
@@ -51,43 +51,43 @@ StaticData
 - `FrameCpuAtom` 同時擁有 CPU input、metadata 與預配置的 `JobResult`。
 - `FramePhase` 由 `DummyGraph` 的 `warmupAtoms`／`timedAtoms` collections 表示，
   ready/in-flight/terminal bookkeeping 則管理 execution progress。
-- `FrameSlot` 是 best-effort GPU cache entry：可被 LRU 替換，並不與某個
+- `GpuCacheEntry` 是 best-effort GPU cache entry：可被 LRU 替換，並不與某個
   logical frame 永久綁定。
 - `TaskGpuResources::d_input` 是每個 task instance 的 persistent fallback
   device buffer，同樣只在 `load()`/`unload()` 配置與釋放。
 
 ## Cache hit、fill 與 fallback
 
-`FrameGpuCache::acquire()` 掃描預先配置的少量 slots：
+`GpuCacheManager::acquire()` 掃描預先配置的少量 entries：
 
 1. 完整 metadata 相符且 entry 為 `Valid`：回傳 `CacheHit`，不做 H2D。
 2. miss 且有 `Empty` 或 inactive LRU entry：保留該 entry，回傳
    `CacheFill`；task 從 immutable `FrameCpuAtom` 重新 H2D。
-3. 相同 frame 正在 `Loading`，或全部 slots 都有 active leases：立即回傳
+3. 相同 frame 正在 `Loading`，或全部 entries 都有 active accesses：立即回傳
    `TaskFallback`，不等待、不修改 scheduler。
 4. capacity 為 0：所有執行都走 `TaskFallback`。
 
 Cache fill 只會在 task stream 成功同步後成為 `Valid`。失敗或 RAII abort
 會把 entry 恢復成 `Empty`。Cache hit 失敗不會破壞原本 immutable payload。
 
-Lookup 是 `O(K)`，其中 `K = frameCacheSlots`，預設 4；這個固定 array scan
+Lookup 是 `O(K)`，其中 `K = gpuCacheEntries`，預設 4；這個固定 array scan
 不配置記憶體，且比在 hot path 維護會 rehash 的 residency map 更單純。
 Registered metadata lookup 仍是平均 `O(1)`。
 
-## 為何 correctness 不再要求 220 GPU slots
+## 為何 correctness 不再要求 220 GPU cache entries
 
 目前所有 algorithms 都只讀原始 frame input。Cache miss 時，task 可以從仍
 有效且 immutable 的 `FrameCpuAtom` 重新 H2D 到自己的 `d_input`，所以 cache
 只是避免重複 H2D 的效能優化：
 
 ```text
-cache hit         -> 使用 FrameSlot.deviceData
-cache fill        -> FrameCpuAtom -> H2D -> FrameSlot.deviceData
+cache hit         -> 使用 GpuCacheEntry.GpuReplica.d_data
+cache fill        -> FrameCpuAtom -> H2D -> GpuCacheEntry.GpuReplica.d_data
 cache unavailable -> FrameCpuAtom -> H2D -> TaskGpuResources.d_input
 ```
 
 這讓 GPU cache 容量可小於 simultaneous live logical frames，而不需要修改
-`graph.md` 的 ready-frame/task/worker selection，也不需要 slot wait/requeue。
+`graph.md` 的 ready-frame/task/worker selection，也不需要 entry wait/requeue。
 
 ## 重要邊界
 
@@ -102,7 +102,7 @@ frame-owned authoritative output plane、明確的 spill/recompute contract，�
 
 - `NumConfiguredFrames` 決定 registered metadata 與 atom-owned CPU/result
   storage 數量。
-- `frameCacheSlots` 決定 best-effort device cache 數量，預設 4。
+- `gpuCacheEntries` 決定 best-effort device cache 數量，預設 4。
 - `NumTaskInstances` 決定 task streams、fallback input、scratch 與 algo-private
   buffers 數量。
 - 三者互相獨立；不再因預設有 220 frames 就配置 220 份 GPU input cache。

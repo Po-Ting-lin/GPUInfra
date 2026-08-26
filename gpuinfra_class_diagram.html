@@ -287,7 +287,7 @@
                     <li>owns registered <code>FrameMetadata[N]</code></li>
                     <li>owns immutable frame-ID-to-metadata-index hash</li>
                     <li>stores one graph-copy NUMA node</li>
-                    <li>owns one bounded <code>FrameGpuCache</code></li>
+                    <li>owns one bounded <code>GpuCacheManager</code></li>
                     <li>default cache capacity 4; capacity 0 is valid</li>
                     <li>owns no scheduler execution state</li>
                     <li>does not participate in scheduler selection</li>
@@ -319,23 +319,23 @@
                 </ul>
             </article>
             <article class="class-card frame-card wide">
-                <header><span class="stereotype">bounded cache manager</span><h3>FrameGpuCache</h3></header>
+                <header><span class="stereotype">bounded cache manager</span><h3>GpuCacheManager</h3></header>
                 <ul>
-                    <li><code>FrameGpuCache.h/.cpp</code></li>
-                    <li>owns fixed <code>FrameSlot[K]</code> entries</li>
-                    <li><code>Empty / Loading / Valid</code> state</li>
-                    <li>active leases and inactive-entry LRU</li>
+                    <li><code>GpuCacheManager.h/.cpp</code></li>
+                    <li>owns fixed <code>GpuCacheEntry[K]</code> entries</li>
+                    <li>coordinates entry state, active accesses, and LRU</li>
                     <li>selects cache hit, cache fill, or fallback</li>
                     <li>CUDA work runs outside its metadata mutex</li>
                 </ul>
             </article>
             <article class="class-card frame-card wide">
-                <header><span class="stereotype">reusable cache entry</span><h3>FrameSlot + FrameGpuData</h3></header>
+                <header><span class="stereotype">reusable cache entry</span><h3>GpuCacheEntry</h3></header>
                 <ul>
-                    <li><code>FrameSlot.h/.cpp</code> + <code>FrameGpuData.h/.cpp</code></li>
+                    <li><code>GpuCacheEntry.h/.cpp</code></li>
                     <li>temporarily cached complete metadata</li>
-                    <li>GPU-keyed <code>FrameGpuReplica</code> collection</li>
-                    <li>one device buffer preallocated per slot</li>
+                    <li>directly owns GPU-keyed <code>GpuReplica</code> collection</li>
+                    <li>one device buffer preallocated per entry today</li>
+                    <li><code>Empty / Loading / Valid</code>, access count, and LRU</li>
                     <li>same pointer reused across LRU replacements</li>
                     <li>future stale-replica migration boundary</li>
                 </ul>
@@ -369,9 +369,9 @@
                 </ul>
             </article>
             <article class="class-card frame-card">
-                <header><span class="stereotype">RAII scoped lease</span><h3>FrameGpuAccess</h3></header>
+                <header><span class="stereotype">RAII scoped lease</span><h3>GpuDataAccess</h3></header>
                 <ul>
-                    <li><code>FrameGpuAccess.h/.cpp</code></li>
+                    <li><code>GpuDataAccess.h/.cpp</code></li>
                     <li><code>CacheHit / CacheFill / TaskFallback</code></li>
                     <li><code>needsUpload()</code> hides source selection</li>
                     <li>cache hit exposes no mutable pointer</li>
@@ -393,23 +393,23 @@
             <div class="arrow">→</div>
             <div class="node"><strong style="color: var(--frame)">Registered metadata[N]</strong><span>identity validation only</span></div>
             <div class="arrow">+</div>
-            <div class="node"><strong style="color: var(--frame)">FrameSlot[K]</strong><span>best-effort GPU cache</span></div>
+            <div class="node"><strong style="color: var(--frame)">GpuCacheEntry[K]</strong><span>best-effort GPU cache</span></div>
         </div>
-        <p class="note"><code>N</code> is the configured frame count; <code>K = min(frameCacheSlots, N)</code> and defaults to 4. <code>DummyGraph</code> owns phase collections, submitted flags, the ready queue, and in-flight/terminal counts. <code>DummyTask</code> performs an average O(1) registered-metadata lookup, then the cache scans its small fixed entry array without affecting scheduler choice.</p>
+        <p class="note"><code>N</code> is the configured frame count; <code>K = min(gpuCacheEntries, N)</code> and defaults to 4. <code>DummyGraph</code> owns phase collections, submitted flags, the ready queue, and in-flight/terminal counts. <code>DummyTask</code> performs an average O(1) registered-metadata lookup, then the cache scans its small fixed entry array without affecting scheduler choice.</p>
     </section>
 
     <section class="section">
         <h2>Best-effort cached GPU payload</h2>
         <div class="relationship">
-            <div class="node"><strong style="color: var(--frame)">FrameGpuCache</strong><span>fixed K-entry owner</span></div>
+            <div class="node"><strong style="color: var(--frame)">GpuCacheManager</strong><span>fixed K-entry owner</span></div>
             <div class="arrow">→</div>
-            <div class="node"><strong style="color: var(--frame)">FrameSlot</strong><span>metadata + LRU/lease state</span></div>
+            <div class="node"><strong style="color: var(--frame)">GpuCacheEntry</strong><span>metadata + LRU/lease state</span></div>
             <div class="arrow">→</div>
-            <div class="node"><strong style="color: var(--gpu)">FrameGpuData</strong><span><code>gpuId</code> + persistent <code>d_data</code></span></div>
+            <div class="node"><strong style="color: var(--gpu)">GpuReplica</strong><span><code>gpuId</code> + persistent <code>d_data</code> + validity</span></div>
             <div class="arrow">or</div>
             <div class="node"><strong style="color: var(--task)">Task d_input</strong><span>correctness fallback</span></div>
         </div>
-        <p class="note"><code>FrameGpuAccess</code> returns <code>CacheHit</code>, <code>CacheFill</code>, or <code>TaskFallback</code>. Cache fills and task fallback upload from immutable CPU data; cache hits skip H2D. All device buffers are allocated on the cold path and retained until their graph/task teardown.</p>
+        <p class="note"><code>GpuDataAccess</code> returns <code>CacheHit</code>, <code>CacheFill</code>, or <code>TaskFallback</code>. Cache fills and task fallback upload from immutable CPU data; cache hits skip H2D. All device buffers are allocated on the cold path and retained until their graph/task teardown.</p>
     </section>
 
     <section class="section">

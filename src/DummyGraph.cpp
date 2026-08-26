@@ -227,7 +227,7 @@ bool DummyGraph::waitForPhase() {
 bool DummyGraph::shutdown() {
     {
         std::lock_guard<std::mutex> guard(schedulerLock);
-        if (!initialized && workers.empty() && tasks.empty() && warmupAtoms.empty() && timedAtoms.empty() && staticData.frameCount() == 0 && staticData.frameCacheSlotCount() == 0) {
+        if (!initialized && workers.empty() && tasks.empty() && warmupAtoms.empty() && timedAtoms.empty() && staticData.frameCount() == 0 && staticData.gpuCacheEntryCount() == 0) {
             return true;
         }
         stopping = true;
@@ -331,7 +331,7 @@ bool DummyGraph::initializeOnNumaNode() {
         staticDataConfig.numaNode = config.numaNode;
         staticDataConfig.gpuIds = config.gpuIds;
         staticDataConfig.runtime = config.runtime;
-        staticDataConfig.frameCacheSlots = config.frameCacheSlots;
+        staticDataConfig.gpuCacheEntries = config.gpuCacheEntries;
         staticDataConfig.frames.reserve(totalFrameCount);
         std::uint64_t nextId = config.firstFrameId;
         for (std::size_t index = 0; index < warmupCount; ++index) {

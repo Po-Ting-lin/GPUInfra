@@ -26,7 +26,7 @@ process
   |     +-- FrameCpuAtom collections
   |     `-- StaticData
   |           +-- registered FrameMetadata[N] + ID index
-  |           `-- FrameGpuCache -> FrameSlot[K]
+  |           `-- GpuCacheManager -> GpuCacheEntry[K]
   |
   `-- DummyGraph(numa=1)
         +-- NUMA-local worker pool
@@ -34,7 +34,7 @@ process
         +-- FrameCpuAtom collections
         `-- StaticData
               +-- registered FrameMetadata[N] + ID index
-              `-- FrameGpuCache -> FrameSlot[K]
+              `-- GpuCacheManager -> GpuCacheEntry[K]
 ```
 
 `N` is the configured logical frame count. `K` is the smaller of configured
@@ -65,10 +65,9 @@ The worker remains NUMA-bound; the selected task remains GPU-bound.
 | `DummyGraph` | One NUMA graph copy, workers, task pool, warmup/timed CPU-atom collections, queues, `StaticData`, parameters |
 | `FrameCpuAtom` | CPU input byte vector, intrinsic metadata, and preallocated result |
 | `StaticData` | Graph NUMA, immutable registered metadata/index, and bounded GPU cache |
-| `FrameGpuCache` | Fixed cache-slot array, short metadata mutex, lease counts, LRU |
-| `FrameSlot` | One reusable cache entry and its embedded device allocation |
-| `FrameGpuData` | GPU-keyed persistent replicas and validity bits |
-| `FrameGpuAccess` | Scoped non-owning cache/fallback view; synchronization and publish/abort |
+| `GpuCacheManager` | Fixed cache-entry array, short metadata mutex, lease counts, LRU |
+| `GpuCacheEntry` | One reusable entry with GPU-keyed persistent replicas and validity bits |
+| `GpuDataAccess` | Scoped non-owning cache/fallback view; synchronization and publish/abort |
 | `DummyTask` | GPU-bound reusable execution lane and CEL/SDD/MI objects |
 | `TaskGpuResources` | Stream, pinned `h_in`, fallback `d_input`, scratch, GPU/NUMA/context identity |
 | CEL/SDD/MI | Private device output, pinned D2H staging, geometry, parameters |
@@ -79,7 +78,7 @@ The essential split is:
 ```text
 CPU input and host result       -> FrameCpuAtom
 logical execution state         -> DummyGraph collections/queues/counters
-best-effort cached GPU input     -> FrameSlot / FrameGpuData
+best-effort cached GPU input     -> GpuCacheEntry / GpuReplica
 correctness fallback GPU input  -> TaskGpuResources::d_input
 CUDA execution lane             -> DummyTask / TaskGpuResources
 host execution                  -> temporarily selected graph worker
@@ -99,14 +98,14 @@ create/load every DummyTask
        -> validate unique IDs/layouts
        -> copy registered FrameMetadata[N]
        -> build immutable ID-to-metadata hash
-       -> create FrameGpuCache with FrameSlot[K]
-       -> allocate one replica per slot on the graph GPU
+       -> create GpuCacheManager with GpuCacheEntry[K]
+       -> allocate one replica per entry on the graph GPU
   -> start and affinity-check workers
 ```
 
 There is no 220-frame limit. The demo default happens to configure 20 warmup
 plus 200 timed frames, but those 220 registered frames use only four device
-cache slots by default.
+cache entries by default.
 
 `FramePhase` is graph-owned: `warmupAtoms` and `timedAtoms` define membership.
 The phase-submitted flags, ready queue, in-flight count, and terminal count own
@@ -124,7 +123,7 @@ This is average `O(1)` and provides logical correctness. After validating NUMA,
 input layout, and result shape, the task requests GPU access:
 
 ```text
-FrameGpuCache::acquire(metadata, TaskGpuResources)
+GpuCacheManager::acquire(metadata, TaskGpuResources)
 ```
 
 The cache scans `K` preallocated entries under a short mutex. This is `O(K)`,
@@ -132,13 +131,13 @@ default `K=4`, with no allocation or CUDA call under the mutex.
 
 ## 6. Cache states and leases
 
-Each `FrameSlot` is in one state:
+Each `GpuCacheEntry` is in one state:
 
 - `Empty`: immediately available for a miss;
-- `Loading`: one cache fill owns the slot but has not published it;
+- `Loading`: one cache fill owns the entry but has not published it;
 - `Valid`: the cached metadata and local replica are readable.
 
-`FrameGpuAccessSource` describes the selected execution path:
+`GpuDataAccessSource` describes the selected execution path:
 
 - `CacheHit`: matching valid entry; immutable reader count increases;
 - `CacheFill`: empty or inactive-LRU entry reserved for H2D;
@@ -154,12 +153,12 @@ uses task fallback instead of waiting.
 ```text
 FrameCpuAtom + StaticData registry validation
   -> make selected task GPU current
-  -> acquire FrameGpuAccess
+  -> acquire GpuDataAccess
   -> CacheHit: use cache pointer directly
      CacheFill/TaskFallback: atom.data -> h_in -> H2D to writableData()
   -> CEL / SDD / MI kernels read data()
   -> CEL / SDD / MI D2H
-  -> FrameGpuAccess::complete()
+  -> GpuDataAccess::complete()
        -> cudaStreamSynchronize(task stream)
        -> publish fill or release lease
   -> collect into FrameCpuAtom.result
@@ -195,14 +194,14 @@ contract before eviction is safe.
 FrameCpuAtom / registered metadata:
   graph setup -> graph teardown
 
-FrameSlot.deviceData:
+GpuCacheEntry replicas:
   StaticData::init() cudaMalloc -> repeated fill/hit/eviction -> release cudaFree
 
 TaskGpuResources::d_input:
   DummyTask::load() cudaMalloc -> repeated fallback H2D -> unload cudaFree
 ```
 
-The same slot pointer is reused when LRU replacement changes which logical
+The same entry replica pointer is reused when LRU replacement changes which logical
 frame it caches. No cache replacement allocates or frees memory.
 
 ## 10. Teardown and failures
@@ -219,21 +218,21 @@ StaticData::release() cache allocations
   -> GpuContextManager::shutdown() retained contexts
 ```
 
-`FrameGpuCache::release()` rejects live cache or fallback leases. Normal graph
+`GpuCacheManager::release()` rejects live cache or fallback leases. Normal graph
 teardown reaches it only after workers have joined.
 
 ## 11. Current and future topology
 
 Current initialization requires exactly one GPU ID. Future two-GPU support
 keeps the scheduler and task API unchanged, but adds a persistent replica per
-cache slot per GPU plus lazy P2P/staged local-replica fills. See
+cache entry per GPU plus lazy P2P/staged local-replica fills. See
 [`frame_gpu_data_plan.md`](frame_gpu_data_plan.md).
 
 ## 12. Verification
 
 The CUDA tests verify:
 
-- registered frames beyond 220 with a two-slot cache;
+- registered frames beyond 220 with a two-entry cache;
 - duplicate ID and complete metadata rejection;
 - effective-capacity clamping and capacity zero;
 - cache fill/hit/loading fallback/busy fallback;

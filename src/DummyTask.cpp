@@ -188,7 +188,7 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
         return false;
     }
 
-    FrameGpuAccess access = staticData.acquireFrameGpuAccess(atom.metadata, resources);
+    GpuDataAccess access = staticData.acquireGpuData(atom.metadata, resources);
     if (!access) {
         atom.result.ok = false;
         return false;

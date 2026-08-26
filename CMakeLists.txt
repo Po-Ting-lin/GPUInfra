@@ -22,11 +22,10 @@ add_library(gpuinfra
     src/DummyGraph.cpp
     src/DummyTask.cpp
     src/FrameCpuAtom.cpp
-    src/FrameGpuAccess.cpp
-    src/FrameGpuCache.cpp
-    src/FrameGpuData.cpp
-    src/FrameSlot.cpp
+    src/GpuCacheEntry.cpp
+    src/GpuCacheManager.cpp
     src/GpuContextManager.cpp
+    src/GpuDataAccess.cpp
     src/Mi.cu
     src/ParameterRegistry.cpp
     src/Sdd.cu

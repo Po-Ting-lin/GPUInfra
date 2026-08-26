@@ -21,7 +21,7 @@ The implementation demonstrates:
 - `FrameCpuAtom` ownership of CPU data, metadata, and preallocated result;
 - `DummyGraph` ownership of warmup/timed membership and execution state;
 - `StaticData` ownership of an immutable registered-frame index;
-- a bounded, best-effort `FrameGpuCache` with persistent `FrameSlot` device
+- a bounded, best-effort `GpuCacheManager` with persistent `GpuCacheEntry` device
   buffers;
 - task-private persistent `d_input` fallback on cache miss;
 - no hot-path `cudaMalloc()`/`cudaFree()`;
@@ -39,7 +39,7 @@ a hit. Because the current input is immutable, a miss re-uploads from
   implemented one-GPU cache.
 - [`frame_gpu_data_plan.md`](frame_gpu_data_plan.md) specifies the future
   multi-GPU replica extension.
-- [`num_of_frame_slot_pool_issue.md`](num_of_frame_slot_pool_issue.md) explains
+- [`num_of_gpu_cache_entry_issue.md`](num_of_gpu_cache_entry_issue.md) explains
   why logical frame count and GPU cache capacity are independent.
 - [`open_issues.md`](open_issues.md) records real-framework integration and
   future payload constraints.
@@ -91,7 +91,7 @@ Defaults are 200 timed frames, 20 warmup frames, Batched execution, and size
 factor 128. The factor must be a multiple of 16 from 16 through 256. There is no
 220-frame implementation cap anymore.
 
-`GraphConfig::frameCacheSlots` defaults to 4 and is intentionally not exposed
+`GraphConfig::gpuCacheEntries` defaults to 4 and is intentionally not exposed
 as a demo CLI argument. Setting it to zero programmatically disables caching
 and exercises the task fallback path.
 
@@ -119,13 +119,13 @@ create all DummyTask instances
        -> preallocate each atom's input and CEL/SDD/MI result buffers
   -> StaticData::init()
        -> copy registered FrameMetadata and build immutable frame-ID index
-       -> create K persistent FrameSlot cache entries
+       -> create K persistent GpuCacheEntry cache entries
   -> start NUMA-local workers
 ```
 
-`K = min(GraphConfig::frameCacheSlots, configured logical frames)`. The default
+`K = min(GraphConfig::gpuCacheEntries, configured logical frames)`. The default
 workload therefore has 220 `FrameCpuAtom` objects and registered metadata
-entries, but only four GPU cache slots per graph copy.
+entries, but only four GPU cache entries per graph copy.
 
 ## Scheduling
 
@@ -153,23 +153,23 @@ StaticData
   ├─ registered FrameMetadata[NumConfiguredFrames]
   │    immutable frame-ID index + graph NUMA
   │
-  └─ FrameGpuCache
-       └─ FrameSlot[K]
+  └─ GpuCacheManager
+       └─ GpuCacheEntry[K]
             cached metadata + LRU/lease state
-            └─ FrameGpuData -> persistent device replica
+            └─ GpuReplica[gpuId] -> persistent d_data + validity
 ```
 
 `StaticData` validates registered metadata through an immutable average `O(1)`
 ID index followed by complete metadata and NUMA comparison. It stores no
 scheduler state, `FramePhase`, CPU bytes, or `JobResult`: graph collections own
 execution state and the owning `FrameCpuAtom` carries its data and result.
-`FrameSlot` is only a reusable best-effort GPU cache entry. It may represent
+`GpuCacheEntry` is only a reusable best-effort GPU cache entry. It may represent
 different logical frames over time while retaining the same device allocation.
 
 ## Cache access
 
-`FrameGpuCache::acquire()` scans the fixed `K` entries and returns an RAII
-`FrameGpuAccess`:
+`GpuCacheManager::acquire()` scans the fixed `K` entries and returns an RAII
+`GpuDataAccess`:
 
 | Source | Path |
 | --- | --- |
@@ -193,7 +193,7 @@ FrameCpuAtom metadata
   -> when needsUpload(): atom.data -> task h_in -> selected device buffer
   -> CEL / SDD / MI read access.data()
   -> algorithm D2H staging
-  -> FrameGpuAccess::complete()
+  -> GpuDataAccess::complete()
        -> one cudaStreamSynchronize()
        -> publish/release cache state
   -> copy results into FrameCpuAtom.result
@@ -214,11 +214,10 @@ For size factor `F`, input is `(8F)x(8F)`, CEL is `(2F)x(2F)`, and SDD/MI are
 | `GpuContext` | GPU/NUMA identity, retained primary context, registered task table |
 | `DummyGraph` | workers, task pool, ready queue, CPU atoms, `StaticData`, phases, cancellation |
 | `FrameCpuAtom` | CPU input bytes, intrinsic metadata, and preallocated `JobResult` |
-| `StaticData` | graph NUMA, immutable registered metadata/index, and one bounded `FrameGpuCache` |
-| `FrameGpuCache` | fixed cache array, metadata lock, LRU and lease protocol |
-| `FrameSlot` | one reusable cache entry and embedded `FrameGpuData` |
-| `FrameGpuData` | persistent GPU-keyed device allocation/validity |
-| `FrameGpuAccess` | scoped non-owning cache/fallback lease and stream completion |
+| `StaticData` | graph NUMA, immutable registered metadata/index, and one bounded `GpuCacheManager` |
+| `GpuCacheManager` | fixed cache array, metadata lock, LRU and lease protocol |
+| `GpuCacheEntry` | one reusable cache entry with persistent GPU-keyed replicas and validity |
+| `GpuDataAccess` | scoped non-owning cache/fallback lease and stream completion |
 | `DummyTask` / `TaskGpuResources` | GPU binding, stream, `h_in`, fallback `d_input`, scratch, algorithms |
 | CEL/SDD/MI | private device outputs, pinned D2H staging, geometry, parameters |
 
@@ -227,7 +226,7 @@ For size factor `F`, input is `(8F)x(8F)`, CEL is `(2F)x(2F)`, and SDD/MI are
 GPU input storage now scales independently:
 
 ```text
-cache input VRAM = effective cache slots × frame bytes × replicas per slot
+cache input VRAM = effective cache entries × frame bytes × replicas per entry
 fallback input VRAM = task instances × frame bytes
 ```
 
@@ -248,7 +247,7 @@ join before resource teardown.
 
 ```text
 stop and join workers
-  -> StaticData releases cache-slot device allocations
+  -> StaticData releases cache-entry device allocations
   -> clear CPU atoms
   -> unload tasks
        -> sync stream, close algorithms, free scratch/d_input/h_in/stream
@@ -273,10 +272,9 @@ src/
   DummyGraph.*            NUMA graph copy and unchanged scheduler selection
   DummyTask.*             task lifecycle and CEL/SDD/MI execution
   FrameCpuAtom.*          CPU bytes, metadata, and preallocated result
-  FrameGpuCache.*         bounded cache lookup, LRU, leases, fallback choice
-  FrameSlot.*             reusable cache entry
-  FrameGpuData.*          persistent per-GPU allocation/validity
-  FrameGpuAccess.*        scoped access source and completion
+  GpuCacheManager.*       bounded cache lookup, LRU, leases, fallback choice
+  GpuCacheEntry.*         reusable entry with persistent per-GPU replicas
+  GpuDataAccess.*         scoped access source and completion
   StaticData.*            graph-copy metadata index/cache owner
   TaskGpuResources.h      task CUDA lane including fallback d_input
   GpuContextManager.*     GPU discovery, NUMA affinity, task registration

@@ -48,7 +48,7 @@ struct GraphConfig {
     std::vector<int> gpuIds;
     std::size_t taskInstancesPerGpu = 4;
     std::size_t graphThreads = 0;
-    std::size_t frameCacheSlots = 4;
+    std::size_t gpuCacheEntries = 4;
     std::uint64_t warmupFramesPerGpu = 0;
     std::uint64_t timedFramesPerGpu = 0;
     std::uint64_t firstFrameId = 0;

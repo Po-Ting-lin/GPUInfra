@@ -5,8 +5,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "FrameGpuCache.h"
 #include "FrameMetadata.h"
+#include "GpuCacheManager.h"
 #include "IAlgo.h"
 
 struct TaskGpuResources;
@@ -16,7 +16,7 @@ struct StaticDataConfig {
     std::vector<int> gpuIds;
     AlgoRuntimeInfo runtime;
     std::vector<FrameMetadata> frames;
-    std::size_t frameCacheSlots = 0;
+    std::size_t gpuCacheEntries = 0;
 };
 
 // Graph-copy-scoped owner of an immutable frame registry and a bounded GPU
@@ -31,9 +31,9 @@ public:
     bool release();
 
     std::size_t frameCount() const;
-    std::size_t frameCacheSlotCount() const;
+    std::size_t gpuCacheEntryCount() const;
     bool validateFrame(const FrameMetadata& metadata, int numaNode) const;
-    FrameGpuAccess acquireFrameGpuAccess(const FrameMetadata& metadata, const TaskGpuResources& resources);
+    GpuDataAccess acquireGpuData(const FrameMetadata& metadata, const TaskGpuResources& resources);
 
     bool isInitialized() const;
 
@@ -45,7 +45,7 @@ private:
 
     std::vector<FrameMetadata> registeredFrames;
     std::unordered_map<std::uint64_t, std::size_t> frameIdToIndex;
-    FrameGpuCache frameGpuCache;
+    GpuCacheManager gpuCacheManager;
     int graphNumaNode = -1;
     bool initialized = false;
 };

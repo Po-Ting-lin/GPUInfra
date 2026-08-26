@@ -11,7 +11,7 @@ to different GPUs, without changing scheduler selection:
 ```text
 FrameCpuAtom
   -> TaskA on GPU 0
-  -> best-effort FrameSlot cache entry
+  -> best-effort GpuCacheEntry cache entry
   -> TaskB on GPU 1
   -> TaskC on GPU 0
 ```
@@ -39,13 +39,13 @@ fallback.
 For `G` eligible GPUs and cache capacity `K`:
 
 ```text
-FrameGpuCache
-  └─ FrameSlot[K]
+GpuCacheManager
+  └─ GpuCacheEntry[K]
        ├─ cached FrameMetadata
        ├─ whole-entry LRU / active state
-       └─ FrameGpuData
-            ├─ Replica(gpu0): d_data + Empty/Loading/Valid
-            ├─ Replica(gpu1): d_data + Empty/Loading/Valid
+       └─ GpuReplica[eligible GPUs]
+            ├─ gpu0: d_data + Empty/Loading/Valid
+            ├─ gpu1: d_data + Empty/Loading/Valid
             └─ ...
 ```
 
@@ -79,7 +79,7 @@ matching entry + another GPU has Valid replica + local replica inactive
   -> publish local replica Valid
 ```
 
-This likely adds `FrameGpuAccessSource::ReplicaFill`. Other valid replicas stay
+This likely adds `GpuDataAccessSource::ReplicaFill`. Other valid replicas stay
 valid because the payload is immutable.
 
 ### Frame cache miss
@@ -119,7 +119,7 @@ The initial multi-GPU version retains synchronous task execution:
 enqueue migration/H2D on selected task stream
   -> enqueue algorithms on that stream
   -> enqueue D2H
-  -> FrameGpuAccess::complete()
+  -> GpuDataAccess::complete()
   -> cudaStreamSynchronize()
   -> publish replica/cache state
 ```

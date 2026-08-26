@@ -27,7 +27,7 @@ StaticData::~StaticData() {
 }
 
 bool StaticData::init(const StaticDataConfig& config) {
-    if (initialized || !registeredFrames.empty() || !frameIdToIndex.empty() || frameGpuCache.isInitialized() || graphNumaNode >= 0 || config.numaNode < 0 || config.gpuIds.size() != 1 || config.gpuIds.front() < 0 || config.runtime.inBytes == 0) {
+    if (initialized || !registeredFrames.empty() || !frameIdToIndex.empty() || gpuCacheManager.isInitialized() || graphNumaNode >= 0 || config.numaNode < 0 || config.gpuIds.size() != 1 || config.gpuIds.front() < 0 || config.runtime.inBytes == 0) {
         return false;
     }
 
@@ -52,22 +52,22 @@ bool StaticData::init(const StaticDataConfig& config) {
         return false;
     }
 
-    const std::size_t effectiveCacheSlots = std::min(config.frameCacheSlots, config.frames.size());
-    if (effectiveCacheSlots != 0 && config.runtime.inBytes > std::numeric_limits<std::size_t>::max() / effectiveCacheSlots) {
+    const std::size_t effectiveCacheEntries = std::min(config.gpuCacheEntries, config.frames.size());
+    if (effectiveCacheEntries != 0 && config.runtime.inBytes > std::numeric_limits<std::size_t>::max() / effectiveCacheEntries) {
         return false;
     }
-    const std::size_t frameGpuBytes = effectiveCacheSlots * config.runtime.inBytes;
+    const std::size_t cacheGpuBytes = effectiveCacheEntries * config.runtime.inBytes;
     std::size_t freeBytes = 0;
     std::size_t totalBytes = 0;
-    if (frameGpuBytes != 0) {
+    if (cacheGpuBytes != 0) {
         CUDA_CHECK(cudaSetDevice(config.gpuIds.front()), return false);
         CUDA_CHECK(cudaMemGetInfo(&freeBytes, &totalBytes), return false);
-        if (frameGpuBytes > freeBytes) {
-            std::fprintf(stderr, "[GPUInfra] insufficient StaticData frame cache GPU memory gpu=%d required=%zu free=%zu total=%zu\n", config.gpuIds.front(), frameGpuBytes, freeBytes, totalBytes);
+        if (cacheGpuBytes > freeBytes) {
+            std::fprintf(stderr, "[GPUInfra] insufficient StaticData GPU cache memory gpu=%d required=%zu free=%zu total=%zu\n", config.gpuIds.front(), cacheGpuBytes, freeBytes, totalBytes);
             return false;
         }
     }
-    if (!frameGpuCache.initialize(config.gpuIds, config.runtime.inBytes, effectiveCacheSlots)) {
+    if (!gpuCacheManager.initialize(config.gpuIds, config.runtime.inBytes, effectiveCacheEntries)) {
         return false;
     }
 
@@ -75,7 +75,7 @@ bool StaticData::init(const StaticDataConfig& config) {
     frameIdToIndex.swap(newFrameIdToIndex);
     graphNumaNode = config.numaNode;
     initialized = true;
-    std::fprintf(stderr, "[GPUInfra] StaticData frame GPU cache plan gpu=%d registered_frames=%zu cache_slots=%zu bytes_per_slot=%zu allocated_bytes=%zu\n", config.gpuIds.front(), registeredFrames.size(), effectiveCacheSlots, config.runtime.inBytes, frameGpuBytes);
+    std::fprintf(stderr, "[GPUInfra] StaticData GPU cache plan gpu=%d registered_frames=%zu cache_entries=%zu bytes_per_entry=%zu allocated_bytes=%zu\n", config.gpuIds.front(), registeredFrames.size(), effectiveCacheEntries, config.runtime.inBytes, cacheGpuBytes);
     return true;
 }
 
@@ -86,8 +86,8 @@ bool StaticData::execute() const {
 bool StaticData::release() {
     initialized = false;
 
-    const bool ok = frameGpuCache.release();
-    if (ok && !frameGpuCache.isInitialized()) {
+    const bool ok = gpuCacheManager.release();
+    if (ok && !gpuCacheManager.isInitialized()) {
         registeredFrames.clear();
         frameIdToIndex.clear();
         graphNumaNode = -1;
@@ -99,19 +99,19 @@ std::size_t StaticData::frameCount() const {
     return registeredFrames.size();
 }
 
-std::size_t StaticData::frameCacheSlotCount() const {
-    return frameGpuCache.slotCount();
+std::size_t StaticData::gpuCacheEntryCount() const {
+    return gpuCacheManager.entryCount();
 }
 
 bool StaticData::validateFrame(const FrameMetadata& metadata, int numaNode) const {
     return initialized && graphNumaNode == numaNode && findFrameMetadata(metadata) != nullptr;
 }
 
-FrameGpuAccess StaticData::acquireFrameGpuAccess(const FrameMetadata& metadata, const TaskGpuResources& resources) {
+GpuDataAccess StaticData::acquireGpuData(const FrameMetadata& metadata, const TaskGpuResources& resources) {
     if (!validateFrame(metadata, resources.numaNode)) {
-        return FrameGpuAccess();
+        return GpuDataAccess();
     }
-    return frameGpuCache.acquire(metadata, resources);
+    return gpuCacheManager.acquire(metadata, resources);
 }
 
 bool StaticData::isInitialized() const {

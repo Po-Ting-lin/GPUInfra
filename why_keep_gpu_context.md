@@ -311,13 +311,14 @@ A context may be used by multiple host threads, but application data still
 needs correct ownership. GPUInfra gives every `DummyTask` a distinct stream,
 pinned input staging, persistent fallback `d_input`, scratch buffer, and
 private algorithm objects. Graph-copy-scoped `StaticData` separately owns
-an immutable registered-frame metadata index and a bounded `FrameGpuCache`;
-every reusable `FrameSlot` embeds one `FrameGpuData` allocation, while scoped
-`FrameGpuAccess` leases coordinate cache hits, fills, and task fallback. The
+an immutable registered-frame metadata index and a bounded `GpuCacheManager`;
+every reusable `GpuCacheEntry` directly owns its persistent `GpuReplica`
+allocations, while scoped `GpuDataAccess` objects coordinate cache hits, fills,
+and task fallback. The
 graph scheduler owns frame execution state, and its exclusive checkout prevents
 concurrent use of one task instance while permitting sequential movement
 between host threads. Cache
-lease counts independently prevent eviction of an active slot.
+access counts independently prevent eviction of an active cache entry.
 
 The context handle does not prevent races in task registration, future per-GPU
 shared resources, or mutable task state. Those remain application-level
@@ -354,7 +355,7 @@ thread's context stack. Before GPUInfra releases its reference, it must ensure:
    resources owned by GPUInfra have been released;
 5. no GPUInfra-scoped context binding remains current on a worker thread.
 
-The demo joins graph workers, releases cache-slot device data, and unloads every
+The demo joins graph workers, releases cache-entry device data, and unloads every
 task (including its fallback device buffer) before
 `GpuContextManager::shutdown()`, which satisfies the first requirement. The
 manager rejects shutdown while registered task resources remain active.

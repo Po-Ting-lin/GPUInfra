@@ -2,11 +2,16 @@
 
 ## StaticData 與真實 graph 的整合點
 
-最後一個必要條件是：若真實 graph 完全不能修改，也沒有既有的
-static-data hook、task factory injection 或 terminal callback，這個方案便
-無法安全接入。示範版 `DummyGraph` 只加入必要的生命週期呼叫，以模擬真實
-framework 已提供的擴充點，並未改變 [`graph.md`](graph.md) 定義的 scheduler
-選擇邏輯。
+真實 framework 可以使用下列介面，將同一個 graph-copy `StaticData` 直接
+傳給每次 task execution：
+
+```cpp
+bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData);
+```
+
+因此 task 取得 `StaticData` 的方式已確定。示範版 `DummyGraph` 只加入必要的
+生命週期呼叫，以模擬真實 framework 已提供的擴充點，並未改變
+[`graph.md`](graph.md) 定義的 scheduler 選擇邏輯。
 
 實際導入前必須確認 framework 能提供：
 
@@ -25,7 +30,7 @@ point；不可用 process-global mutable singleton 取代。
 目前初始化明確要求一個 NUMA graph copy 只有一張 GPU。介面仍以 GPU ID
 查找 replica，但尚未實作：
 
-- 每個 cache slot 的 per-GPU preallocation；
+- 每個 cache entry 的 per-GPU preallocation；
 - P2P capability discovery 與 path warmup；
 - local replica miss 時的 lazy P2P 或 staged copy；
 - per-replica `Loading`/`Valid` 狀態與同時 readers；
@@ -39,11 +44,19 @@ point；不可用 process-global mutable singleton 取代。
 可由 immutable `FrameCpuAtom` 重新 H2D。若未來某個 stage 產生無法從 CPU
 atom 重建、且下游需要的 GPU intermediate，必須另行定義 authoritative
 frame-owned output plane、spill/recompute 規則及其 lifetime。Best-effort
-`FrameGpuCache` 不能作為這類資料的唯一 owner。
+`GpuCacheManager` 不能作為這類資料的唯一 owner。
+
+## Non-frame GPU data
+
+`GpuCacheManager`、`GpuCacheEntry` 與 `GpuDataAccess` 的名稱預留未來保存其他
+GPU data 的空間，但目前 `acquire()` 仍只接受 `FrameMetadata`，所有 entries
+也使用相同的 frame byte size。正式支援 static data 或 algorithm intermediate
+以前，仍須定義通用 data key/descriptor、不同 payload size、mutability、重建或
+fallback source，以及 eviction lifetime。本次重新命名不代表已具備這些功能。
 
 ## Cache sizing 與觀測
 
-`GraphConfig::frameCacheSlots` 目前預設 4，沒有 CLI option。正式 workload
+`GraphConfig::gpuCacheEntries` 目前預設 4，沒有 CLI option。正式 workload
 應觀測 cache hit、fill、fallback、eviction 與 transferred bytes，再由量測決定
 容量。Capacity 0 可作為 correctness baseline；調大容量只應影響效能與 VRAM，
 不應改變結果。

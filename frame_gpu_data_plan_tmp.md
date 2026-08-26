@@ -11,7 +11,7 @@ possible, while keeping correctness independent of cache residency:
 ```text
 RAM / immutable FrameCpuAtom
   ├─ cache miss -> H2D -> task-private d_input -> algorithms
-  └─ cache fill -> H2D -> FrameSlot.deviceData
+  └─ cache fill -> H2D -> GpuCacheEntry.GpuReplica.d_data
                               |
                     later task instance
                               |
@@ -42,17 +42,16 @@ StaticData
   ├─ registered FrameMetadata[NumConfiguredFrames]
   │    immutable frame-ID index + graph NUMA
   │
-  └─ FrameGpuCache
-       └─ FrameSlot[K]
+  └─ GpuCacheManager
+       └─ GpuCacheEntry[K]
             cached metadata + cache state + leases + LRU
-            └─ FrameGpuData
-                 └─ FrameGpuReplica(gpuId, d_data, valid)
+            └─ GpuReplica(gpuId, d_data, valid)
 ```
 
 `K` is:
 
 ```text
-min(GraphConfig::frameCacheSlots, NumConfiguredFrames)
+min(GraphConfig::gpuCacheEntries, NumConfiguredFrames)
 ```
 
 The default configured value is 4. Zero is valid and means pure task fallback.
@@ -75,18 +74,15 @@ There is no longer a fixed 220-frame capacity.
 - Stores no `JobResult`; result lifetime follows `FrameCpuAtom`.
 - Owns no CPU bytes and no per-frame device allocation.
 
-### `FrameSlot`
+### `GpuCacheEntry`
 
 - Is a reusable GPU cache entry, not a logical frame record.
-- Owns one `FrameGpuData` allocation set.
 - Temporarily stores cached metadata, `Empty`/`Loading`/`Valid` state, active
   lease count, and LRU sequence.
+- Directly owns GPU-keyed persistent `GpuReplica` allocations and per-replica
+  validity.
 - Can represent different logical frames over graph lifetime without
   reallocating its device buffer.
-
-### `FrameGpuData`
-
-- Encapsulates GPU-keyed persistent allocation and per-replica validity.
 - Does not own logical state, results, streams, scratch, or fallback storage.
 - Currently allocates exactly one replica because the temporary topology has
   one GPU per NUMA graph copy.
@@ -96,7 +92,7 @@ There is no longer a fixed 220-frame capacity.
 - Owns `stream`, `h_in`, `d_input`, `d_scratch`, GPU/NUMA identity, and context
   reference.
 - Allocates `d_input` once in `DummyTask::load()` and frees it in `unload()`.
-- Uses `d_input` whenever the frame cache cannot immediately provide a slot.
+- Uses `d_input` whenever the GPU cache cannot immediately provide an entry.
 
 ## 4. Cache capacity and allocation lifetime
 
@@ -109,15 +105,15 @@ DummyTask::load()
 StaticData::init()
   -> copy registered FrameMetadata and build immutable ID index
   -> compute effective cache capacity K
-  -> allocate K FrameSlots
-  -> allocate one persistent FrameGpuData replica per slot
+  -> allocate K GpuCacheEntries
+  -> allocate one persistent GpuReplica per entry
 ```
 
 Teardown happens only after workers stop:
 
 ```text
 StaticData::release()
-  -> release all cache-slot device allocations
+  -> release all cache-entry device allocations
 DummyTask::unload()
   -> release d_input, scratch, algorithm resources, staging, stream
 ```
@@ -132,12 +128,12 @@ and `StaticData` contain no phase or execution-state field.
 
 ## 5. Access contract
 
-`FrameGpuAccess` reports its source:
+`GpuDataAccess` reports its source:
 
 | Source | Meaning | `needsUpload()` | Writable pointer |
 | --- | --- | --- | --- |
 | `CacheHit` | Matching valid cache entry | false | no |
-| `CacheFill` | Miss reserved an inactive cache entry | true | cache slot buffer |
+| `CacheFill` | Miss reserved an inactive cache entry | true | cache-entry buffer |
 | `TaskFallback` | No entry can be used immediately, or capacity is zero | true | task `d_input` |
 | `Invalid` | Contract/metadata/GPU validation failed | n/a | no |
 
@@ -147,8 +143,8 @@ of an incomplete access synchronizes submitted work and aborts it.
 
 ## 6. Lookup and replacement
 
-`FrameGpuCache::acquire(metadata, resources)` holds a short cache metadata
-mutex and scans the fixed slot array. With default `K=4`, this is bounded
+`GpuCacheManager::acquire(metadata, resources)` holds a short cache metadata
+mutex and scans the fixed entry array. With default `K=4`, this is bounded
 `O(K)` and performs no allocation.
 
 Rules are evaluated in order:
@@ -178,7 +174,7 @@ Empty or inactive Valid
   -> Valid
 ```
 
-Only successful `FrameGpuAccess::complete(true)` publishes the new cached
+Only successful `GpuDataAccess::complete(true)` publishes the new cached
 metadata/replica. Submission failure, synchronization failure, or RAII abort
 resets a fill entry to `Empty`.
 
@@ -200,7 +196,7 @@ The task performs:
 validate registered metadata through StaticData's immutable hash
   -> validate atom metadata, NUMA, layout, and preallocated outputs
   -> make the task GPU current
-  -> StaticData::acquireFrameGpuAccess(metadata, resources)
+  -> StaticData::acquireGpuData(metadata, resources)
   -> if needsUpload: atom.data -> h_in -> access.writableData()
   -> CEL / SDD / MI read access.data()
   -> algorithm D2H
@@ -209,7 +205,7 @@ validate registered metadata through StaticData's immutable hash
 ```
 
 CEL, SDD, and MI interfaces are unchanged. They do not know whether their
-input came from a cache slot or `TaskGpuResources::d_input`.
+input came from a cache entry or `TaskGpuResources::d_input`.
 
 ## 9. Correctness boundary
 
@@ -226,7 +222,7 @@ authoritative output plane or a different non-evictable lifetime contract.
 `GraphConfig` contains:
 
 ```cpp
-std::size_t frameCacheSlots = 4;
+std::size_t gpuCacheEntries = 4;
 ```
 
 `DummyGraph::initializeOnNumaNode()` copies this value into
@@ -254,9 +250,9 @@ CUDA integration tests cover:
 ## 12. Future two-GPU-per-NUMA path
 
 The public task API and scheduler stay unchanged. The future implementation
-extends cache-slot internals:
+extends cache-entry internals:
 
-1. Allocate one `FrameGpuReplica` per eligible GPU for every cache slot.
+1. Allocate one `GpuReplica` per eligible GPU for every cache entry.
 2. Discover P2P capability and warm transfer paths during cold initialization.
 3. On a matching frame with an invalid local replica, reserve a per-replica
    fill and lazily copy from another valid replica.
