@@ -85,6 +85,10 @@ bool DummyGraph::initialize() {
     if (initialized || config.numaNode < 0 || config.taskInstancesPerGpu == 0 || config.runtime.inBytes == 0 || cancellation == nullptr || sink == nullptr || cancellation->load(std::memory_order_acquire)) {
         return false;
     }
+    if (!GpuContextManager::validateGpuIdsForNumaNode(config.numaNode, config.gpuIds)) {
+        std::fprintf(stderr, "[GPUInfra] graph GPU/NUMA mismatch numa=%d gpu=%d\n", config.numaNode, config.gpuIds.front());
+        return false;
+    }
     if (config.taskInstancesPerGpu > std::numeric_limits<std::size_t>::max() / config.gpuIds.size()) {
         return false;
     }
@@ -183,7 +187,7 @@ bool DummyGraph::startPhase(FramePhase phase, PhaseGate& gate) {
     try {
         for (std::size_t index = 0; index < phaseAtoms.size(); ++index) {
             const std::unique_ptr<FrameCpuAtom>& atom = phaseAtoms[index];
-            if (atom == nullptr || !staticData.validateFrame(atom->metadata, config.numaNode)) {
+            if (atom == nullptr || !staticData.validateFrame(atom->metadata)) {
                 return false;
             }
             pendingFrames.push_back({atom.get()});
@@ -261,10 +265,6 @@ bool DummyGraph::shutdown() {
     return unloadSucceeded;
 }
 
-int DummyGraph::numaNode() const {
-    return config.numaNode;
-}
-
 std::size_t DummyGraph::taskCount() const {
     return tasks.size();
 }
@@ -301,7 +301,7 @@ bool DummyGraph::initializeOnNumaNode() {
         int taskId = 0;
         for (int gpuId : config.gpuIds) {
             for (std::size_t instance = 0; instance < config.taskInstancesPerGpu; ++instance) {
-                tasks.push_back(std::make_unique<DummyTask>(taskId, config.numaNode, gpuId, config.executionModel, config.runtime));
+                tasks.push_back(std::make_unique<DummyTask>(taskId, gpuId, config.executionModel, config.runtime));
                 ++taskId;
             }
         }
@@ -328,7 +328,6 @@ bool DummyGraph::initializeOnNumaNode() {
         warmupAtoms.reserve(warmupCount);
         timedAtoms.reserve(timedCount);
         StaticDataConfig staticDataConfig;
-        staticDataConfig.numaNode = config.numaNode;
         staticDataConfig.gpuIds = config.gpuIds;
         staticDataConfig.runtime = config.runtime;
         staticDataConfig.gpuCacheEntries = config.gpuCacheEntries;

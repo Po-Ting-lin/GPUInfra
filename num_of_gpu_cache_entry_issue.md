@@ -38,16 +38,15 @@ buffer。
 
 ```text
 StaticData
-  ├─ registered FrameMetadata[NumConfiguredFrames]
-  │    immutable frame-ID index + graph NUMA
+  ├─ registered frame-ID -> FrameMetadata hash [NumConfiguredFrames]
   │
   └─ GpuCacheManager
        └─ GpuCacheEntry[min(ConfiguredGpuCacheEntries, NumConfiguredFrames)]
             cached metadata + LRU/lease state + GpuReplica
 ```
 
-- `StaticData` 保存 immutable registered metadata，並由
-  `frame ID -> metadata index` hash 查找；不保存 execution state。
+- `StaticData` 以單一 immutable `frame ID -> FrameMetadata` hash 保存及查找
+  registered metadata；不保存 execution state。
 - `FrameCpuAtom` 同時擁有 CPU input、metadata 與預配置的 `JobResult`。
 - `FramePhase` 由 `DummyGraph` 的 `warmupAtoms`／`timedAtoms` collections 表示，
   ready/in-flight/terminal bookkeeping 則管理 execution progress。

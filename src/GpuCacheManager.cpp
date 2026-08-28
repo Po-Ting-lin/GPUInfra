@@ -11,10 +11,6 @@ namespace {
 
 constexpr std::size_t NO_ENTRY = std::numeric_limits<std::size_t>::max();
 
-bool sameMetadata(const FrameMetadata& first, const FrameMetadata& second) {
-    return first.id == second.id && first.bytes == second.bytes && first.width == second.width && first.height == second.height && first.dtype == second.dtype;
-}
-
 }  // namespace
 
 GpuCacheManager::~GpuCacheManager() {
@@ -72,7 +68,7 @@ GpuDataAccess GpuCacheManager::acquire(const FrameMetadata& metadata, const Task
         if (entry.cacheState == GpuCacheState::Empty || entry.metadata.id != metadata.id) {
             continue;
         }
-        if (!sameMetadata(entry.metadata, metadata)) {
+        if (!(entry.metadata == metadata)) {
             return GpuDataAccess();
         }
         if (entry.cacheState == GpuCacheState::Loading) {

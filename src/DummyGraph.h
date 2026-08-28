@@ -67,7 +67,6 @@ public:
     bool waitForPhase();
     bool shutdown();
 
-    int numaNode() const;
     std::size_t taskCount() const;
     std::size_t workerCount() const;
     std::size_t lastMaxConcurrentExecutions() const;

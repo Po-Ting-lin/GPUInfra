@@ -18,7 +18,6 @@
 #include "CudaCheck.h"
 #include "GpuContext.h"
 
-GpuInfraConfig GpuContextManager::config;
 std::vector<GpuContext*> GpuContextManager::contexts;
 std::mutex GpuContextManager::lock;
 std::atomic<bool> GpuContextManager::initialised{false};
@@ -149,12 +148,11 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
         return false;
     }
 
-    config = requestedConfig;
     contexts.clear();
 
     for (int gpu = 0; gpu < deviceCount; ++gpu) {
         int node = probeNumaNodeOfGpu(gpu);
-        if (node < 0 && !config.requireNuma) {
+        if (node < 0 && !requestedConfig.requireNuma) {
             node = 0;
         }
         if (node < 0) {
@@ -208,8 +206,23 @@ bool GpuContextManager::pinCurrentThreadToNumaNode(int numaNode) {
     return pinToNumaNode(numaNode);
 }
 
-bool GpuContextManager::registerTask(int numaNode, int gpuId, TaskGpuResources& resources) {
-    if (!initialised.load(std::memory_order_acquire) || resources.ctx != nullptr || numaNode < 0 || gpuId < 0 || !pinToNumaNode(numaNode)) {
+bool GpuContextManager::validateGpuIdsForNumaNode(int numaNode, const std::vector<int>& gpuIds) {
+    if (!initialised.load(std::memory_order_acquire) || numaNode < 0 || gpuIds.empty()) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> guard(lock);
+    for (int gpuId : gpuIds) {
+        const GpuContext* context = findGpu(contexts, gpuId);
+        if (context == nullptr || context->numaNode != numaNode) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool GpuContextManager::registerTask(int gpuId, TaskGpuResources& resources) {
+    if (!initialised.load(std::memory_order_acquire) || resources.ctx != nullptr || gpuId < 0) {
         return false;
     }
 
@@ -217,7 +230,7 @@ bool GpuContextManager::registerTask(int numaNode, int gpuId, TaskGpuResources& 
 
     // Find the GPU (or GPU context) for this task
     GpuContext* context = findGpu(contexts, gpuId);
-    if (context == nullptr || context->numaNode != numaNode) {
+    if (context == nullptr) {
         return false;
     }
 
@@ -236,12 +249,11 @@ bool GpuContextManager::registerTask(int numaNode, int gpuId, TaskGpuResources& 
         context->taskResources[resourceId] = &resources;
     }
 
-    // Bind index, gpuId, NUMA, context to TaskGpuResources
+    // Bind index, GPU, and context to TaskGpuResources.
     resources.resourceId = static_cast<int>(resourceId);
     resources.gpuId = gpuId;
-    resources.numaNode = numaNode;
     resources.ctx = context;
-    std::fprintf(stderr, "[GPUInfra] registered task gpu=%d numa=%d resource=%d\n", gpuId, numaNode, resources.resourceId);
+    std::fprintf(stderr, "[GPUInfra] registered task gpu=%d numa=%d resource=%d\n", gpuId, context->numaNode, resources.resourceId);
     return true;
 }
 
@@ -250,8 +262,8 @@ bool GpuContextManager::makeTaskCurrent(const TaskGpuResources& resources) {
     const GpuContext* context = resources.ctx;
     const int contextGpuId = context == nullptr ? -1 : context->gpuId;
     const int contextNumaNode = context == nullptr ? -1 : context->numaNode;
-    if (!managerInitialised || context == nullptr || resources.gpuId < 0 || contextGpuId != resources.gpuId || contextNumaNode != resources.numaNode) {
-        std::fprintf(stderr, "[GPUInfra] failed to make task current resource=%d initialized=%d task_gpu=%d context_gpu=%d task_numa=%d context_numa=%d\n", resources.resourceId, managerInitialised ? 1 : 0, resources.gpuId, contextGpuId, resources.numaNode, contextNumaNode);
+    if (!managerInitialised || context == nullptr || resources.gpuId < 0 || contextGpuId != resources.gpuId) {
+        std::fprintf(stderr, "[GPUInfra] failed to make task current resource=%d initialized=%d task_gpu=%d context_gpu=%d context_numa=%d\n", resources.resourceId, managerInitialised ? 1 : 0, resources.gpuId, contextGpuId, contextNumaNode);
         return false;
     }
     CUDA_CHECK(cudaSetDevice(resources.gpuId), return false);
@@ -279,7 +291,6 @@ bool GpuContextManager::unregisterTask(TaskGpuResources& resources) {
     std::fprintf(stderr, "[GPUInfra] unregistered task gpu=%d resource=%d\n", context->gpuId, resources.resourceId);
     resources.resourceId = -1;
     resources.gpuId = -1;
-    resources.numaNode = -1;
     resources.ctx = nullptr;
     return true;
 }

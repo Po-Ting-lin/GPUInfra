@@ -44,7 +44,7 @@ Mi::~Mi() {
 
 bool Mi::init(const AlgoRuntimeInfo& info, const TaskGpuResources& resources, std::size_t& scratchBytes) {
     scratchBytes = 0;
-    if (resources.resourceId < 0 || resources.gpuId < 0 || resources.numaNode < 0 || resources.stream == nullptr || !ImageSizing::isValidFactor(info.sizeFactor)) {
+    if (resources.resourceId < 0 || resources.gpuId < 0 || resources.stream == nullptr || !ImageSizing::isValidFactor(info.sizeFactor)) {
         return false;
     }
     const int outputSize = ImageSizing::scaledDimension(info.sizeFactor, ImageSizing::MI_MULTIPLIER);
@@ -60,7 +60,6 @@ bool Mi::init(const AlgoRuntimeInfo& info, const TaskGpuResources& resources, st
         return false;
     }
     gpuId = resources.gpuId;
-    numaNode = resources.numaNode;
     resourceId = resources.resourceId;
     frameW = info.frameW;
     frameH = info.frameH;
@@ -147,7 +146,6 @@ bool Mi::close() {
         h_outputMatrix = nullptr;
     }
     gpuId = -1;
-    numaNode = -1;
     resourceId = -1;
     frameW = 0;
     frameH = 0;

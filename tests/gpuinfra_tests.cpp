@@ -65,9 +65,11 @@ FrameMetadata makeFrameMetadata(std::uint64_t frameId, const AlgoRuntimeInfo& ru
     return metadata;
 }
 
-bool loadTask(DummyTask& task) {
+bool loadTask(DummyTask& task, const GpuLocation& location) {
     bool loaded = false;
-    std::thread setup([&task, &loaded] { loaded = task.load(); });
+    std::thread setup([&task, &location, &loaded] {
+        loaded = GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode) && task.load();
+    });
     setup.join();
     return loaded;
 }
@@ -78,9 +80,11 @@ bool notifyTask(DummyTask& task) {
     return task.registerParameters(registry) && registry.setString(DummyTask::NAME_PARAMETER, "test") && registry.setBytes(DummyTask::BLOB_PARAMETER, {1, 2, 3}) && registry.seal() && registry.snapshot(snapshot) && task.notifyParameters(snapshot);
 }
 
-bool unloadTask(DummyTask& task) {
+bool unloadTask(DummyTask& task, const GpuLocation& location) {
     bool unloaded = false;
-    std::thread teardown([&task, &unloaded] { unloaded = task.unload(); });
+    std::thread teardown([&task, &location, &unloaded] {
+        unloaded = GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode) && task.unload();
+    });
     teardown.join();
     return unloaded;
 }
@@ -90,7 +94,6 @@ bool initializeStaticData(StaticData& staticData, const GpuLocation& location, c
     std::thread setup([&staticData, &location, &runtime, &frames, gpuCacheEntries, &initialized] {
         if (GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode)) {
             StaticDataConfig config;
-            config.numaNode = location.numaNode;
             config.gpuIds = {location.gpuId};
             config.runtime = runtime;
             config.frames = frames;
@@ -115,7 +118,6 @@ bool releaseStaticData(StaticData& staticData, const GpuLocation& location) {
 
 bool initializeAccessResources(TaskGpuResources& resources, const GpuLocation& location, std::size_t bytes) {
     resources.gpuId = location.gpuId;
-    resources.numaNode = location.numaNode;
     resources.inBytes = bytes;
     if (cudaSetDevice(location.gpuId) != cudaSuccess || cudaStreamCreateWithFlags(&resources.stream, cudaStreamNonBlocking) != cudaSuccess) {
         return false;
@@ -213,8 +215,7 @@ void testStaticDataValidation(TestContext& test, const GpuLocation& location) {
     StaticData manyFrameData;
     test.expect(initializeStaticData(manyFrameData, location, runtime, manyFrames, 2), "accept more than 220 registered frames with a bounded cache");
     test.expect(manyFrameData.frameCount() == manyFrames.size() && manyFrameData.gpuCacheEntryCount() == 2, "registered frame count is independent from cache capacity");
-    test.expect(manyFrameData.validateFrame(manyFrames.back(), location.numaNode), "validate a registered sparse frame through the immutable index");
-    test.expect(!manyFrameData.validateFrame(manyFrames.back(), location.numaNode + 1), "reject a registered frame from another NUMA graph copy");
+    test.expect(manyFrameData.validateFrame(manyFrames.back()), "validate a registered sparse frame through the immutable index");
     test.expect(releaseStaticData(manyFrameData, location), "release large registered frame set and bounded cache");
 
     const FrameMetadata duplicateMetadata = makeFrameMetadata(41, runtime);
@@ -322,16 +323,16 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
 
 void testFrameDataAcrossTaskInstances(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
-    DummyTask firstTask(90, location.numaNode, location.gpuId, ExecutionModel::Batched, runtime);
-    DummyTask secondTask(91, location.numaNode, location.gpuId, ExecutionModel::Batched, runtime);
-    const bool tasksReady = loadTask(firstTask) && loadTask(secondTask) && notifyTask(firstTask) && notifyTask(secondTask);
+    DummyTask firstTask(90, location.gpuId, ExecutionModel::Batched, runtime);
+    DummyTask secondTask(91, location.gpuId, ExecutionModel::Batched, runtime);
+    const bool tasksReady = loadTask(firstTask, location) && loadTask(secondTask, location) && notifyTask(firstTask) && notifyTask(secondTask);
     test.expect(tasksReady, "prepare two task instances for frame GPU continuity");
 
     const FrameMetadata metadata = makeFrameMetadata(29, runtime);
     FrameCpuAtom atom(metadata, runtime);
     StaticData staticData;
     const bool frameReady = initializeStaticData(staticData, location, runtime, {metadata}, 1);
-    const bool frameRegistered = staticData.validateFrame(metadata, location.numaNode);
+    const bool frameRegistered = staticData.validateFrame(metadata);
     test.expect(frameReady && frameRegistered, "initialize shared StaticData frame GPU data");
     test.expect(staticData.frameCount() == 1 && staticData.gpuCacheEntryCount() == 1, "StaticData separates one registered frame from one cache entry");
 
@@ -356,8 +357,8 @@ void testFrameDataAcrossTaskInstances(TestContext& test, const GpuLocation& loca
     test.expect(outputsMatch, "second task reads frame-owned GPU data instead of modified host input");
 
     test.expect(releaseStaticData(staticData, location), "release shared StaticData frame GPU data");
-    const bool firstTaskUnloaded = unloadTask(firstTask);
-    const bool secondTaskUnloaded = unloadTask(secondTask);
+    const bool firstTaskUnloaded = unloadTask(firstTask, location);
+    const bool secondTaskUnloaded = unloadTask(secondTask, location);
     test.expect(firstTaskUnloaded && secondTaskUnloaded, "unload both frame continuity task instances");
 }
 
@@ -401,15 +402,15 @@ void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location) {
 
 void testTaskFallbackExecution(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
-    DummyTask task(92, location.numaNode, location.gpuId, ExecutionModel::Batched, runtime);
-    const bool taskReady = loadTask(task) && notifyTask(task);
+    DummyTask task(92, location.gpuId, ExecutionModel::Batched, runtime);
+    const bool taskReady = loadTask(task, location) && notifyTask(task);
     test.expect(taskReady, "prepare task for zero-capacity fallback execution");
 
     const FrameMetadata metadata = makeFrameMetadata(30, runtime);
     FrameCpuAtom atom(metadata, runtime);
     StaticData staticData;
     const bool frameReady = initializeStaticData(staticData, location, runtime, {metadata}, 0);
-    const bool frameRegistered = staticData.validateFrame(metadata, location.numaNode);
+    const bool frameRegistered = staticData.validateFrame(metadata);
     test.expect(frameReady && frameRegistered && staticData.gpuCacheEntryCount() == 0, "initialize registered frame with GPU cache disabled");
 
     const bool succeeded = taskReady && frameReady && executeTask(task, atom, staticData, location);
@@ -421,12 +422,12 @@ void testTaskFallbackExecution(TestContext& test, const GpuLocation& location) {
     }
 
     test.expect(releaseStaticData(staticData, location), "release zero-capacity StaticData");
-    test.expect(unloadTask(task), "unload fallback execution task");
+    test.expect(unloadTask(task, location), "unload fallback execution task");
 }
 
 void testLifecycleAndResults(TestContext& test, const GpuLocation& location, ExecutionModel model, int taskId) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
-    DummyTask task(taskId, location.numaNode, location.gpuId, model, runtime);
+    DummyTask task(taskId, location.gpuId, model, runtime);
     ParameterRegistry prematureRegistry;
     ParameterSnapshot prematureSnapshot;
     const FrameMetadata prematureMetadata = makeFrameMetadata(1, runtime);
@@ -439,7 +440,7 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
     test.expect(prematureAtom.result.id == prematureMetadata.id && prematureAtom.result.ok && prematureAtom.result.outputs.size() == 3, "FrameCpuAtom owns a preallocated result");
     test.expect(!task.registerParameters(prematureRegistry), "reject registerParameters before load");
     test.expect(!task.notifyParameters(prematureSnapshot), "reject notifyParameters before registration");
-    test.expect(loadTask(task), "load task resources");
+    test.expect(loadTask(task, location), "load task resources");
 
     StaticData staticData;
     const std::vector<FrameMetadata> frameConfigs = {
@@ -452,16 +453,16 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
     test.expect(initializeStaticData(staticData, location, runtime, frameConfigs), "initialize task StaticData pool");
     FrameMetadata wrongLayoutMetadata = firstMetadata;
     ++wrongLayoutMetadata.width;
-    test.expect(staticData.validateFrame(firstMetadata, location.numaNode), "find sparse frame ID through StaticData index");
-    test.expect(!staticData.validateFrame(wrongLayoutMetadata, location.numaNode), "reject indexed frame ID with mismatched metadata");
+    test.expect(staticData.validateFrame(firstMetadata), "find sparse frame ID through StaticData index");
+    test.expect(!staticData.validateFrame(wrongLayoutMetadata), "reject indexed frame ID with mismatched metadata");
     test.expect(staticData.execute() && !task.execute(prematureAtom, staticData), "reject execute before notification");
     test.expect(!task.load(), "reject repeated load");
     test.expect(notifyTask(task), "register and notify shared parameters");
 
     FrameCpuAtom firstAtom(firstMetadata, runtime);
     FrameCpuAtom secondAtom(secondMetadata, runtime);
-    const bool firstFrameRegistered = staticData.validateFrame(firstMetadata, location.numaNode);
-    const bool secondFrameRegistered = staticData.validateFrame(secondMetadata, location.numaNode);
+    const bool firstFrameRegistered = staticData.validateFrame(firstMetadata);
+    const bool secondFrameRegistered = staticData.validateFrame(secondMetadata);
     test.expect(firstFrameRegistered && secondFrameRegistered, "find registered task frames in StaticData");
     bool firstSucceeded = false;
     bool secondSucceeded = false;
@@ -509,20 +510,20 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
     }
 
     FrameCpuAtom malformedAtom(malformedMetadata, runtime);
-    const bool malformedFrameRegistered = staticData.validateFrame(malformedMetadata, location.numaNode);
+    const bool malformedFrameRegistered = staticData.validateFrame(malformedMetadata);
     test.expect(malformedFrameRegistered, "find malformed-input frame in StaticData");
     malformedAtom.data.pop_back();
     test.expect(staticData.execute() && !task.execute(malformedAtom, staticData), "reject malformed frame input");
     test.expect(malformedFrameRegistered && !malformedAtom.result.ok, "malformed atom records failed task status");
 
     FrameCpuAtom mismatchedAtom(mismatchedAtomMetadata, runtime);
-    const bool unrelatedFrameRegistered = staticData.validateFrame(mismatchedRecordMetadata, location.numaNode);
+    const bool unrelatedFrameRegistered = staticData.validateFrame(mismatchedRecordMetadata);
     test.expect(unrelatedFrameRegistered, "find intentionally unrelated metadata in StaticData");
     test.expect(staticData.execute() && !task.execute(mismatchedAtom, staticData), "reject atom without matching StaticData registry metadata");
-    test.expect(!mismatchedAtom.result.ok && staticData.validateFrame(mismatchedRecordMetadata, location.numaNode), "missing frame fails its atom result without affecting unrelated registered metadata");
+    test.expect(!mismatchedAtom.result.ok && staticData.validateFrame(mismatchedRecordMetadata), "missing frame fails its atom result without affecting unrelated registered metadata");
 
     test.expect(releaseStaticData(staticData, location), "release task StaticData pool");
-    test.expect(unloadTask(task), "unload task resources");
+    test.expect(unloadTask(task, location), "unload task resources");
     test.expect(task.unload(), "repeated unload is harmless");
     test.expect(task.lifecycle() == TaskLifecycle::Unloaded, "task reaches unloaded lifecycle state");
 }
@@ -560,6 +561,12 @@ void testTemporaryTopologyGuard(TestContext& test, const GpuLocation& location) 
     test.expect(!graph.initialize(), "reject more than one GPU per NUMA graph copy in temporary scope");
     test.expect(!cancellation.load(std::memory_order_acquire) && sink.count() == 0, "topology rejection occurs before graph execution");
     test.expect(graph.shutdown(), "unsupported topology has no resources to clean up");
+
+    GraphConfig wrongNumaConfig = makeGraphConfig(location, 1, 1, ExecutionModel::Batched);
+    wrongNumaConfig.numaNode = location.numaNode + 1;
+    DummyGraph wrongNumaGraph(wrongNumaConfig, sink, cancellation);
+    test.expect(!wrongNumaGraph.initialize(), "reject a graph GPU outside the configured NUMA node");
+    test.expect(!cancellation.load(std::memory_order_acquire) && wrongNumaGraph.shutdown(), "GPU/NUMA mismatch fails before graph resources are created");
 }
 
 void testIndependentPools(TestContext& test, const GpuLocation& location) {

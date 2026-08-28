@@ -39,8 +39,7 @@ never fails merely because all cache entries are busy.
 
 ```text
 StaticData
-  ├─ registered FrameMetadata[NumConfiguredFrames]
-  │    immutable frame-ID index + graph NUMA
+  ├─ registered frame-ID -> FrameMetadata hash [NumConfiguredFrames]
   │
   └─ GpuCacheManager
        └─ GpuCacheEntry[K]
@@ -66,9 +65,9 @@ There is no longer a fixed 220-frame capacity.
 
 ### `StaticData` frame registry
 
-- Stores one immutable `FrameMetadata` entry per configured frame, one graph
-  NUMA node, and an immutable `frame ID -> metadata index` hash.
-- Performs complete metadata and NUMA validation.
+- Stores one immutable `frame ID -> FrameMetadata` hash entry per configured
+  frame.
+- Performs complete registered-metadata validation.
 - Stores no execution state or `FramePhase`; graph-owned collections, queues,
   counters, and submitted flags define them.
 - Stores no `JobResult`; result lifetime follows `FrameCpuAtom`.
@@ -89,8 +88,8 @@ There is no longer a fixed 220-frame capacity.
 
 ### `TaskGpuResources`
 
-- Owns `stream`, `h_in`, `d_input`, `d_scratch`, GPU/NUMA identity, and context
-  reference.
+- Owns `stream`, `h_in`, `d_input`, `d_scratch`, GPU/resource identity, and
+  context reference.
 - Allocates `d_input` once in `DummyTask::load()` and frees it in `unload()`.
 - Uses `d_input` whenever the GPU cache cannot immediately provide an entry.
 
@@ -103,7 +102,7 @@ DummyTask::load()
   -> allocate one d_input fallback per task instance
 
 StaticData::init()
-  -> copy registered FrameMetadata and build immutable ID index
+  -> build immutable frame-ID-to-FrameMetadata hash
   -> compute effective cache capacity K
   -> allocate K GpuCacheEntries
   -> allocate one persistent GpuReplica per entry
@@ -193,10 +192,10 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData);
 The task performs:
 
 ```text
-validate registered metadata through StaticData's immutable hash
-  -> validate atom metadata, NUMA, layout, and preallocated outputs
+validate atom layout and preallocated outputs
   -> make the task GPU current
   -> StaticData::acquireGpuData(metadata, resources)
+       -> validate registered metadata once through the immutable hash
   -> if needsUpload: atom.data -> h_in -> access.writableData()
   -> CEL / SDD / MI read access.data()
   -> algorithm D2H

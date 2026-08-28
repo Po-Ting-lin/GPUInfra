@@ -9,4 +9,8 @@ struct FrameMetadata {
     int width = 0;
     int height = 0;
     int dtype = 0;
+
+    bool operator==(const FrameMetadata& other) const {
+        return id == other.id && bytes == other.bytes && width == other.width && height == other.height && dtype == other.dtype;
+    }
 };

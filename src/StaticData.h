@@ -12,7 +12,6 @@
 struct TaskGpuResources;
 
 struct StaticDataConfig {
-    int numaNode = -1;
     std::vector<int> gpuIds;
     AlgoRuntimeInfo runtime;
     std::vector<FrameMetadata> frames;
@@ -32,20 +31,14 @@ public:
 
     std::size_t frameCount() const;
     std::size_t gpuCacheEntryCount() const;
-    bool validateFrame(const FrameMetadata& metadata, int numaNode) const;
+    bool validateFrame(const FrameMetadata& metadata) const;
     GpuDataAccess acquireGpuData(const FrameMetadata& metadata, const TaskGpuResources& resources);
-
-    bool isInitialized() const;
 
     StaticData(const StaticData&) = delete;
     StaticData& operator=(const StaticData&) = delete;
 
 private:
-    const FrameMetadata* findFrameMetadata(const FrameMetadata& metadata) const;
-
-    std::vector<FrameMetadata> registeredFrames;
-    std::unordered_map<std::uint64_t, std::size_t> frameIdToIndex;
+    std::unordered_map<std::uint64_t, FrameMetadata> registeredFrames;
     GpuCacheManager gpuCacheManager;
-    int graphNumaNode = -1;
     bool initialized = false;
 };

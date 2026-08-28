@@ -19,7 +19,6 @@ public:
 
 private:
     int gpuId = -1;
-    int numaNode = -1;
     int resourceId = -1;
     int frameW = 0;
     int frameH = 0;

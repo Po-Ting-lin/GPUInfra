@@ -16,9 +16,10 @@ give GPUInfra exclusive ownership of the context.
 
 GPU, NUMA node, task instance, graph worker, task-resource ID, stream, frame,
 and algorithm attribution do not require a `CUcontext`. GPUInfra can carry
-Runtime API and `TaskGpuResources` metadata through one unified diagnostic
-path. Exact context identity is an optional extension to that path, not the
-reason to create a separate logging architecture.
+Runtime API metadata through one unified diagnostic path; NUMA comes from the
+graph configuration or the authoritative GPU topology rather than duplicated
+task-resource state. Exact context identity is an optional extension to that
+path, not the reason to create a separate logging architecture.
 
 ## CUDA 10 through CUDA 12 compatibility
 
@@ -205,8 +206,8 @@ but a non-primary context is current, for example because same-thread
 third-party code created or installed its own context.
 
 NUMA locality is not a CUDA-context property. It must be diagnosed separately
-from graph-worker CPU affinity, the graph copy's NUMA node, the selected task's
-GPU, and `TaskGpuResources::numaNode`.
+from graph-worker CPU affinity, the graph copy's NUMA node, and the selected
+task GPU's authoritative `GpuContext::numaNode` mapping.
 
 ### 5. Better attribution in custom logs
 
@@ -311,7 +312,7 @@ A context may be used by multiple host threads, but application data still
 needs correct ownership. GPUInfra gives every `DummyTask` a distinct stream,
 pinned input staging, persistent fallback `d_input`, scratch buffer, and
 private algorithm objects. Graph-copy-scoped `StaticData` separately owns
-an immutable registered-frame metadata index and a bounded `GpuCacheManager`;
+an immutable registered frame-ID-to-metadata hash and a bounded `GpuCacheManager`;
 every reusable `GpuCacheEntry` directly owns its persistent `GpuReplica`
 allocations, while scoped `GpuDataAccess` objects coordinate cache hits, fills,
 and task fallback. The
@@ -368,10 +369,10 @@ code performs a real function that justifies its maintenance cost.
 
 Use the following order:
 
-1. First connect GPU, NUMA node, task, worker, resource, stream, frame, and
-   algorithm metadata to the shared CUDA error path. This is valuable in every
-   multi-GPU deployment and requires only Runtime API and existing
-   `TaskGpuResources` state.
+1. First connect GPU, graph NUMA node, task, worker, resource, stream, frame,
+   and algorithm metadata to the shared CUDA error path. This is valuable in
+   every multi-GPU deployment and requires only Runtime API, graph topology,
+   and existing task-resource state.
 2. Add `CUcontext` identity to that same diagnostic record only when GPUInfra
    must detect or restore a non-primary context on the same worker thread.
 3. Validate context identity at task registration or assignment boundaries,
@@ -389,7 +390,8 @@ Keep `primaryCtx` when at least one concrete requirement exists:
 Remove `primaryCtx` and its retain/release pair when the implementation is
 Runtime-API-only, workers use `cudaSetDevice()` per task assignment, and there
 is no credible non-primary-context scenario. Wrong-GPU and NUMA diagnostics
-remain available from Runtime API and `TaskGpuResources` metadata.
+remain available from Runtime API, `GraphConfig`, and the authoritative GPU
+topology mapping.
 
 The current intermediate state—retaining `primaryCtx` without reading it,
 comparing it, logging it, or making decisions from it—is maintenance debt. It

@@ -10,7 +10,6 @@ class GpuContext;
 struct TaskGpuResources {
     int resourceId = -1;
     int gpuId = -1;
-    int numaNode = -1;
 
     cudaStream_t stream = nullptr;
     void* h_in = nullptr;

@@ -44,9 +44,8 @@ bool validRuntime(const AlgoRuntimeInfo& runtime) {
 
 }  // namespace
 
-DummyTask::DummyTask(int instanceId, int numaNode, int gpuId, ExecutionModel model, const AlgoRuntimeInfo& runtime)
+DummyTask::DummyTask(int instanceId, int gpuId, ExecutionModel model, const AlgoRuntimeInfo& runtime)
     : id(instanceId),
-      node(numaNode),
       gpu(gpuId),
       executionModel(model),
       algoRuntime(runtime) {}
@@ -56,12 +55,12 @@ DummyTask::~DummyTask() {
 }
 
 bool DummyTask::load() {
-    if (state != TaskLifecycle::Constructed || id < 0 || node < 0 || gpu < 0 || !validRuntime(algoRuntime)) {
+    if (state != TaskLifecycle::Constructed || id < 0 || gpu < 0 || !validRuntime(algoRuntime)) {
         return false;
     }
 
     // GpuContextManager register
-    if (!GpuContextManager::registerTask(node, gpu, resources)) {
+    if (!GpuContextManager::registerTask(gpu, resources)) {
         state = TaskLifecycle::Failed;
         releaseResources();
         return false;
@@ -164,16 +163,11 @@ bool DummyTask::notifyParameters(const ParameterSnapshot& parameters) {
 
 bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
     atom.result.id = atom.metadata.id;
-    if (state != TaskLifecycle::Notified || !staticData.isInitialized()) {
+    if (state != TaskLifecycle::Notified) {
         atom.result.ok = false;
         return false;
     }
 
-    // The atom must be registered by the same NUMA-local StaticData instance.
-    if (!staticData.validateFrame(atom.metadata, node)) {
-        atom.result.ok = false;
-        return false;
-    }
     // The input layout must match the task's cold-path allocation layout.
     if (atom.data.size() != atom.metadata.bytes || atom.metadata.bytes != resources.inBytes || atom.metadata.width != algoRuntime.frameW || atom.metadata.height != algoRuntime.frameH || atom.metadata.dtype != algoRuntime.frameDtype) {
         atom.result.ok = false;
@@ -270,10 +264,6 @@ int DummyTask::instanceId() const {
 
 int DummyTask::gpuId() const {
     return gpu;
-}
-
-int DummyTask::numaNode() const {
-    return node;
 }
 
 TaskLifecycle DummyTask::lifecycle() const {

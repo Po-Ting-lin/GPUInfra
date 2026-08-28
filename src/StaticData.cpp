@@ -16,10 +16,6 @@ bool matchesRuntime(const FrameMetadata& metadata, const AlgoRuntimeInfo& runtim
     return metadata.bytes != 0 && metadata.bytes == runtime.inBytes && metadata.width == runtime.frameW && metadata.height == runtime.frameH && metadata.dtype == runtime.frameDtype;
 }
 
-bool sameMetadata(const FrameMetadata& first, const FrameMetadata& second) {
-    return first.id == second.id && first.bytes == second.bytes && first.width == second.width && first.height == second.height && first.dtype == second.dtype;
-}
-
 }  // namespace
 
 StaticData::~StaticData() {
@@ -27,14 +23,12 @@ StaticData::~StaticData() {
 }
 
 bool StaticData::init(const StaticDataConfig& config) {
-    if (initialized || !registeredFrames.empty() || !frameIdToIndex.empty() || gpuCacheManager.isInitialized() || graphNumaNode >= 0 || config.numaNode < 0 || config.gpuIds.size() != 1 || config.gpuIds.front() < 0 || config.runtime.inBytes == 0) {
+    if (initialized || !registeredFrames.empty() || gpuCacheManager.isInitialized() || config.gpuIds.size() != 1 || config.gpuIds.front() < 0 || config.runtime.inBytes == 0) {
         return false;
     }
 
-    std::unordered_map<std::uint64_t, std::size_t> newFrameIdToIndex;
-    std::vector<FrameMetadata> newRegisteredFrames;
+    std::unordered_map<std::uint64_t, FrameMetadata> newRegisteredFrames;
     try {
-        newFrameIdToIndex.reserve(config.frames.size());
         newRegisteredFrames.reserve(config.frames.size());
         for (std::size_t index = 0; index < config.frames.size(); ++index) {
             const FrameMetadata& metadata = config.frames[index];
@@ -42,11 +36,10 @@ bool StaticData::init(const StaticDataConfig& config) {
                 std::fprintf(stderr, "[GPUInfra] invalid StaticData frame definition index=%zu frame_id=%llu\n", index, static_cast<unsigned long long>(metadata.id));
                 return false;
             }
-            if (!newFrameIdToIndex.emplace(metadata.id, index).second) {
+            if (!newRegisteredFrames.emplace(metadata.id, metadata).second) {
                 std::fprintf(stderr, "[GPUInfra] duplicate StaticData frame ID frame_id=%llu\n", static_cast<unsigned long long>(metadata.id));
                 return false;
             }
-            newRegisteredFrames.push_back(metadata);
         }
     } catch (...) {
         return false;
@@ -72,8 +65,6 @@ bool StaticData::init(const StaticDataConfig& config) {
     }
 
     registeredFrames.swap(newRegisteredFrames);
-    frameIdToIndex.swap(newFrameIdToIndex);
-    graphNumaNode = config.numaNode;
     initialized = true;
     std::fprintf(stderr, "[GPUInfra] StaticData GPU cache plan gpu=%d registered_frames=%zu cache_entries=%zu bytes_per_entry=%zu allocated_bytes=%zu\n", config.gpuIds.front(), registeredFrames.size(), effectiveCacheEntries, config.runtime.inBytes, cacheGpuBytes);
     return true;
@@ -89,8 +80,6 @@ bool StaticData::release() {
     const bool ok = gpuCacheManager.release();
     if (ok && !gpuCacheManager.isInitialized()) {
         registeredFrames.clear();
-        frameIdToIndex.clear();
-        graphNumaNode = -1;
     }
     return ok;
 }
@@ -103,31 +92,18 @@ std::size_t StaticData::gpuCacheEntryCount() const {
     return gpuCacheManager.entryCount();
 }
 
-bool StaticData::validateFrame(const FrameMetadata& metadata, int numaNode) const {
-    return initialized && graphNumaNode == numaNode && findFrameMetadata(metadata) != nullptr;
+bool StaticData::validateFrame(const FrameMetadata& metadata) const {
+    if (!initialized) {
+        return false;
+    }
+
+    const auto match = registeredFrames.find(metadata.id);
+    return match != registeredFrames.end() && match->second == metadata;
 }
 
 GpuDataAccess StaticData::acquireGpuData(const FrameMetadata& metadata, const TaskGpuResources& resources) {
-    if (!validateFrame(metadata, resources.numaNode)) {
+    if (!validateFrame(metadata)) {
         return GpuDataAccess();
     }
     return gpuCacheManager.acquire(metadata, resources);
-}
-
-bool StaticData::isInitialized() const {
-    return initialized;
-}
-
-const FrameMetadata* StaticData::findFrameMetadata(const FrameMetadata& metadata) const {
-    if (!initialized) {
-        return nullptr;
-    }
-
-    const auto match = frameIdToIndex.find(metadata.id);
-    if (match == frameIdToIndex.end() || match->second >= registeredFrames.size()) {
-        return nullptr;
-    }
-
-    const FrameMetadata& registeredMetadata = registeredFrames[match->second];
-    return sameMetadata(registeredMetadata, metadata) ? &registeredMetadata : nullptr;
 }

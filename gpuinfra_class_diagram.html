@@ -251,7 +251,8 @@
                 <header><span class="stereotype">process-wide service</span><h3>GpuContextManager</h3></header>
                 <ul>
                     <li><code>init(config)</code> discovers GPUs and NUMA nodes</li>
-                    <li><code>registerTask(node, gpu, resources)</code></li>
+                    <li><code>validateGpuIdsForNumaNode(node, gpuIds)</code></li>
+                    <li><code>registerTask(gpu, resources)</code></li>
                     <li><code>makeTaskCurrent(resources)</code></li>
                     <li><code>pinCurrentThreadToNumaNode(node)</code></li>
                     <li><code>shutdown()</code> releases retained contexts</li>
@@ -285,8 +286,8 @@
                 <ul>
                     <li><code>StaticData.h/.cpp</code></li>
                     <li>owns registered <code>FrameMetadata[N]</code></li>
-                    <li>owns immutable frame-ID-to-metadata-index hash</li>
-                    <li>stores one graph-copy NUMA node</li>
+                    <li>owns one immutable frame-ID-to-FrameMetadata hash</li>
+                    <li>stores no NUMA or scheduler state</li>
                     <li>owns one bounded <code>GpuCacheManager</code></li>
                     <li>default cache capacity 4; capacity 0 is valid</li>
                     <li>owns no scheduler execution state</li>
@@ -301,7 +302,7 @@
                     <li>owns <code>TaskGpuResources</code></li>
                     <li>owns private CEL, SDD, and MI objects</li>
                     <li><code>execute(FrameCpuAtom&amp;, StaticData&amp;)</code></li>
-                    <li>validates registered metadata and graph NUMA</li>
+                    <li>validates input layout; acquireGpuData validates registered metadata</li>
                     <li>uses cache hit/fill or task fallback transparently</li>
                     <li>exclusive checkout is owned by <code>DummyGraph</code></li>
                     <li>not an independent thread-safe scheduling boundary</li>
@@ -343,7 +344,7 @@
             <article class="class-card task-card">
                 <header><span class="stereotype">task CUDA lane</span><h3>TaskGpuResources</h3></header>
                 <ul>
-                    <li>GPU/NUMA/resource identity</li>
+                    <li>GPU/resource/context identity</li>
                     <li>stream and pinned input staging</li>
                     <li>persistent device fallback <code>d_input</code></li>
                     <li>optional device scratch</li>
@@ -421,7 +422,7 @@
             <div class="arrow">+</div>
             <div class="node"><strong style="color: var(--graph)">Free graph thread</strong><span>NUMA-local host execution</span></div>
         </div>
-        <p class="note">After scheduler selection, the graph calls <code>StaticData::execute()</code> and <code>DummyTask::execute(atom, staticData)</code>. The task validates registered metadata, then independently resolves cache or fallback access. Neither lookup changes ready-frame, task, or worker selection.</p>
+        <p class="note">After scheduler selection, the graph calls <code>StaticData::execute()</code> and <code>DummyTask::execute(atom, staticData)</code>. One <code>StaticData::acquireGpuData()</code> call validates registered metadata and resolves cache or fallback access. Neither lookup changes ready-frame, task, or worker selection.</p>
     </section>
 
     <section class="section">

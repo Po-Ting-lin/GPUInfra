@@ -25,7 +25,7 @@ process
   |     +-- GPU-bound DummyTask pool for GPU 0
   |     +-- FrameCpuAtom collections
   |     `-- StaticData
-  |           +-- registered FrameMetadata[N] + ID index
+  |           +-- registered frame-ID -> FrameMetadata hash [N]
   |           `-- GpuCacheManager -> GpuCacheEntry[K]
   |
   `-- DummyGraph(numa=1)
@@ -33,12 +33,17 @@ process
         +-- GPU-bound DummyTask pool for GPU 1
         +-- FrameCpuAtom collections
         `-- StaticData
-              +-- registered FrameMetadata[N] + ID index
+              +-- registered frame-ID -> FrameMetadata hash [N]
               `-- GpuCacheManager -> GpuCacheEntry[K]
 ```
 
 `N` is the configured logical frame count. `K` is the smaller of configured
 cache capacity and `N`; the default configured capacity is 4.
+
+`GpuContext::numaNode` is the authoritative GPU-to-NUMA mapping. A graph copy
+checks all configured GPU IDs against that mapping once during initialization.
+Below the graph boundary, tasks, task resources, `StaticData`, and algorithms
+use GPU/context identity and do not retain duplicate NUMA state.
 
 ## 2. Scheduler boundary
 
@@ -64,12 +69,12 @@ The worker remains NUMA-bound; the selected task remains GPU-bound.
 | `GpuContext` | One GPU's identity, NUMA node, retained context, active task table |
 | `DummyGraph` | One NUMA graph copy, workers, task pool, warmup/timed CPU-atom collections, queues, `StaticData`, parameters |
 | `FrameCpuAtom` | CPU input byte vector, intrinsic metadata, and preallocated result |
-| `StaticData` | Graph NUMA, immutable registered metadata/index, and bounded GPU cache |
+| `StaticData` | Immutable registered frame-ID-to-metadata hash and bounded GPU cache |
 | `GpuCacheManager` | Fixed cache-entry array, short metadata mutex, lease counts, LRU |
 | `GpuCacheEntry` | One reusable entry with GPU-keyed persistent replicas and validity bits |
 | `GpuDataAccess` | Scoped non-owning cache/fallback view; synchronization and publish/abort |
 | `DummyTask` | GPU-bound reusable execution lane and CEL/SDD/MI objects |
-| `TaskGpuResources` | Stream, pinned `h_in`, fallback `d_input`, scratch, GPU/NUMA/context identity |
+| `TaskGpuResources` | Stream, pinned `h_in`, fallback `d_input`, scratch, GPU/resource/context identity |
 | CEL/SDD/MI | Private device output, pinned D2H staging, geometry, parameters |
 | Graph worker | NUMA affinity and one temporary host call only |
 
@@ -89,15 +94,15 @@ host execution                  -> temporarily selected graph worker
 `DummyGraph::initialize()` runs setup on a NUMA-pinned thread:
 
 ```text
-create/load every DummyTask
+validate every graph GPU belongs to the graph NUMA node
+  -> create/load every DummyTask
   -> allocate stream, h_in, d_input, scratch, algo-private resources
   -> register shared parameter schema
   -> seal and notify immutable values
   -> create all FrameCpuAtoms and preallocate their result buffers
   -> StaticData::init()
        -> validate unique IDs/layouts
-       -> copy registered FrameMetadata[N]
-       -> build immutable ID-to-metadata hash
+       -> build immutable frame-ID-to-FrameMetadata hash [N]
        -> create GpuCacheManager with GpuCacheEntry[K]
        -> allocate one replica per entry on the graph GPU
   -> start and affinity-check workers
@@ -113,18 +118,17 @@ execution progress. `StaticData` stores no phase, execution, or result state.
 
 ## 5. Logical lookup and cache lookup
 
-`DummyTask::execute(atom, staticData)` first validates the registered metadata:
+`DummyTask::execute(atom, staticData)` requests GPU data through one validation
+boundary:
 
 ```text
-frame ID -> immutable unordered_map -> metadata index -> full metadata check
+StaticData::acquireGpuData(metadata, resources)
+  -> frame ID -> immutable unordered_map -> full metadata equality check
+  -> GpuCacheManager::acquire(metadata, resources)
 ```
 
-This is average `O(1)` and provides logical correctness. After validating NUMA,
-input layout, and result shape, the task requests GPU access:
-
-```text
-GpuCacheManager::acquire(metadata, TaskGpuResources)
-```
+The registry lookup is average `O(1)` and provides logical correctness without
+a second task-level hash lookup.
 
 The cache scans `K` preallocated entries under a short mutex. This is `O(K)`,
 default `K=4`, with no allocation or CUDA call under the mutex.
@@ -151,7 +155,7 @@ uses task fallback instead of waiting.
 ## 7. CUDA hot path
 
 ```text
-FrameCpuAtom + StaticData registry validation
+FrameCpuAtom + StaticData::acquireGpuData registry validation
   -> make selected task GPU current
   -> acquire GpuDataAccess
   -> CacheHit: use cache pointer directly

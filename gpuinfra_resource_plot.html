@@ -330,7 +330,7 @@
                     <div class="resource task"><strong>DummyTask pool</strong><span>GPU-bound streams, pinned staging, persistent d_input fallback, scratch, and private algorithms</span></div>
                     <div class="resource thread"><strong>Graph-thread pool</strong><span>Every worker is pinned to NUMA 0 and can run any task in this graph copy</span></div>
                     <div class="resource frame"><strong>Warmup / timed FrameCpuAtom collections</strong><span>Graph-owned CPU inputs, metadata, results, and phase membership</span></div>
-                    <div class="resource frame"><strong>StaticData → registered FrameMetadata[N]</strong><span>Immutable frame-ID index and graph NUMA; no scheduler state</span></div>
+                    <div class="resource frame"><strong>StaticData → frame-ID-to-FrameMetadata hash [N]</strong><span>One immutable lookup container; no NUMA or scheduler state</span></div>
                     <div class="resource frame"><strong>GpuCacheManager → GpuCacheEntry[K]</strong><span>K defaults to 4; reusable persistent replicas on GPU 0</span></div>
                 </div>
             </article>
@@ -341,7 +341,7 @@
                     <div class="resource task"><strong>DummyTask pool</strong><span>GPU-bound streams, pinned staging, persistent d_input fallback, scratch, and private algorithms</span></div>
                     <div class="resource thread"><strong>Graph-thread pool</strong><span>Every worker is pinned to NUMA 1 and can run any task in this graph copy</span></div>
                     <div class="resource frame"><strong>Warmup / timed FrameCpuAtom collections</strong><span>Graph-owned CPU inputs, metadata, results, and phase membership</span></div>
-                    <div class="resource frame"><strong>StaticData → registered FrameMetadata[N]</strong><span>Immutable frame-ID index and graph NUMA; no scheduler state</span></div>
+                    <div class="resource frame"><strong>StaticData → frame-ID-to-FrameMetadata hash [N]</strong><span>One immutable lookup container; no NUMA or scheduler state</span></div>
                     <div class="resource frame"><strong>GpuCacheManager → GpuCacheEntry[K]</strong><span>K defaults to 4; reusable persistent replicas on GPU 1</span></div>
                 </div>
             </article>
@@ -357,7 +357,7 @@
             <div class="plus">+</div>
             <div class="box" style="border-color: var(--thread)"><strong>Free graph thread</strong><br>NUMA-local host call</div>
         </div>
-        <div class="execute"><strong>StaticData::execute() → DummyTask::execute(FrameCpuAtom&amp;, StaticData&amp;)</strong><br>The task validates registered metadata and then resolves cache/fallback access; scheduler selection is unchanged.</div>
+        <div class="execute"><strong>StaticData::execute() → DummyTask::execute(FrameCpuAtom&amp;, StaticData&amp;)</strong><br>One acquireGpuData() call validates registered metadata and resolves cache/fallback access; scheduler selection is unchanged.</div>
     </section>
 
     <section class="panel">
@@ -379,7 +379,7 @@
     <section class="panel">
         <h2>Cache hit across task instances or future stages</h2>
         <div class="flow reuse-flow">
-            <div class="flow-step"><div><strong>Same logical frame</strong><small>task validates registered metadata</small></div></div>
+            <div class="flow-step"><div><strong>Same logical frame</strong><small>acquireGpuData validates registered metadata once</small></div></div>
             <div class="flow-step"><div><strong>Different task instance</strong><small>same graph GPU</small></div></div>
             <div class="flow-step"><div><strong>CacheHit access</strong><small>same immutable device pointer</small></div></div>
             <div class="flow-step"><div><strong>CUDA work</strong><small>no repeated H2D</small></div></div>

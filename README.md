@@ -131,10 +131,16 @@ Setup, teardown, and workers run on threads pinned to the graph copy's NUMA
 node. A `DummyTask` remains bound to one GPU because its stream and allocations
 belong to that device, but it has no permanent host-thread binding.
 
+`GpuContext` is the authoritative GPU-to-NUMA mapping. Each `DummyGraph`
+validates its complete GPU list against that mapping once before creating
+resources. NUMA identity is not copied into `DummyTask`, `TaskGpuResources`,
+`StaticData`, or private algorithms.
+
 ## Cold initialization
 
 ```text
-create all DummyTask instances
+validate graph GPU IDs belong to the graph NUMA node
+  -> create all DummyTask instances
   -> load all tasks
        -> stream + h_in + d_input fallback + scratch + algo-private buffers
   -> register one shared parameter schema
@@ -142,7 +148,7 @@ create all DummyTask instances
   -> create separate warmup/timed FrameCpuAtom collections
        -> preallocate each atom's input and CEL/SDD/MI result buffers
   -> StaticData::init()
-       -> copy registered FrameMetadata and build immutable frame-ID index
+       -> build immutable frame-ID-to-FrameMetadata hash
        -> create K persistent GpuCacheEntry cache entries
   -> start NUMA-local workers
 ```
@@ -174,8 +180,7 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData);
 
 ```text
 StaticData
-  ├─ registered FrameMetadata[NumConfiguredFrames]
-  │    immutable frame-ID index + graph NUMA
+  ├─ registered frame-ID -> FrameMetadata hash [NumConfiguredFrames]
   │
   └─ GpuCacheManager
        └─ GpuCacheEntry[K]
@@ -183,10 +188,11 @@ StaticData
             └─ GpuReplica[gpuId] -> persistent d_data + validity
 ```
 
-`StaticData` validates registered metadata through an immutable average `O(1)`
-ID index followed by complete metadata and NUMA comparison. It stores no
-scheduler state, `FramePhase`, CPU bytes, or `JobResult`: graph collections own
-execution state and the owning `FrameCpuAtom` carries its data and result.
+`StaticData::acquireGpuData()` validates registered metadata through one
+immutable average `O(1)` frame-ID-to-metadata hash lookup and complete metadata
+comparison. It stores no scheduler state, `FramePhase`, CPU bytes, `JobResult`,
+or NUMA identity: graph collections own execution state and the owning
+`FrameCpuAtom` carries its data and result.
 `GpuCacheEntry` is only a reusable best-effort GPU cache entry. It may represent
 different logical frames over time while retaining the same device allocation.
 
@@ -209,11 +215,11 @@ the immutable cached payload.
 ## Frame execution
 
 ```text
-FrameCpuAtom metadata
-  -> immutable registered-metadata hash lookup
-  -> full metadata/NUMA/layout/result validation
+FrameCpuAtom metadata/layout/result validation
   -> make task GPU current
-  -> acquire CacheHit / CacheFill / TaskFallback
+  -> StaticData::acquireGpuData()
+       -> one registered-metadata hash/equality check
+       -> acquire CacheHit / CacheFill / TaskFallback
   -> when needsUpload(): atom.data -> task h_in -> selected device buffer
   -> CEL / SDD / MI read access.data()
   -> algorithm D2H staging
@@ -238,7 +244,7 @@ For size factor `F`, input is `(8F)x(8F)`, CEL is `(2F)x(2F)`, and SDD/MI are
 | `GpuContext` | GPU/NUMA identity, retained primary context, registered task table |
 | `DummyGraph` | workers, task pool, ready queue, CPU atoms, `StaticData`, phases, cancellation |
 | `FrameCpuAtom` | CPU input bytes, intrinsic metadata, and preallocated `JobResult` |
-| `StaticData` | graph NUMA, immutable registered metadata/index, and one bounded `GpuCacheManager` |
+| `StaticData` | immutable registered frame-ID-to-metadata hash and one bounded `GpuCacheManager` |
 | `GpuCacheManager` | fixed cache array, metadata lock, LRU and lease protocol |
 | `GpuCacheEntry` | one reusable cache entry with persistent GPU-keyed replicas and validity |
 | `GpuDataAccess` | scoped non-owning cache/fallback lease and stream completion |
@@ -286,8 +292,9 @@ Cleanup is idempotent after success, cancellation, or partial initialization.
 The real-CUDA protocol test covers more than 220 logical frames with a small
 cache, capacity zero, metadata rejection, fill/hit/fallback, loading and busy
 fallback, RAII abort, failed fill, LRU eviction, stable device pointers,
-cross-task reuse, pure-fallback correctness, both execution models, graph-level
-task exclusivity, cancellation, and cleanup.
+cross-task reuse, pure-fallback correctness, both execution models, one-time
+GPU/NUMA topology rejection, graph-level task exclusivity, cancellation, and
+cleanup.
 
 ## Source layout
 
@@ -299,7 +306,7 @@ src/
   GpuCacheManager.*       bounded cache lookup, LRU, leases, fallback choice
   GpuCacheEntry.*         reusable entry with persistent per-GPU replicas
   GpuDataAccess.*         scoped access source and completion
-  StaticData.*            graph-copy metadata index/cache owner
+  StaticData.*            graph-copy metadata hash/cache owner
   TaskGpuResources.h      task CUDA lane including fallback d_input
   GpuContextManager.*     GPU discovery, NUMA affinity, task registration
   WorkloadSizing.h        independent H2D/D2H/compute compile-time controls
