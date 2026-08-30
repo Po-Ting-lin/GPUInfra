@@ -40,6 +40,7 @@ add_library(gpuinfra
     src/GpuCacheManager.cpp
     src/GpuContextManager.cpp
     src/GpuDataAccess.cpp
+    src/GpuResidencyTable.cpp
     src/Mi.cu
     src/ParameterRegistry.cpp
     src/Sdd.cu

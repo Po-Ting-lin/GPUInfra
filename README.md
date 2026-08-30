@@ -20,9 +20,10 @@ The implementation demonstrates:
 - graph-level exclusive task checkout;
 - `FrameCpuAtom` ownership of CPU data, metadata, and preallocated result;
 - `DummyGraph` ownership of warmup/timed membership and execution state;
-- `StaticData` ownership of an immutable registered-frame index;
+- `StaticData` validation of one fixed frame layout and explicit run-boundary
+  cache reset;
 - a bounded, best-effort `GpuCacheManager` with persistent `GpuCacheEntry` device
-  buffers;
+  buffers and a fixed-capacity open-addressing residency table;
 - task-private persistent `d_input` fallback on cache miss;
 - no hot-path `cudaMalloc()`/`cudaFree()`;
 - graph-wide lifecycle barriers and fail-fast cancellation.
@@ -46,6 +47,9 @@ a hit. Because the current input is immutable, a miss re-uploads from
 - [`gpuinfra_class_diagram.html`](gpuinfra_class_diagram.html) and
   [`gpuinfra_resource_plot.html`](gpuinfra_resource_plot.html) visualize
   ownership and hit/fallback flow.
+- [`gpu_cache_explained.html`](gpu_cache_explained.html) gives the complete
+  incoming-frame walkthrough for K, residency slots, global LRU, cache
+  hit/fill/fallback, and allocation lifetime.
 
 ## Requirements
 
@@ -148,14 +152,15 @@ validate graph GPU IDs belong to the graph NUMA node
   -> create separate warmup/timed FrameCpuAtom collections
        -> preallocate each atom's input and CEL/SDD/MI result buffers
   -> StaticData::init()
-       -> build immutable frame-ID-to-FrameMetadata hash
-       -> create K persistent GpuCacheEntry cache entries
+       -> store the fixed frame layout
+       -> create exactly K persistent GpuCacheEntry cache entries
+       -> allocate a fixed open-addressing table plus empty/LRU structures
   -> start NUMA-local workers
 ```
 
-`K = min(GraphConfig::gpuCacheEntries, configured logical frames)`. The default
-workload therefore has 220 `FrameCpuAtom` objects and registered metadata
-entries, but only four GPU cache entries per graph copy.
+`K = GraphConfig::gpuCacheEntries`. The default workload has 220
+`FrameCpuAtom` objects but only four GPU cache entries per graph copy. No list
+of those 220 frame keys is copied into `StaticData`.
 
 ## Scheduling
 
@@ -180,25 +185,28 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData);
 
 ```text
 StaticData
-  ├─ registered frame-ID -> FrameMetadata hash [NumConfiguredFrames]
-  │
+  ├─ fixed frame layout + resetCache() run boundary
   └─ GpuCacheManager
+       ├─ fixed open-addressing GpuDataKey -> entry index table [~2K]
+       ├─ O(1) empty stack + intrusive inactive-entry LRU
        └─ GpuCacheEntry[K]
-            cached metadata + LRU/lease state
+            cached metadata + lease/LRU links
             └─ GpuReplica[gpuId] -> persistent d_data + validity
 ```
 
-`StaticData::acquireGpuData()` validates registered metadata through one
-immutable average `O(1)` frame-ID-to-metadata hash lookup and complete metadata
-comparison. It stores no scheduler state, `FramePhase`, CPU bytes, `JobResult`,
-or NUMA identity: graph collections own execution state and the owning
-`FrameCpuAtom` carries its data and result.
+`StaticData::acquireGpuData()` accepts any incoming `GpuDataKey` whose metadata
+matches the fixed frame layout. `GpuDataKey` contains `frameId` and `cameraId`,
+so the same frame ID from different cameras cannot alias. `StaticData` stores
+no per-frame registry,
+scheduler state, `FramePhase`, CPU bytes, `JobResult`, or NUMA identity: graph
+collections own execution state and the owning `FrameCpuAtom` carries its data
+and result.
 `GpuCacheEntry` is only a reusable best-effort GPU cache entry. It may represent
 different logical frames over time while retaining the same device allocation.
 
 ## Cache access
 
-`GpuCacheManager::acquire()` scans the fixed `K` entries and returns an RAII
+`GpuCacheManager::acquire()` uses its fixed residency table and returns an RAII
 `GpuDataAccess`:
 
 | Source | Path |
@@ -207,10 +215,27 @@ different logical frames over time while retaining the same device allocation.
 | `CacheFill` | Reserve an empty/inactive-LRU entry and H2D into its existing allocation |
 | `TaskFallback` | H2D into `TaskGpuResources::d_input` when capacity is zero, the matching entry is loading, or all entries are active |
 
-The scan is bounded `O(K)` and allocates nothing. Active entries cannot be
-evicted. A fill becomes `Valid` only after the task stream synchronizes
-successfully. Failed or abandoned fills return to `Empty`; a failed hit keeps
-the immutable cached payload.
+Lookup and resident-key insertion/erasure are average `O(1)`. The table is
+allocated at about twice `K`, uses linear probing and backward-shift deletion,
+and never grows or rehashes. An empty-entry stack and intrusive LRU choose a
+victim in `O(1)`. Active entries cannot be evicted. A fill becomes `Valid` only
+after the task stream synchronizes successfully. Failed or abandoned fills
+return to `Empty`; a failed hit keeps the immutable cached payload.
+
+## Run boundaries and cache reset
+
+`StaticData::resetCache()` is the single cold-path run-boundary operation. It
+clears the fixed residency table, entry identities/validity, empty stack, and
+global LRU state. It rejects active cache/fallback leases or an in-progress
+fill.
+
+Reset does not call `cudaFree()` or `cudaMalloc()`: every
+`GpuCacheEntry` device pointer remains allocated and is reused by later fills.
+The graph-copy owner must call it after every old-run execution has finished
+and before any new-run execution can start. Between two resets, one
+`frameId + cameraId` identity must always represent the same immutable bytes.
+If a run reuses an identity with new bytes and reset is skipped, stale cache
+data can be returned.
 
 ## Frame execution
 
@@ -218,7 +243,7 @@ the immutable cached payload.
 FrameCpuAtom metadata/layout/result validation
   -> make task GPU current
   -> StaticData::acquireGpuData()
-       -> one registered-metadata hash/equality check
+       -> validate fixed layout
        -> acquire CacheHit / CacheFill / TaskFallback
   -> when needsUpload(): atom.data -> task h_in -> selected device buffer
   -> CEL / SDD / MI read access.data()
@@ -244,8 +269,8 @@ For size factor `F`, input is `(8F)x(8F)`, CEL is `(2F)x(2F)`, and SDD/MI are
 | `GpuContext` | GPU/NUMA identity, retained primary context, registered task table |
 | `DummyGraph` | workers, task pool, ready queue, CPU atoms, `StaticData`, phases, cancellation |
 | `FrameCpuAtom` | CPU input bytes, intrinsic metadata, and preallocated `JobResult` |
-| `StaticData` | immutable registered frame-ID-to-metadata hash and one bounded `GpuCacheManager` |
-| `GpuCacheManager` | fixed cache array, metadata lock, LRU and lease protocol |
+| `StaticData` | fixed frame layout, reset boundary, and one bounded `GpuCacheManager` |
+| `GpuCacheManager` | fixed cache array, fixed open-addressing residency table, O(1) victim structures, metadata lock, and leases |
 | `GpuCacheEntry` | one reusable cache entry with persistent GPU-keyed replicas and validity |
 | `GpuDataAccess` | scoped non-owning cache/fallback lease and stream completion |
 | `DummyTask` / `TaskGpuResources` | GPU binding, stream, `h_in`, fallback `d_input`, scratch, algorithms |
@@ -260,8 +285,8 @@ cache input VRAM = effective cache entries × frame bytes × replicas per entry
 fallback input VRAM = task instances × frame bytes
 ```
 
-CPU atoms, registered metadata, logical results, task scratch, and
-algorithm-private resources keep their own lifetimes. See
+CPU atoms, logical results, task scratch, and algorithm-private resources keep
+their own lifetimes. See
 [`gpu_mem_consumption.md`](gpu_mem_consumption.md) for the three summary
 formulas.
 
@@ -289,8 +314,10 @@ Cleanup is idempotent after success, cancellation, or partial initialization.
 
 ## Verification coverage
 
-The real-CUDA protocol test covers more than 220 logical frames with a small
-cache, capacity zero, metadata rejection, fill/hit/fallback, loading and busy
+The real-CUDA protocol test caches more than 220 unregistered incoming frames
+through two entries and covers fixed-table collisions/backward-shift deletion,
+capacity zero, layout rejection, reset-boundary lease rejection, reset without
+device reallocation, fill/hit/fallback, loading and busy
 fallback, RAII abort, failed fill, LRU eviction, stable device pointers,
 cross-task reuse, pure-fallback correctness, both execution models, one-time
 GPU/NUMA topology rejection, graph-level task exclusivity, cancellation, and
@@ -303,10 +330,12 @@ src/
   DummyGraph.*            NUMA graph copy and unchanged scheduler selection
   DummyTask.*             task lifecycle and CEL/SDD/MI execution
   FrameCpuAtom.*          CPU bytes, metadata, and preallocated result
+  GpuDataKey.h            frame/camera cache identity
   GpuCacheManager.*       bounded cache lookup, LRU, leases, fallback choice
   GpuCacheEntry.*         reusable entry with persistent per-GPU replicas
   GpuDataAccess.*         scoped access source and completion
-  StaticData.*            graph-copy metadata hash/cache owner
+  GpuResidencyTable.*     fixed open-addressing resident-key index
+  StaticData.*            graph-copy layout/reset/cache owner
   TaskGpuResources.h      task CUDA lane including fallback d_input
   GpuContextManager.*     GPU discovery, NUMA affinity, task registration
   WorkloadSizing.h        independent H2D/D2H/compute compile-time controls

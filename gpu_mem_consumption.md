@@ -1,3 +1,3 @@
-`NumGpuCacheEntries = min(ConfiguredGpuCacheEntries, NumConfiguredFrames)`
+`NumGpuCacheEntries = ConfiguredGpuCacheEntries`
 `TotalTaskGpuResourcesSize = NumTaskInstances × (HostInputBufferSize + DeviceFallbackInputSize + MaxScratchSize)`
 `TotalAlgoPrivateSize = NumTaskInstances × Σ(EachAlgoDevicePrivateSize + EachAlgoHostStagingSize)`

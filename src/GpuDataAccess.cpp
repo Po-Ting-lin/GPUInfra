@@ -3,12 +3,12 @@
 #include "CudaCheck.h"
 #include "GpuCacheManager.h"
 
-GpuDataAccess::GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, std::uint64_t targetDataId, cudaStream_t accessStream, int gpuId, GpuDataAccessSource source)
+GpuDataAccess::GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, GpuDataAccessSource source)
     : owner(accessOwner),
       d_data(deviceData),
       dataBytes(bytes),
       entryIndex(index),
-      dataId(targetDataId),
+      dataKey(targetDataKey),
       stream(accessStream),
       deviceId(gpuId),
       accessSource(source) {}
@@ -66,7 +66,7 @@ void GpuDataAccess::reset() {
     d_data = nullptr;
     dataBytes = 0;
     entryIndex = 0;
-    dataId = 0;
+    dataKey = GpuDataKey();
     stream = nullptr;
     deviceId = -1;
     accessSource = GpuDataAccessSource::Invalid;

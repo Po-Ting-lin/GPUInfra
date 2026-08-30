@@ -9,7 +9,8 @@ GpuCacheEntry::~GpuCacheEntry() {
 }
 
 bool GpuCacheEntry::initialize(const std::vector<int>& gpuIds, std::size_t bytes) {
-    if (initialized || !replicas.empty() || cacheState != GpuCacheState::Empty || activeAccesses != 0 || lastUse != 0 || gpuIds.size() != 1 || gpuIds.front() < 0 || bytes == 0) {
+    const std::size_t noEntry = std::numeric_limits<std::size_t>::max();
+    if (initialized || !replicas.empty() || cacheState != GpuCacheState::Empty || activeAccesses != 0 || previousEvictable != noEntry || nextEvictable != noEntry || inEvictableList || gpuIds.size() != 1 || gpuIds.front() < 0 || bytes == 0) {
         return false;
     }
 
@@ -80,9 +81,11 @@ bool GpuCacheEntry::release() {
         metadata = FrameMetadata();
         cacheState = GpuCacheState::Empty;
         activeAccesses = 0;
-        lastUse = 0;
+        previousEvictable = std::numeric_limits<std::size_t>::max();
+        nextEvictable = std::numeric_limits<std::size_t>::max();
         replicas.clear();
         dataBytes = 0;
+        inEvictableList = false;
         initialized = false;
     }
     return ok;

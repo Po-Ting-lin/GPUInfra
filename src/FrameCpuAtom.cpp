@@ -20,7 +20,7 @@ AlgoOutput makeOutput(const char* name, int dimension) {
 FrameCpuAtom::FrameCpuAtom(const FrameMetadata& frameMetadata, const AlgoRuntimeInfo& runtime)
     : metadata(frameMetadata),
       data(frameMetadata.bytes) {
-    result.id = metadata.id;
+    result.id = metadata.key.frameId;
     result.ok = true;
     result.outputs.reserve(3);
     result.outputs.push_back(makeOutput("cel", ImageSizing::scaledDimension(runtime.sizeFactor, ImageSizing::CEL_MULTIPLIER)));
@@ -28,6 +28,6 @@ FrameCpuAtom::FrameCpuAtom(const FrameMetadata& frameMetadata, const AlgoRuntime
     result.outputs.push_back(makeOutput("mi", ImageSizing::scaledDimension(runtime.sizeFactor, ImageSizing::MI_MULTIPLIER)));
 
     for (std::size_t index = 0; index < data.size(); ++index) {
-        data[index] = static_cast<std::uint8_t>((index + metadata.id) % 251U);
+        data[index] = static_cast<std::uint8_t>((index + metadata.key.frameId) % 251U);
     }
 }

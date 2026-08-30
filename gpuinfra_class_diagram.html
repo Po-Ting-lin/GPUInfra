@@ -285,8 +285,9 @@
                 <header><span class="stereotype">one per graph copy</span><h3>StaticData</h3></header>
                 <ul>
                     <li><code>StaticData.h/.cpp</code></li>
-                    <li>owns registered <code>FrameMetadata[N]</code></li>
-                    <li>owns one immutable frame-ID-to-FrameMetadata hash</li>
+                    <li>stores one fixed frame layout</li>
+                    <li>accepts any matching incoming key without a registration list</li>
+                    <li><code>resetCache()</code> clears residency at a quiescent run boundary without freeing device buffers</li>
                     <li>stores no NUMA or scheduler state</li>
                     <li>owns one bounded <code>GpuCacheManager</code></li>
                     <li>default cache capacity 4; capacity 0 is valid</li>
@@ -302,7 +303,7 @@
                     <li>owns <code>TaskGpuResources</code></li>
                     <li>owns private CEL, SDD, and MI objects</li>
                     <li><code>execute(FrameCpuAtom&amp;, StaticData&amp;)</code></li>
-                    <li>validates input layout; acquireGpuData validates registered metadata</li>
+                    <li><code>acquireGpuData()</code> validates the fixed input layout</li>
                     <li>uses cache hit/fill or task fallback transparently</li>
                     <li>exclusive checkout is owned by <code>DummyGraph</code></li>
                     <li>not an independent thread-safe scheduling boundary</li>
@@ -315,7 +316,7 @@
                     <li>owns CPU frame byte vector</li>
                     <li>owns intrinsic <code>FrameMetadata</code></li>
                     <li>owns preallocated <code>JobResult</code></li>
-                    <li>ID, byte count, dimensions, dtype</li>
+                    <li>frame ID, camera ID, byte count, dimensions, dtype</li>
                     <li>no GPU data or scheduling state</li>
                 </ul>
             </article>
@@ -324,9 +325,22 @@
                 <ul>
                     <li><code>GpuCacheManager.h/.cpp</code></li>
                     <li>owns fixed <code>GpuCacheEntry[K]</code> entries</li>
-                    <li>coordinates entry state, active accesses, and LRU</li>
+                    <li>owns a fixed open-addressing residency table for at most K keys</li>
+                    <li>coordinates entry state, active accesses, empty stack, and intrusive LRU</li>
+                    <li>average O(1) lookup and O(1) victim selection</li>
                     <li>selects cache hit, cache fill, or fallback</li>
                     <li>CUDA work runs outside its metadata mutex</li>
+                </ul>
+            </article>
+            <article class="class-card frame-card wide">
+                <header><span class="stereotype">fixed resident-key index</span><h3>GpuResidencyTable</h3></header>
+                <ul>
+                    <li><code>GpuResidencyTable.h/.cpp</code></li>
+                    <li>preallocates at least <code>2K</code> linear-probing slots</li>
+                    <li>stores only resident/loading <code>GpuDataKey → entry index</code> mappings</li>
+                    <li>average O(1) find, insert, and erase</li>
+                    <li>backward-shift deletion; no tombstone accumulation</li>
+                    <li>never grows, rehashes, or allocates on acquire</li>
                 </ul>
             </article>
             <article class="class-card frame-card wide">
@@ -336,7 +350,7 @@
                     <li>temporarily cached complete metadata</li>
                     <li>directly owns GPU-keyed <code>GpuReplica</code> collection</li>
                     <li>one device buffer preallocated per entry today</li>
-                    <li><code>Empty / Loading / Valid</code>, access count, and LRU</li>
+                    <li><code>Empty / Loading / Valid</code>, access count, and intrusive LRU links</li>
                     <li>same pointer reused across LRU replacements</li>
                     <li>future stale-replica migration boundary</li>
                 </ul>
@@ -392,11 +406,11 @@
             <div class="arrow">+</div>
             <div class="node"><strong style="color: var(--frame)">StaticData</strong><span>graph-copy owner</span></div>
             <div class="arrow">→</div>
-            <div class="node"><strong style="color: var(--frame)">Registered metadata[N]</strong><span>identity validation only</span></div>
+            <div class="node"><strong style="color: var(--frame)">Fixed layout + reset boundary</strong><span>incoming-frame validation</span></div>
             <div class="arrow">+</div>
-            <div class="node"><strong style="color: var(--frame)">GpuCacheEntry[K]</strong><span>best-effort GPU cache</span></div>
+            <div class="node"><strong style="color: var(--frame)">Residency table + Entry[K]</strong><span>best-effort GPU cache</span></div>
         </div>
-        <p class="note"><code>N</code> is the configured frame count; <code>K = min(gpuCacheEntries, N)</code> and defaults to 4. <code>DummyGraph</code> owns phase collections, submitted flags, the ready queue, and in-flight/terminal counts. <code>DummyTask</code> performs an average O(1) registered-metadata lookup, then the cache scans its small fixed entry array without affecting scheduler choice.</p>
+        <p class="note"><code>N</code> is the number of graph-owned CPU atoms; <code>K = gpuCacheEntries</code> and defaults to 4. N and K are independent. <code>DummyGraph</code> owns phase collections, submitted flags, the ready queue, and in-flight/terminal counts. <code>DummyTask</code> validates the fixed layout and performs an average O(1) residency lookup; the empty stack or intrusive global LRU selects a victim in O(1) without affecting scheduler choice.</p>
     </section>
 
     <section class="section">
@@ -414,6 +428,20 @@
     </section>
 
     <section class="section">
+        <h2>Run boundary without device reallocation</h2>
+        <div class="relationship">
+            <div class="node"><strong style="color: var(--frame)">GpuDataKey</strong><span>frameId + cameraId</span></div>
+            <div class="arrow">→</div>
+            <div class="node"><strong style="color: var(--frame)">StaticData::resetCache()</strong><span>quiescent run-boundary hook</span></div>
+            <div class="arrow">→</div>
+            <div class="node"><strong style="color: var(--frame)">Clear residency</strong><span>fixed table + entry validity</span></div>
+            <div class="arrow">→</div>
+            <div class="node"><strong style="color: var(--gpu)">Same d_data pointers</strong><span>next fill reuses allocations</span></div>
+        </div>
+        <p class="note"><code>resetCache()</code> must run after every old-run execution finishes and before any new-run execution starts. It needs no frame list, rejects live cache/fallback leases, and performs no <code>cudaMalloc()</code> or <code>cudaFree()</code>. Between resets, one frame/camera identity must always represent the same immutable bytes.</p>
+    </section>
+
+    <section class="section">
         <h2>One scheduling assignment</h2>
         <div class="relationship">
             <div class="node"><strong style="color: var(--frame)">ReadyFrame</strong><span>FrameCpuAtom only</span></div>
@@ -422,7 +450,7 @@
             <div class="arrow">+</div>
             <div class="node"><strong style="color: var(--graph)">Free graph thread</strong><span>NUMA-local host execution</span></div>
         </div>
-        <p class="note">After scheduler selection, the graph calls <code>StaticData::execute()</code> and <code>DummyTask::execute(atom, staticData)</code>. One <code>StaticData::acquireGpuData()</code> call validates registered metadata and resolves cache or fallback access. Neither lookup changes ready-frame, task, or worker selection.</p>
+        <p class="note">After scheduler selection, the graph calls <code>StaticData::execute()</code> and <code>DummyTask::execute(atom, staticData)</code>. One <code>StaticData::acquireGpuData()</code> call validates the fixed layout and resolves cache or fallback access. No incoming key must be pre-registered, and lookup never changes ready-frame, task, or worker selection.</p>
     </section>
 
     <section class="section">

@@ -1,9 +1,7 @@
 #include "StaticData.h"
 
-#include <algorithm>
 #include <cstdio>
 #include <limits>
-#include <unordered_map>
 
 #include <cuda_runtime.h>
 
@@ -23,33 +21,14 @@ StaticData::~StaticData() {
 }
 
 bool StaticData::init(const StaticDataConfig& config) {
-    if (initialized || !registeredFrames.empty() || gpuCacheManager.isInitialized() || config.gpuIds.size() != 1 || config.gpuIds.front() < 0 || config.runtime.inBytes == 0) {
+    if (initialized || gpuCacheManager.isInitialized() || frameRuntime.inBytes != 0 || config.gpuIds.size() != 1 || config.gpuIds.front() < 0 || config.runtime.inBytes == 0) {
         return false;
     }
 
-    std::unordered_map<std::uint64_t, FrameMetadata> newRegisteredFrames;
-    try {
-        newRegisteredFrames.reserve(config.frames.size());
-        for (std::size_t index = 0; index < config.frames.size(); ++index) {
-            const FrameMetadata& metadata = config.frames[index];
-            if (!matchesRuntime(metadata, config.runtime)) {
-                std::fprintf(stderr, "[GPUInfra] invalid StaticData frame definition index=%zu frame_id=%llu\n", index, static_cast<unsigned long long>(metadata.id));
-                return false;
-            }
-            if (!newRegisteredFrames.emplace(metadata.id, metadata).second) {
-                std::fprintf(stderr, "[GPUInfra] duplicate StaticData frame ID frame_id=%llu\n", static_cast<unsigned long long>(metadata.id));
-                return false;
-            }
-        }
-    } catch (...) {
+    if (config.gpuCacheEntries != 0 && config.runtime.inBytes > std::numeric_limits<std::size_t>::max() / config.gpuCacheEntries) {
         return false;
     }
-
-    const std::size_t effectiveCacheEntries = std::min(config.gpuCacheEntries, config.frames.size());
-    if (effectiveCacheEntries != 0 && config.runtime.inBytes > std::numeric_limits<std::size_t>::max() / effectiveCacheEntries) {
-        return false;
-    }
-    const std::size_t cacheGpuBytes = effectiveCacheEntries * config.runtime.inBytes;
+    const std::size_t cacheGpuBytes = config.gpuCacheEntries * config.runtime.inBytes;
     std::size_t freeBytes = 0;
     std::size_t totalBytes = 0;
     if (cacheGpuBytes != 0) {
@@ -60,14 +39,18 @@ bool StaticData::init(const StaticDataConfig& config) {
             return false;
         }
     }
-    if (!gpuCacheManager.initialize(config.gpuIds, config.runtime.inBytes, effectiveCacheEntries)) {
+    if (!gpuCacheManager.initialize(config.gpuIds, config.runtime.inBytes, config.gpuCacheEntries)) {
         return false;
     }
 
-    registeredFrames.swap(newRegisteredFrames);
+    frameRuntime = config.runtime;
     initialized = true;
-    std::fprintf(stderr, "[GPUInfra] StaticData GPU cache plan gpu=%d registered_frames=%zu cache_entries=%zu bytes_per_entry=%zu allocated_bytes=%zu\n", config.gpuIds.front(), registeredFrames.size(), effectiveCacheEntries, config.runtime.inBytes, cacheGpuBytes);
+    std::fprintf(stderr, "[GPUInfra] StaticData GPU cache plan gpu=%d cache_entries=%zu bytes_per_entry=%zu allocated_bytes=%zu\n", config.gpuIds.front(), config.gpuCacheEntries, config.runtime.inBytes, cacheGpuBytes);
     return true;
+}
+
+bool StaticData::resetCache() {
+    return initialized && frameRuntime.inBytes != 0 && gpuCacheManager.resetCache();
 }
 
 bool StaticData::execute() const {
@@ -79,13 +62,13 @@ bool StaticData::release() {
 
     const bool ok = gpuCacheManager.release();
     if (ok && !gpuCacheManager.isInitialized()) {
-        registeredFrames.clear();
+        frameRuntime = AlgoRuntimeInfo();
     }
     return ok;
 }
 
-std::size_t StaticData::frameCount() const {
-    return registeredFrames.size();
+bool StaticData::isInitialized() const {
+    return initialized;
 }
 
 std::size_t StaticData::gpuCacheEntryCount() const {
@@ -93,12 +76,7 @@ std::size_t StaticData::gpuCacheEntryCount() const {
 }
 
 bool StaticData::validateFrame(const FrameMetadata& metadata) const {
-    if (!initialized) {
-        return false;
-    }
-
-    const auto match = registeredFrames.find(metadata.id);
-    return match != registeredFrames.end() && match->second == metadata;
+    return initialized && matchesRuntime(metadata, frameRuntime);
 }
 
 GpuDataAccess StaticData::acquireGpuData(const FrameMetadata& metadata, const TaskGpuResources& resources) {

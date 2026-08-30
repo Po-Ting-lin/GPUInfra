@@ -39,22 +39,23 @@ never fails merely because all cache entries are busy.
 
 ```text
 StaticData
-  ├─ registered frame-ID -> FrameMetadata hash [NumConfiguredFrames]
-  │
+  ├─ fixed frame layout + resetCache() run boundary
   └─ GpuCacheManager
+       ├─ fixed open-addressing GpuDataKey -> entry index table [~2K]
+       ├─ empty-entry stack + intrusive inactive-entry LRU
        └─ GpuCacheEntry[K]
-            cached metadata + cache state + leases + LRU
+            cached metadata + cache state + leases + LRU links
             └─ GpuReplica(gpuId, d_data, valid)
 ```
 
 `K` is:
 
 ```text
-min(GraphConfig::gpuCacheEntries, NumConfiguredFrames)
+GraphConfig::gpuCacheEntries
 ```
 
 The default configured value is 4. Zero is valid and means pure task fallback.
-There is no longer a fixed 220-frame capacity.
+There is no fixed 220-frame capacity or frame registration list.
 
 ### `FrameCpuAtom`
 
@@ -63,11 +64,12 @@ There is no longer a fixed 220-frame capacity.
 - Remains graph-owned and valid for the configured logical frame lifetime.
 - Is the reconstruction source on cache miss.
 
-### `StaticData` frame registry
+### `StaticData` frame validation
 
-- Stores one immutable `frame ID -> FrameMetadata` hash entry per configured
-  frame.
-- Performs complete registered-metadata validation.
+- Stores one fixed frame layout.
+- Accepts any incoming `GpuDataKey(frameId, cameraId)` whose metadata matches
+  that layout.
+- Stores no per-frame key or metadata registry.
 - Stores no execution state or `FramePhase`; graph-owned collections, queues,
   counters, and submitted flags define them.
 - Stores no `JobResult`; result lifetime follows `FrameCpuAtom`.
@@ -77,7 +79,7 @@ There is no longer a fixed 220-frame capacity.
 
 - Is a reusable GPU cache entry, not a logical frame record.
 - Temporarily stores cached metadata, `Empty`/`Loading`/`Valid` state, active
-  lease count, and LRU sequence.
+  lease count, and intrusive LRU links.
 - Directly owns GPU-keyed persistent `GpuReplica` allocations and per-replica
   validity.
 - Can represent different logical frames over graph lifetime without
@@ -102,11 +104,26 @@ DummyTask::load()
   -> allocate one d_input fallback per task instance
 
 StaticData::init()
-  -> build immutable frame-ID-to-FrameMetadata hash
-  -> compute effective cache capacity K
+  -> store fixed frame layout
   -> allocate K GpuCacheEntries
   -> allocate one persistent GpuReplica per entry
+  -> allocate fixed residency table and empty/LRU victim structures
 ```
+
+Later cold run boundaries do not reallocate the device buffers:
+
+```text
+StaticData::resetCache()
+  -> reject active leases
+  -> clear entry identities and replica validity
+  -> clear residency, empty stack, and global LRU state
+  -> retain every GpuReplica.d_data allocation
+```
+
+The framework must call `resetCache()` after all old-run executions finish and
+before any new-run execution starts. Between two resets, one
+`frameId + cameraId` must always represent the same immutable bytes. Reset is
+mandatory before a new run reuses an identity with different bytes.
 
 Teardown happens only after workers stop:
 
@@ -117,8 +134,8 @@ DummyTask::unload()
   -> release d_input, scratch, algorithm resources, staging, stream
 ```
 
-No allocation, free, vector growth, hash insert, or hash rehash occurs during
-cache acquire or task execute.
+No allocation, free, vector growth, or hash rehash occurs during cache acquire
+or task execute. Cache misses insert into already allocated fixed table slots.
 
 `DummyGraph` keeps separate `warmupAtoms` and `timedAtoms` collections. Those
 collections are the only `FramePhase` authority. Phase-submitted flags and the
@@ -143,13 +160,17 @@ of an incomplete access synchronizes submitted work and aborts it.
 ## 6. Lookup and replacement
 
 `GpuCacheManager::acquire(metadata, resources)` holds a short cache metadata
-mutex and scans the fixed entry array. With default `K=4`, this is bounded
-`O(K)` and performs no allocation.
+mutex and performs an average `O(1)` lookup in a fixed open-addressing table.
+The table holds at most K resident/loading keys in at least 2K slots. Misses
+erase and insert keys with linear probing and backward-shift deletion. An
+empty-entry stack or the head of an intrusive inactive-entry LRU supplies a
+victim in `O(1)`. Acquire performs no allocation, rehash, container growth, or
+`K`-entry array scan.
 
 Rules are evaluated in order:
 
-1. A non-empty entry with the same ID but different complete metadata is an
-   invalid request.
+1. Any key with the fixed layout is eligible; a resident key with different
+   complete metadata is invalid.
 2. A matching `Valid` entry with a valid local replica returns `CacheHit` and
    increments its active-reader count.
 3. A matching `Loading` entry returns `TaskFallback`; it does not wait.
@@ -195,7 +216,7 @@ The task performs:
 validate atom layout and preallocated outputs
   -> make the task GPU current
   -> StaticData::acquireGpuData(metadata, resources)
-       -> validate registered metadata once through the immutable hash
+       -> validate fixed layout
   -> if needsUpload: atom.data -> h_in -> access.writableData()
   -> CEL / SDD / MI read access.data()
   -> algorithm D2H
@@ -233,9 +254,13 @@ cancellation logic are unchanged.
 
 CUDA integration tests cover:
 
-- more than 220 registered frames with only two cache entries;
-- duplicate IDs and full-metadata mismatch rejection;
-- capacity clamping and capacity zero;
+- more than 220 unregistered incoming frames with only two cache entries;
+- fixed-table collision and backward-shift deletion;
+- full-metadata/layout rejection;
+- camera-ID separation and arbitrary incoming keys;
+- reset rejection with an active lease;
+- reset without releasing or reallocating device memory;
+- configured capacity and capacity zero;
 - first fill, later hit, and stable cache device pointer;
 - same-frame `Loading` fallback;
 - all-active fallback and release rejection with live leases;

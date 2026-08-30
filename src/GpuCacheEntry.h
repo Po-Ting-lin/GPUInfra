@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "FrameMetadata.h"
@@ -48,8 +48,10 @@ private:
     FrameMetadata metadata;
     GpuCacheState cacheState = GpuCacheState::Empty;
     std::size_t activeAccesses = 0;
-    std::uint64_t lastUse = 0;
+    std::size_t previousEvictable = std::numeric_limits<std::size_t>::max();
+    std::size_t nextEvictable = std::numeric_limits<std::size_t>::max();
     std::vector<GpuReplica> replicas;
     std::size_t dataBytes = 0;
+    bool inEvictableList = false;
     bool initialized = false;
 };

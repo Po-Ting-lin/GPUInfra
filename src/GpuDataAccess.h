@@ -5,6 +5,8 @@
 
 #include <cuda_runtime.h>
 
+#include "GpuDataKey.h"
+
 enum class GpuDataAccessSource {
     Invalid,
     CacheHit,
@@ -38,14 +40,14 @@ public:
 private:
     friend class GpuCacheManager;
 
-    GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, std::uint64_t targetDataId, cudaStream_t accessStream, int gpuId, GpuDataAccessSource accessSource);
+    GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, GpuDataAccessSource accessSource);
     void reset();
 
     GpuCacheManager* owner = nullptr;
     void* d_data = nullptr;
     std::size_t dataBytes = 0;
     std::size_t entryIndex = 0;
-    std::uint64_t dataId = 0;
+    GpuDataKey dataKey;
     cudaStream_t stream = nullptr;
     int deviceId = -1;
     GpuDataAccessSource accessSource = GpuDataAccessSource::Invalid;

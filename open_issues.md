@@ -16,6 +16,11 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData);
 實際導入前必須確認 framework 能提供：
 
 - graph-copy scope 的 `StaticData::init()`/`release()` 時機；
+- 每個 run 開始前、所有舊 execute 已結束且新 execute 尚未開始時，呼叫
+  一次 graph-copy-scoped `StaticData::resetCache()`；不需要每個 task 各自呼叫，
+  也不需要 frame registration list；
+- 保證兩次 reset 之間，相同 `frameId + cameraId` 永遠代表相同 immutable
+  bytes；若新 run 重用 identity，漏掉 reset 會造成 stale cache hit；
 - 每次 task execute 時取得同一個 graph-copy `StaticData&`；
 - framework 原有 scheduler／collections 自行管理 frame 的 ready、in-flight、
   completed、failed 與 cancelled 狀態；`StaticData` 不保存這些狀態；
@@ -49,10 +54,12 @@ frame-owned output plane、spill/recompute 規則及其 lifetime。Best-effort
 ## Non-frame GPU data
 
 `GpuCacheManager`、`GpuCacheEntry` 與 `GpuDataAccess` 的名稱預留未來保存其他
-GPU data 的空間，但目前 `acquire()` 仍只接受 `FrameMetadata`，所有 entries
-也使用相同的 frame byte size。正式支援 static data 或 algorithm intermediate
-以前，仍須定義通用 data key/descriptor、不同 payload size、mutability、重建或
-fallback source，以及 eviction lifetime。本次重新命名不代表已具備這些功能。
+GPU data 的空間。雖然現在已有 `GpuDataKey(frameId, cameraId)`，它仍是
+frame-specific；`acquire()` 也只接受
+`FrameMetadata`，所有 entries 使用相同的 frame byte size。正式支援 static
+data 或 algorithm intermediate 以前，仍須把 key／descriptor 泛化，並定義
+不同 payload size、mutability、重建或 fallback source，以及 eviction
+lifetime。本次 key 擴充不代表已具備這些功能。
 
 ## Cache sizing 與觀測
 

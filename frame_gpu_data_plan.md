@@ -29,7 +29,8 @@ fallback.
 - Task streams, fallback input, scratch, and private buffers remain in
   `TaskGpuResources`.
 - Logical execution state remains graph-owned; host results remain in
-  `FrameCpuAtom`, while `StaticData` stores only immutable registered metadata.
+  `FrameCpuAtom`, while `StaticData` stores only the fixed frame layout and
+  provides the run-boundary cache reset.
 - GPU cache entries remain bounded and best-effort.
 - Current synchronous `execute()` semantics remain the first implementation
   boundary.
@@ -40,6 +41,8 @@ For `G` eligible GPUs and cache capacity `K`:
 
 ```text
 GpuCacheManager
+  ├─ fixed open-addressing GpuDataKey -> entry index table [~2K]
+  ├─ empty-entry stack + intrusive inactive-entry LRU
   └─ GpuCacheEntry[K]
        ├─ cached FrameMetadata
        ├─ whole-entry LRU / active state
@@ -49,8 +52,9 @@ GpuCacheManager
             └─ ...
 ```
 
-Every replica allocation is created during `StaticData::init()` and retained
-until `StaticData::release()`. Device cache VRAM becomes:
+Every replica allocation is created during `StaticData::init()`, survives LRU
+replacement and `resetCache()`, and is retained until
+`StaticData::release()`. Device cache VRAM becomes:
 
 ```text
 K × G × FrameBytes
@@ -86,7 +90,8 @@ valid because the payload is immutable.
 
 Use the current policy:
 
-1. reserve `Empty`, otherwise inactive whole-entry LRU;
+1. use the average `O(1)` residency hash; on miss reserve from the `O(1)` empty
+   stack, otherwise the intrusive inactive whole-entry LRU head;
 2. H2D from immutable `FrameCpuAtom` into the selected GPU replica;
 3. publish entry and replica only after successful synchronization;
 4. if no entry is immediately available, use selected task's `d_input`.

@@ -162,7 +162,7 @@ bool DummyTask::notifyParameters(const ParameterSnapshot& parameters) {
 }
 
 bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
-    atom.result.id = atom.metadata.id;
+    atom.result.id = atom.metadata.key.frameId;
     if (state != TaskLifecycle::Notified) {
         atom.result.ok = false;
         return false;

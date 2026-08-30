@@ -23,7 +23,7 @@ bool multiplyFrameCount(std::uint64_t framesPerGpu, std::size_t gpuCount, std::s
 
 FrameMetadata makeFrameMetadata(std::uint64_t frameId, const AlgoRuntimeInfo& runtime) {
     FrameMetadata metadata;
-    metadata.id = frameId;
+    metadata.key.frameId = frameId;
     metadata.bytes = runtime.inBytes;
     metadata.width = runtime.frameW;
     metadata.height = runtime.frameH;
@@ -197,7 +197,7 @@ bool DummyGraph::startPhase(FramePhase phase, PhaseGate& gate) {
         return false;
     }
     for (const std::unique_ptr<FrameCpuAtom>& atom : phaseAtoms) {
-        atom->result.id = atom->metadata.id;
+        atom->result.id = atom->metadata.key.frameId;
         atom->result.ok = true;
     }
     readyFrames = std::move(pendingFrames);
@@ -231,7 +231,7 @@ bool DummyGraph::waitForPhase() {
 bool DummyGraph::shutdown() {
     {
         std::lock_guard<std::mutex> guard(schedulerLock);
-        if (!initialized && workers.empty() && tasks.empty() && warmupAtoms.empty() && timedAtoms.empty() && staticData.frameCount() == 0 && staticData.gpuCacheEntryCount() == 0) {
+        if (!initialized && workers.empty() && tasks.empty() && warmupAtoms.empty() && timedAtoms.empty() && !staticData.isInitialized() && staticData.gpuCacheEntryCount() == 0) {
             return true;
         }
         stopping = true;
@@ -331,18 +331,15 @@ bool DummyGraph::initializeOnNumaNode() {
         staticDataConfig.gpuIds = config.gpuIds;
         staticDataConfig.runtime = config.runtime;
         staticDataConfig.gpuCacheEntries = config.gpuCacheEntries;
-        staticDataConfig.frames.reserve(totalFrameCount);
         std::uint64_t nextId = config.firstFrameId;
         for (std::size_t index = 0; index < warmupCount; ++index) {
             const FrameMetadata metadata = makeFrameMetadata(nextId, config.runtime);
             warmupAtoms.push_back(std::make_unique<FrameCpuAtom>(metadata, config.runtime));
-            staticDataConfig.frames.push_back(metadata);
             ++nextId;
         }
         for (std::size_t index = 0; index < timedCount; ++index) {
             const FrameMetadata metadata = makeFrameMetadata(nextId, config.runtime);
             timedAtoms.push_back(std::make_unique<FrameCpuAtom>(metadata, config.runtime));
-            staticDataConfig.frames.push_back(metadata);
             ++nextId;
         }
         if (!staticData.init(staticDataConfig)) {
