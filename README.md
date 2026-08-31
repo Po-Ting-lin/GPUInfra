@@ -42,6 +42,9 @@ a hit. Because the current input is immutable, a miss re-uploads from
   multi-GPU replica extension.
 - [`num_of_gpu_cache_entry_issue.md`](num_of_gpu_cache_entry_issue.md) explains
   why logical frame count and GPU cache capacity are independent.
+- [`unordered_map_vs_fixed_open_addressing.md`](unordered_map_vs_fixed_open_addressing.md)
+  compares the two resident-key index implementations for N=1024, S=300, and
+  K=150.
 - [`open_issues.md`](open_issues.md) records real-framework integration and
   future payload constraints.
 - [`gpuinfra_class_diagram.html`](gpuinfra_class_diagram.html) and
