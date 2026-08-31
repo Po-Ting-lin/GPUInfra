@@ -1,4 +1,4 @@
-#include "GpuCacheEntry.h"
+#include "DataCache/GpuCacheEntry.h"
 
 #include <cuda_runtime.h>
 

@@ -1,7 +1,7 @@
-#include "GpuDataAccess.h"
+#include "DataCache/GpuDataAccess.h"
 
 #include "CudaCheck.h"
-#include "GpuCacheManager.h"
+#include "DataCache/GpuCacheManager.h"
 
 GpuDataAccess::GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, GpuDataAccessSource source)
     : owner(accessOwner),

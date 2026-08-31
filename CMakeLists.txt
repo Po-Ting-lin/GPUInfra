@@ -32,24 +32,25 @@ find_package(Threads REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 
 add_library(gpuinfra
-    src/Cel.cu
-    src/DummyGraph.cpp
+    src/Algo/Cel.cu
+    src/Algo/Mi.cu
+    src/Algo/Sdd.cu
     src/DummyTask.cpp
-    src/FrameCpuAtom.cpp
-    src/GpuCacheEntry.cpp
-    src/GpuCacheManager.cpp
+    src/Grape/DummyGraph.cpp
+    src/Grape/FrameCpuAtom.cpp
+    src/DataCache/GpuCacheEntry.cpp
+    src/DataCache/GpuCacheManager.cpp
+    src/DataCache/GpuDataAccess.cpp
+    src/DataCache/GpuResidencyTable.cpp
     src/GpuContextManager.cpp
-    src/GpuDataAccess.cpp
-    src/GpuResidencyTable.cpp
-    src/Mi.cu
     src/ParameterRegistry.cpp
-    src/Sdd.cu
     src/StaticData.cpp
 )
 
 target_include_directories(gpuinfra
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Grape
 )
 
 target_compile_definitions(gpuinfra

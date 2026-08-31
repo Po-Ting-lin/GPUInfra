@@ -1,4 +1,4 @@
-#include "GpuResidencyTable.h"
+#include "DataCache/GpuResidencyTable.h"
 
 #include <limits>
 #include <utility>

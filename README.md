@@ -327,19 +327,25 @@ cleanup.
 
 ```text
 src/
-  DummyGraph.*            NUMA graph copy and unchanged scheduler selection
+  Algo/
+    IAlgo.h               algorithm contract and shared result types
+    Cel.*, Sdd.*, Mi.*    synthetic CUDA algorithms
+  DataCache/
+    GpuDataKey.h          frame/camera cache identity
+    GpuCacheManager.*     bounded cache lookup, LRU, leases, fallback choice
+    GpuCacheEntry.*       reusable entry with persistent per-GPU replicas
+    GpuDataAccess.*       scoped access source and completion
+    GpuResidencyTable.*   fixed open-addressing resident-key index
+  Grape/
+    README.md             immutable graph-simulation boundary rules
+    DummyGraph.*          NUMA graph copy and unchanged scheduler selection
+    FrameCpuAtom.*        CPU bytes, metadata, and preallocated result
+    GraphTypes.h          simulated graph-owned execution types
   DummyTask.*             task lifecycle and CEL/SDD/MI execution
-  FrameCpuAtom.*          CPU bytes, metadata, and preallocated result
-  GpuDataKey.h            frame/camera cache identity
-  GpuCacheManager.*       bounded cache lookup, LRU, leases, fallback choice
-  GpuCacheEntry.*         reusable entry with persistent per-GPU replicas
-  GpuDataAccess.*         scoped access source and completion
-  GpuResidencyTable.*     fixed open-addressing resident-key index
   StaticData.*            graph-copy layout/reset/cache owner
   TaskGpuResources.h      task CUDA lane including fallback d_input
   GpuContextManager.*     GPU discovery, NUMA affinity, task registration
   WorkloadSizing.h        independent H2D/D2H/compute compile-time controls
-  Cel.*, Sdd.*, Mi.*      synthetic algorithms
 tests/
   gpuinfra_tests.cpp      protocol and CUDA integration tests
 ```

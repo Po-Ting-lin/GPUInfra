@@ -270,7 +270,7 @@
             <article class="class-card graph-card wide">
                 <header><span class="stereotype">one per supported NUMA node</span><h3>DummyGraph</h3></header>
                 <ul>
-                    <li><code>DummyGraph.h/.cpp</code></li>
+                    <li><code>Grape/DummyGraph.h/.cpp</code></li>
                     <li>NUMA-local worker pool</li>
                     <li>free <code>DummyTask</code> pool and FIFO frame queue</li>
                     <li>owns separate warmup/timed <code>FrameCpuAtom</code> collections</li>
@@ -312,7 +312,7 @@
             <article class="class-card frame-card wide">
                 <header><span class="stereotype">CPU frame owner</span><h3>FrameCpuAtom</h3></header>
                 <ul>
-                    <li><code>FrameCpuAtom.h/.cpp</code></li>
+                    <li><code>Grape/FrameCpuAtom.h/.cpp</code></li>
                     <li>owns CPU frame byte vector</li>
                     <li>owns intrinsic <code>FrameMetadata</code></li>
                     <li>owns preallocated <code>JobResult</code></li>
@@ -323,7 +323,7 @@
             <article class="class-card frame-card wide">
                 <header><span class="stereotype">bounded cache manager</span><h3>GpuCacheManager</h3></header>
                 <ul>
-                    <li><code>GpuCacheManager.h/.cpp</code></li>
+                    <li><code>DataCache/GpuCacheManager.h/.cpp</code></li>
                     <li>owns fixed <code>GpuCacheEntry[K]</code> entries</li>
                     <li>owns a fixed open-addressing residency table for at most K keys</li>
                     <li>coordinates entry state, active accesses, empty stack, and intrusive LRU</li>
@@ -335,7 +335,7 @@
             <article class="class-card frame-card wide">
                 <header><span class="stereotype">fixed resident-key index</span><h3>GpuResidencyTable</h3></header>
                 <ul>
-                    <li><code>GpuResidencyTable.h/.cpp</code></li>
+                    <li><code>DataCache/GpuResidencyTable.h/.cpp</code></li>
                     <li>preallocates at least <code>2K</code> linear-probing slots</li>
                     <li>stores only resident/loading <code>GpuDataKey → entry index</code> mappings</li>
                     <li>average O(1) find, insert, and erase</li>
@@ -346,7 +346,7 @@
             <article class="class-card frame-card wide">
                 <header><span class="stereotype">reusable cache entry</span><h3>GpuCacheEntry</h3></header>
                 <ul>
-                    <li><code>GpuCacheEntry.h/.cpp</code></li>
+                    <li><code>DataCache/GpuCacheEntry.h/.cpp</code></li>
                     <li>temporarily cached complete metadata</li>
                     <li>directly owns GPU-keyed <code>GpuReplica</code> collection</li>
                     <li>one device buffer preallocated per entry today</li>
@@ -386,7 +386,7 @@
             <article class="class-card frame-card">
                 <header><span class="stereotype">RAII scoped lease</span><h3>GpuDataAccess</h3></header>
                 <ul>
-                    <li><code>GpuDataAccess.h/.cpp</code></li>
+                    <li><code>DataCache/GpuDataAccess.h/.cpp</code></li>
                     <li><code>CacheHit / CacheFill / TaskFallback</code></li>
                     <li><code>needsUpload()</code> hides source selection</li>
                     <li>cache hit exposes no mutable pointer</li>

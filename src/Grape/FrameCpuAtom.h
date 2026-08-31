@@ -4,7 +4,7 @@
 #include <vector>
 
 #include "FrameMetadata.h"
-#include "IAlgo.h"
+#include "Algo/IAlgo.h"
 
 struct FrameCpuAtom {
     FrameCpuAtom(const FrameMetadata& frameMetadata, const AlgoRuntimeInfo& runtime);

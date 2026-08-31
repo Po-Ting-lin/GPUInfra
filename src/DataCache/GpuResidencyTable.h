@@ -4,7 +4,7 @@
 #include <limits>
 #include <vector>
 
-#include "GpuDataKey.h"
+#include "DataCache/GpuDataKey.h"
 
 // Fixed-capacity linear-probing table for currently resident/loading cache
 // keys. Storage is allocated once; insert/erase never grows the table.

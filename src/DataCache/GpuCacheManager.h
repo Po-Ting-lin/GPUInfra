@@ -7,9 +7,9 @@
 #include <vector>
 
 #include "FrameMetadata.h"
-#include "GpuCacheEntry.h"
-#include "GpuDataAccess.h"
-#include "GpuResidencyTable.h"
+#include "DataCache/GpuCacheEntry.h"
+#include "DataCache/GpuDataAccess.h"
+#include "DataCache/GpuResidencyTable.h"
 
 struct TaskGpuResources;
 

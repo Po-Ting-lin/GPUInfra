@@ -1,4 +1,4 @@
-#include "Sdd.h"
+#include "Algo/Mi.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -13,10 +13,10 @@
 
 namespace {
 
-constexpr unsigned int SDD_BLOCK_DIM = 16;
+constexpr unsigned int MI_BLOCK_DIM = 16;
 
 // Square the top-left nx-by-nx region of the row-major input frame.
-__global__ void sddMatrixMultiplicationKernel(const std::uint8_t* d_input, std::uint32_t* d_outputMatrix, int nx, int inputStride) {
+__global__ void miMatrixMultiplicationKernel(const std::uint8_t* d_input, std::uint32_t* d_outputMatrix, int nx, int inputStride) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= nx || y >= nx) return;
@@ -38,16 +38,16 @@ __global__ void sddMatrixMultiplicationKernel(const std::uint8_t* d_input, std::
 
 }  // namespace
 
-Sdd::~Sdd() {
+Mi::~Mi() {
     close();
 }
 
-bool Sdd::init(const AlgoRuntimeInfo& info, const TaskGpuResources& resources, std::size_t& scratchBytes) {
+bool Mi::init(const AlgoRuntimeInfo& info, const TaskGpuResources& resources, std::size_t& scratchBytes) {
     scratchBytes = 0;
     if (resources.resourceId < 0 || resources.gpuId < 0 || resources.stream == nullptr || !ImageSizing::isValidFactor(info.sizeFactor)) {
         return false;
     }
-    const int outputSize = ImageSizing::scaledDimension(info.sizeFactor, ImageSizing::SDD_MULTIPLIER);
+    const int outputSize = ImageSizing::scaledDimension(info.sizeFactor, ImageSizing::MI_MULTIPLIER);
     if (info.frameW < outputSize || info.frameH < outputSize) {
         return false;
     }
@@ -86,7 +86,7 @@ bool Sdd::init(const AlgoRuntimeInfo& info, const TaskGpuResources& resources, s
     return true;
 }
 
-bool Sdd::notifyParameter(const AlgoParams& params) {
+bool Mi::notifyParameter(const AlgoParams& params) {
     if (!initialized) {
         return false;
     }
@@ -95,20 +95,20 @@ bool Sdd::notifyParameter(const AlgoParams& params) {
     return true;
 }
 
-bool Sdd::launchKernels(const TaskGpuResources& resources, const void* d_frameData, cudaStream_t stream) {
+bool Mi::launchKernels(const TaskGpuResources& resources, const void* d_frameData, cudaStream_t stream) {
     if (!initialized || resources.resourceId != resourceId || resources.gpuId != gpuId || d_frameData == nullptr || stream == nullptr || stream != resources.stream) {
         return false;
     }
 
     const auto* d_input = static_cast<const std::uint8_t*>(d_frameData);
-    dim3 block(SDD_BLOCK_DIM, SDD_BLOCK_DIM);
+    dim3 block(MI_BLOCK_DIM, MI_BLOCK_DIM);
     dim3 grid((matrixSize + block.x - 1U) / block.x, (matrixSize + block.y - 1U) / block.y);
-    sddMatrixMultiplicationKernel << <grid, block, 0, stream >> > (d_input, d_outputMatrix, matrixSize, frameW);
+    miMatrixMultiplicationKernel << <grid, block, 0, stream >> > (d_input, d_outputMatrix, matrixSize, frameW);
     CUDA_CHECK(cudaGetLastError(), return false);
     return true;
 }
 
-bool Sdd::launchD2H(const TaskGpuResources& resources, cudaStream_t stream) {
+bool Mi::launchD2H(const TaskGpuResources& resources, cudaStream_t stream) {
     if (!initialized || resources.resourceId != resourceId || resources.gpuId != gpuId || stream == nullptr || stream != resources.stream) {
         return false;
     }
@@ -119,12 +119,12 @@ bool Sdd::launchD2H(const TaskGpuResources& resources, cudaStream_t stream) {
     return true;
 }
 
-bool Sdd::collectResult(const TaskGpuResources& resources, AlgoOutput& output) const {
+bool Mi::collectResult(const TaskGpuResources& resources, AlgoOutput& output) const {
     if (!initialized || resources.resourceId != resourceId || resources.gpuId != gpuId) {
         return false;
     }
 
-    if (output.algoName != "sdd" || output.width != matrixSize || output.height != matrixSize || output.data.size() != matrixBytes) {
+    if (output.algoName != "mi" || output.width != matrixSize || output.height != matrixSize || output.data.size() != matrixBytes) {
         return false;
     }
 
@@ -132,7 +132,7 @@ bool Sdd::collectResult(const TaskGpuResources& resources, AlgoOutput& output) c
     return true;
 }
 
-bool Sdd::close() {
+bool Mi::close() {
     bool ok = true;
     if (d_outputMatrix != nullptr || h_outputMatrix != nullptr) {
         CUDA_CHECK(cudaSetDevice(gpuId), return false);

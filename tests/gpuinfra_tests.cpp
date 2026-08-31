@@ -15,13 +15,13 @@
 
 #include <cuda_runtime.h>
 
+#include "DataCache/GpuCacheManager.h"
+#include "DataCache/GpuDataAccess.h"
+#include "DataCache/GpuResidencyTable.h"
 #include "DummyGraph.h"
 #include "DummyTask.h"
 #include "FrameCpuAtom.h"
-#include "GpuCacheManager.h"
 #include "GpuContextManager.h"
-#include "GpuDataAccess.h"
-#include "GpuResidencyTable.h"
 #include "ImageSizing.h"
 #include "ParameterRegistry.h"
 #include "StaticData.h"

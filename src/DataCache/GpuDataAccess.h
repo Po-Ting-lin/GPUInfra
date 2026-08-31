@@ -5,7 +5,7 @@
 
 #include <cuda_runtime.h>
 
-#include "GpuDataKey.h"
+#include "DataCache/GpuDataKey.h"
 
 enum class GpuDataAccessSource {
     Invalid,

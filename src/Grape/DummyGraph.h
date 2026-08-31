@@ -10,9 +10,9 @@
 #include <thread>
 #include <vector>
 
+#include "Algo/IAlgo.h"
 #include "DummyTask.h"
 #include "FrameCpuAtom.h"
-#include "IAlgo.h"
 #include "ParameterRegistry.h"
 #include "StaticData.h"
 

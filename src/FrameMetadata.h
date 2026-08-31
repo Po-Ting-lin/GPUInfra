@@ -2,7 +2,7 @@
 
 #include <cstddef>
 
-#include "GpuDataKey.h"
+#include "DataCache/GpuDataKey.h"
 
 struct FrameMetadata {
     GpuDataKey key;

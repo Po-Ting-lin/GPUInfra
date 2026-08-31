@@ -10,14 +10,14 @@
 
 #include <cuda_runtime.h>
 
-#include "Cel.h"
+#include "Algo/Cel.h"
+#include "Algo/IAlgo.h"
+#include "Algo/Mi.h"
+#include "Algo/Sdd.h"
 #include "CudaCheck.h"
 #include "FrameCpuAtom.h"
 #include "GpuContextManager.h"
-#include "IAlgo.h"
 #include "ImageSizing.h"
-#include "Mi.h"
-#include "Sdd.h"
 #include "StaticData.h"
 #include "WorkloadSizing.h"
 

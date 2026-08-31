@@ -1,11 +1,11 @@
 #pragma once
 
-#include "IAlgo.h"
+#include "Algo/IAlgo.h"
 
-class Mi final : public IAlgo {
+class Sdd final : public IAlgo {
 public:
-    Mi() = default;
-    ~Mi() override;
+    Sdd() = default;
+    ~Sdd() override;
 
     bool init(const AlgoRuntimeInfo& info, const TaskGpuResources& resources, std::size_t& scratchBytes) override;
     bool notifyParameter(const AlgoParams& params) override;
@@ -14,8 +14,8 @@ public:
     bool collectResult(const TaskGpuResources& resources, AlgoOutput& output) const override;
     bool close() override;
 
-    Mi(const Mi&) = delete;
-    Mi& operator=(const Mi&) = delete;
+    Sdd(const Sdd&) = delete;
+    Sdd& operator=(const Sdd&) = delete;
 
 private:
     int gpuId = -1;

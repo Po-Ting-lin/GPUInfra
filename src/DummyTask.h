@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "GraphTypes.h"
-#include "IAlgo.h"
+#include "Algo/IAlgo.h"
 #include "ParameterRegistry.h"
 #include "TaskGpuResources.h"
 

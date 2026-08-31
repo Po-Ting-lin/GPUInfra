@@ -3,9 +3,9 @@
 #include <cstddef>
 #include <vector>
 
+#include "Algo/IAlgo.h"
+#include "DataCache/GpuCacheManager.h"
 #include "FrameMetadata.h"
-#include "GpuCacheManager.h"
-#include "IAlgo.h"
 
 struct TaskGpuResources;
 
