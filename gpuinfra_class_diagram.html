@@ -33,7 +33,7 @@
         }
 
         main {
-            width: min(1240px, calc(100% - 32px));
+            width: min(1440px, calc(100% - 32px));
             margin: 0 auto;
             padding: 48px 0 64px;
         }
@@ -149,6 +149,147 @@
             grid-column: span 2;
         }
 
+        .uml-intro {
+            max-width: 920px;
+            color: var(--muted);
+        }
+
+        .uml-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 18px;
+            margin: 0 0 18px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .uml-legend span {
+            display: inline-flex;
+            gap: 7px;
+            align-items: center;
+        }
+
+        .legend-line {
+            width: 30px;
+            border-top: 2px solid var(--muted);
+        }
+
+        .legend-line.dashed {
+            border-top-style: dashed;
+        }
+
+        .legend-diamond {
+            width: 11px;
+            height: 11px;
+            transform: rotate(45deg);
+            background: var(--text);
+        }
+
+        .uml-subtitle {
+            margin: 26px 0 10px;
+            color: var(--text);
+            font-size: 16px;
+        }
+
+        .uml-caption {
+            margin: 12px 2px 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .uml-scroll {
+            overflow-x: auto;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            background: #0a1627;
+        }
+
+        .uml-canvas {
+            display: block;
+            width: 100%;
+            min-width: 1060px;
+            height: auto;
+        }
+
+        .uml-box {
+            fill: #142641;
+            stroke: var(--line);
+            stroke-width: 2;
+        }
+
+        .uml-box.graph {
+            stroke: var(--graph);
+        }
+
+        .uml-box.task {
+            stroke: var(--task);
+        }
+
+        .uml-box.frame {
+            stroke: var(--frame);
+        }
+
+        .uml-box.gpu {
+            stroke: var(--gpu);
+        }
+
+        .uml-divider {
+            stroke: var(--line);
+            stroke-width: 1;
+        }
+
+        .uml-title {
+            fill: var(--text);
+            font: 700 18px system-ui, sans-serif;
+            text-anchor: middle;
+        }
+
+        .uml-stereotype-text {
+            fill: var(--muted);
+            font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
+            text-anchor: middle;
+        }
+
+        .uml-member {
+            fill: #d7e7ff;
+            font: 14px ui-monospace, SFMono-Regular, Consolas, monospace;
+        }
+
+        .uml-edge {
+            fill: none;
+            stroke: #aebed4;
+            stroke-width: 2;
+        }
+
+        .uml-edge.dependency {
+            stroke-dasharray: 8 6;
+        }
+
+        .uml-edge-label,
+        .uml-multiplicity {
+            fill: var(--muted);
+            stroke: #0a1627;
+            stroke-width: 5px;
+            paint-order: stroke;
+            font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
+        }
+
+        .uml-multiplicity {
+            fill: var(--text);
+            font-weight: 700;
+        }
+
+        .uml-boundary-note {
+            fill: color-mix(in srgb, var(--graph), transparent 90%);
+            stroke: var(--graph);
+            stroke-dasharray: 7 6;
+        }
+
+        .uml-note-text {
+            fill: var(--graph);
+            font: 12px system-ui, sans-serif;
+        }
+
         .relationship {
             display: grid;
             grid-template-columns: 1fr auto 1fr auto 1fr;
@@ -224,7 +365,7 @@
 
         @media (max-width: 580px) {
             main {
-                width: min(100% - 20px, 1240px);
+                width: min(100% - 20px, 1440px);
                 padding-top: 28px;
             }
 
@@ -241,11 +382,317 @@
 <body>
 <main>
     <h1>GPUInfra class and ownership model</h1>
-    <p class="lede">The current implementation separates logical frame records, a bounded best-effort GPU cache, reusable task fallback resources, and host execution. The temporary scope accepts exactly one GPU per NUMA graph copy: tasks remain GPU-bound, workers remain NUMA-bound, and cache residency never participates in scheduler selection.</p>
+    <p class="lede">The current implementation separates graph-owned CPU frame atoms, a bounded best-effort GPU cache, reusable task fallback resources, and host execution. The temporary scope accepts exactly one GPU per NUMA graph copy: tasks remain GPU-bound, workers remain NUMA-bound, and cache residency never participates in scheduler selection.</p>
     <div class="golden"><strong>Golden scheduling</strong><code>start → DummyTask → end · 1 GPU / NUMA graph copy</code></div>
 
     <section class="section">
-        <h2>Core classes</h2>
+        <h2>UML overview</h2>
+        <p class="uml-intro">The diagrams use UML ownership and multiplicity explicitly. A filled diamond is placed at the owner, a solid line is an association, and a dashed arrow is a call-time dependency. The green Grape boundary is simulation-only framework code whose scheduling behavior must remain unchanged.</p>
+        <div class="uml-legend" aria-label="UML notation legend">
+            <span><i class="legend-diamond"></i>composition / lifetime owner</span>
+            <span><i class="legend-line"></i>association / retained reference</span>
+            <span><i class="legend-line dashed"></i>dependency / method call</span>
+            <span><code>1, K, 0..*</code> multiplicity</span>
+        </div>
+
+        <h3 class="uml-subtitle">Graph, task, and CUDA context</h3>
+        <div class="uml-scroll">
+            <svg class="uml-canvas" viewBox="0 0 1500 950" role="img" aria-labelledby="execution-uml-title execution-uml-desc">
+                <title id="execution-uml-title">GPUInfra graph, task, and CUDA context UML diagram</title>
+                <desc id="execution-uml-desc">GpuContextManager owns one GpuContext per participating GPU. Each GpuContext is associated with many TaskGpuResources. DummyGraph owns frame atoms, static data, and task instances. Each DummyTask owns task GPU resources and private algorithms.</desc>
+                <defs>
+                    <marker id="execution-composition" markerWidth="12" markerHeight="12" refX="1" refY="6" orient="auto">
+                        <path d="M1 6 L6 1 L11 6 L6 11 Z" fill="#e8f0ff"></path>
+                    </marker>
+                </defs>
+
+                <rect class="uml-boundary-note" x="50" y="300" width="900" height="290" rx="18"></rect>
+                <text class="uml-note-text" x="70" y="327">«Grape framework simulation — behavior fixed by graph.md»</text>
+
+                <path class="uml-edge" d="M430 140 H575" marker-start="url(#execution-composition)"></path>
+                <text class="uml-multiplicity" x="447" y="128">1</text>
+                <text class="uml-multiplicity" x="535" y="128">1 / GPU</text>
+                <text class="uml-edge-label" x="467" y="160">owns primary contexts</text>
+
+                <path class="uml-edge" d="M925 145 H970 V620 H1245 V700"></path>
+                <text class="uml-multiplicity" x="938" y="133">1</text>
+                <text class="uml-multiplicity" x="1258" y="683">0..*</text>
+                <text class="uml-edge-label" x="982" y="605">taskResources / ctx</text>
+
+                <path class="uml-edge" d="M430 450 H575" marker-start="url(#execution-composition)"></path>
+                <text class="uml-multiplicity" x="447" y="438">1</text>
+                <text class="uml-multiplicity" x="535" y="438">0..N</text>
+                <text class="uml-edge-label" x="472" y="470">owns atoms</text>
+
+                <path class="uml-edge" d="M255 560 V620 H1245 V530" marker-start="url(#execution-composition)"></path>
+                <text class="uml-multiplicity" x="268" y="585">1</text>
+                <text class="uml-multiplicity" x="1258" y="552">1</text>
+                <text class="uml-edge-label" x="708" y="610">owns one graph-copy static data</text>
+
+                <path class="uml-edge" d="M255 560 V700" marker-start="url(#execution-composition)"></path>
+                <text class="uml-multiplicity" x="268" y="585">1</text>
+                <text class="uml-multiplicity" x="268" y="683">0..*</text>
+                <text class="uml-edge-label" x="270" y="640">owns tasks</text>
+
+                <path class="uml-edge" d="M430 780 H575" marker-start="url(#execution-composition)"></path>
+                <text class="uml-multiplicity" x="447" y="768">1</text>
+                <text class="uml-multiplicity" x="535" y="768">3</text>
+                <text class="uml-edge-label" x="463" y="800">CEL / SDD / MI</text>
+
+                <path class="uml-edge" d="M430 835 H490 V920 H1245 V890" marker-start="url(#execution-composition)"></path>
+                <text class="uml-multiplicity" x="447" y="823">1</text>
+                <text class="uml-multiplicity" x="1258" y="882">1</text>
+                <text class="uml-edge-label" x="759" y="910">owns CUDA lane</text>
+
+                <g aria-label="GpuContextManager class">
+                    <rect class="uml-box gpu" x="80" y="50" width="350" height="180" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="255" y="76">«process-wide service»</text>
+                    <text class="uml-title" x="255" y="102">GpuContextManager</text>
+                    <line class="uml-divider" x1="80" y1="116" x2="430" y2="116"></line>
+                    <text class="uml-member" x="96" y="142">- contexts: vector&lt;GpuContext*&gt;</text>
+                    <line class="uml-divider" x1="80" y1="156" x2="430" y2="156"></line>
+                    <text class="uml-member" x="96" y="180">+ registerTask(gpuId, resources)</text>
+                    <text class="uml-member" x="96" y="204">+ makeTaskCurrent(resources)</text>
+                </g>
+
+                <g aria-label="GpuContext class">
+                    <rect class="uml-box gpu" x="575" y="50" width="350" height="180" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="750" y="76">«one per participating GPU»</text>
+                    <text class="uml-title" x="750" y="102">GpuContext</text>
+                    <line class="uml-divider" x1="575" y1="116" x2="925" y2="116"></line>
+                    <text class="uml-member" x="591" y="142">+ gpuId: int</text>
+                    <text class="uml-member" x="591" y="165">+ numaNode: int</text>
+                    <text class="uml-member" x="591" y="188">+ primaryCtx: CUcontext</text>
+                    <text class="uml-member" x="591" y="211">+ taskResources: vector&lt;...*&gt;</text>
+                </g>
+
+                <g aria-label="DummyGraph class">
+                    <rect class="uml-box graph" x="80" y="350" width="350" height="210" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="255" y="376">«framework simulation»</text>
+                    <text class="uml-title" x="255" y="402">DummyGraph</text>
+                    <line class="uml-divider" x1="80" y1="416" x2="430" y2="416"></line>
+                    <text class="uml-member" x="96" y="442">- tasks: vector&lt;DummyTask&gt;</text>
+                    <text class="uml-member" x="96" y="465">- warmup/timed atoms</text>
+                    <text class="uml-member" x="96" y="488">- staticData: StaticData</text>
+                    <line class="uml-divider" x1="80" y1="503" x2="430" y2="503"></line>
+                    <text class="uml-member" x="96" y="528">+ initializeOnNumaNode()</text>
+                    <text class="uml-member" x="96" y="551">- workerLoop()</text>
+                </g>
+
+                <g aria-label="FrameCpuAtom class">
+                    <rect class="uml-box frame" x="575" y="350" width="350" height="180" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="750" y="376">«framework-owned CPU frame»</text>
+                    <text class="uml-title" x="750" y="402">FrameCpuAtom</text>
+                    <line class="uml-divider" x1="575" y1="416" x2="925" y2="416"></line>
+                    <text class="uml-member" x="591" y="442">+ data: vector&lt;uint8_t&gt;</text>
+                    <text class="uml-member" x="591" y="465">+ metadata: FrameMetadata</text>
+                    <text class="uml-member" x="591" y="488">+ result: JobResult</text>
+                    <text class="uml-member" x="591" y="511">+ FrameCpuAtom(metadata, runtime)</text>
+                </g>
+
+                <g aria-label="StaticData class">
+                    <rect class="uml-box frame" x="1070" y="350" width="350" height="180" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="1245" y="376">«graph-copy extension data»</text>
+                    <text class="uml-title" x="1245" y="402">StaticData</text>
+                    <line class="uml-divider" x1="1070" y1="416" x2="1420" y2="416"></line>
+                    <text class="uml-member" x="1086" y="442">- gpuCacheManager</text>
+                    <text class="uml-member" x="1086" y="465">- frameRuntime</text>
+                    <line class="uml-divider" x1="1070" y1="480" x2="1420" y2="480"></line>
+                    <text class="uml-member" x="1086" y="505">+ acquireGpuData()</text>
+                    <text class="uml-member" x="1086" y="525">+ resetCache()</text>
+                </g>
+
+                <g aria-label="DummyTask class">
+                    <rect class="uml-box task" x="80" y="700" width="350" height="190" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="255" y="726">«GPU-bound task instance»</text>
+                    <text class="uml-title" x="255" y="752">DummyTask</text>
+                    <line class="uml-divider" x1="80" y1="766" x2="430" y2="766"></line>
+                    <text class="uml-member" x="96" y="792">- resources: TaskGpuResources</text>
+                    <text class="uml-member" x="96" y="815">- algorithms: vector&lt;IAlgo&gt;</text>
+                    <line class="uml-divider" x1="80" y1="830" x2="430" y2="830"></line>
+                    <text class="uml-member" x="96" y="855">+ execute(atom, staticData): bool</text>
+                    <text class="uml-member" x="96" y="878">+ load() / unload()</text>
+                </g>
+
+                <g aria-label="IAlgo interface">
+                    <rect class="uml-box task" x="575" y="700" width="350" height="160" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="750" y="726">«interface»</text>
+                    <text class="uml-title" x="750" y="752">IAlgo</text>
+                    <line class="uml-divider" x1="575" y1="766" x2="925" y2="766"></line>
+                    <text class="uml-member" x="591" y="792">+ launchKernels(...): bool</text>
+                    <text class="uml-member" x="591" y="815">+ launchD2H(...): bool</text>
+                    <text class="uml-member" x="591" y="838">+ collectResult(...): bool</text>
+                </g>
+
+                <g aria-label="TaskGpuResources class">
+                    <rect class="uml-box gpu" x="1070" y="700" width="350" height="190" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="1245" y="726">«task-owned CUDA lane»</text>
+                    <text class="uml-title" x="1245" y="752">TaskGpuResources</text>
+                    <line class="uml-divider" x1="1070" y1="766" x2="1420" y2="766"></line>
+                    <text class="uml-member" x="1086" y="792">+ gpuId: int</text>
+                    <text class="uml-member" x="1086" y="815">+ resourceId: int</text>
+                    <text class="uml-member" x="1086" y="838">+ ctx: GpuContext*</text>
+                    <text class="uml-member" x="1086" y="861">+ stream / h_in / d_input</text>
+                </g>
+            </svg>
+        </div>
+        <p class="uml-caption"><code>GpuContextManager::contexts</code> owns one retained <code>GpuContext</code> for each participating <code>gpuId</code>. Registration stores that context directly in <code>TaskGpuResources::ctx</code>, so one GPU/context is shared by zero or more task-resource objects.</p>
+
+        <h3 class="uml-subtitle">GPU data cache internals</h3>
+        <div class="uml-scroll">
+            <svg class="uml-canvas" viewBox="0 0 1500 880" role="img" aria-labelledby="cache-uml-title cache-uml-desc">
+                <title id="cache-uml-title">GPUInfra GPU data cache UML diagram</title>
+                <desc id="cache-uml-desc">StaticData owns one GpuCacheManager. The manager owns one residency table and K cache entries. Each cache entry owns persistent GPU replicas. The manager creates scoped GpuDataAccess objects used by DummyTask.</desc>
+                <defs>
+                    <marker id="cache-composition" markerWidth="12" markerHeight="12" refX="1" refY="6" orient="auto">
+                        <path d="M1 6 L6 1 L11 6 L6 11 Z" fill="#e8f0ff"></path>
+                    </marker>
+                    <marker id="cache-arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+                        <path d="M1 1 L10 6 L1 11" fill="none" stroke="#aebed4" stroke-width="1.5"></path>
+                    </marker>
+                </defs>
+
+                <path class="uml-edge dependency" d="M410 140 H585" marker-end="url(#cache-arrow)"></path>
+                <text class="uml-edge-label" x="440" y="128">acquireGpuData()</text>
+
+                <path class="uml-edge" d="M915 140 H1070" marker-start="url(#cache-composition)"></path>
+                <text class="uml-multiplicity" x="932" y="128">1</text>
+                <text class="uml-multiplicity" x="1032" y="128">1</text>
+                <text class="uml-edge-label" x="957" y="160">owns</text>
+
+                <path class="uml-edge dependency" d="M1070 105 H1000 V300 H750 V350" marker-end="url(#cache-arrow)"></path>
+                <text class="uml-edge-label" x="817" y="290">creates / completes</text>
+
+                <path class="uml-edge" d="M1245 250 V350" marker-start="url(#cache-composition)"></path>
+                <text class="uml-multiplicity" x="1258" y="278">1</text>
+                <text class="uml-multiplicity" x="1258" y="337">K</text>
+
+                <path class="uml-edge" d="M1070 185 H1000 V750 H915" marker-start="url(#cache-composition)"></path>
+                <text class="uml-multiplicity" x="1025" y="173">1</text>
+                <text class="uml-multiplicity" x="930" y="738">1</text>
+                <text class="uml-edge-label" x="1011" y="475">resident index</text>
+
+                <path class="uml-edge" d="M1245 560 V680" marker-start="url(#cache-composition)"></path>
+                <text class="uml-multiplicity" x="1258" y="588">1</text>
+                <text class="uml-multiplicity" x="1258" y="667">1 now</text>
+                <text class="uml-edge-label" x="1260" y="632">persistent replica</text>
+
+                <path class="uml-edge" d="M915 450 H1070"></path>
+                <text class="uml-multiplicity" x="930" y="438">0..*</text>
+                <text class="uml-multiplicity" x="1028" y="438">0..1</text>
+                <text class="uml-edge-label" x="962" y="470">pins entry</text>
+
+                <path class="uml-edge dependency" d="M585 470 H410" marker-end="url(#cache-arrow)"></path>
+                <text class="uml-edge-label" x="436" y="458">fallback d_input</text>
+
+                <path class="uml-edge" d="M585 750 H410"></path>
+                <text class="uml-edge-label" x="448" y="738">indexes key</text>
+
+                <path class="uml-edge dependency" d="M410 180 H500 V430 H585" marker-end="url(#cache-arrow)"></path>
+                <text class="uml-edge-label" x="430" y="418">uses scoped access</text>
+
+                <g aria-label="DummyTask class">
+                    <rect class="uml-box task" x="80" y="50" width="330" height="175" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="245" y="76">«caller»</text>
+                    <text class="uml-title" x="245" y="102">DummyTask</text>
+                    <line class="uml-divider" x1="80" y1="116" x2="410" y2="116"></line>
+                    <text class="uml-member" x="96" y="142">+ execute(atom, staticData)</text>
+                    <text class="uml-member" x="96" y="165">- resources: TaskGpuResources</text>
+                    <text class="uml-member" x="96" y="188">- algorithms: vector&lt;IAlgo&gt;</text>
+                </g>
+
+                <g aria-label="StaticData class">
+                    <rect class="uml-box frame" x="585" y="50" width="330" height="175" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="750" y="76">«graph-copy owner»</text>
+                    <text class="uml-title" x="750" y="102">StaticData</text>
+                    <line class="uml-divider" x1="585" y1="116" x2="915" y2="116"></line>
+                    <text class="uml-member" x="601" y="142">- gpuCacheManager</text>
+                    <line class="uml-divider" x1="585" y1="157" x2="915" y2="157"></line>
+                    <text class="uml-member" x="601" y="181">+ acquireGpuData()</text>
+                    <text class="uml-member" x="601" y="204">+ resetCache()</text>
+                </g>
+
+                <g aria-label="GpuCacheManager class">
+                    <rect class="uml-box frame" x="1070" y="50" width="350" height="200" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="1245" y="76">«bounded cache manager»</text>
+                    <text class="uml-title" x="1245" y="102">GpuCacheManager</text>
+                    <line class="uml-divider" x1="1070" y1="116" x2="1420" y2="116"></line>
+                    <text class="uml-member" x="1086" y="142">- entries[K]</text>
+                    <text class="uml-member" x="1086" y="165">- residencyTable</text>
+                    <text class="uml-member" x="1086" y="188">- global LRU / active leases</text>
+                    <line class="uml-divider" x1="1070" y1="202" x2="1420" y2="202"></line>
+                    <text class="uml-member" x="1086" y="228">+ acquire() / resetCache()</text>
+                </g>
+
+                <g aria-label="TaskGpuResources class">
+                    <rect class="uml-box task" x="80" y="350" width="330" height="175" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="245" y="376">«fallback owner»</text>
+                    <text class="uml-title" x="245" y="402">TaskGpuResources</text>
+                    <line class="uml-divider" x1="80" y1="416" x2="410" y2="416"></line>
+                    <text class="uml-member" x="96" y="442">+ stream: cudaStream_t</text>
+                    <text class="uml-member" x="96" y="465">+ h_in: pinned bytes</text>
+                    <text class="uml-member" x="96" y="488">+ d_input: persistent fallback</text>
+                </g>
+
+                <g aria-label="GpuDataAccess class">
+                    <rect class="uml-box frame" x="585" y="350" width="330" height="190" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="750" y="376">«scoped non-owning lease»</text>
+                    <text class="uml-title" x="750" y="402">GpuDataAccess</text>
+                    <line class="uml-divider" x1="585" y1="416" x2="915" y2="416"></line>
+                    <text class="uml-member" x="601" y="442">- owner / entryIndex / key</text>
+                    <text class="uml-member" x="601" y="465">- d_data / stream / source</text>
+                    <line class="uml-divider" x1="585" y1="480" x2="915" y2="480"></line>
+                    <text class="uml-member" x="601" y="505">+ data() / writableData()</text>
+                    <text class="uml-member" x="601" y="528">+ complete(success)</text>
+                </g>
+
+                <g aria-label="GpuCacheEntry class">
+                    <rect class="uml-box frame" x="1070" y="350" width="350" height="210" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="1245" y="376">«reusable persistent entry»</text>
+                    <text class="uml-title" x="1245" y="402">GpuCacheEntry</text>
+                    <line class="uml-divider" x1="1070" y1="416" x2="1420" y2="416"></line>
+                    <text class="uml-member" x="1086" y="442">- metadata: FrameMetadata</text>
+                    <text class="uml-member" x="1086" y="465">- state / activeAccesses</text>
+                    <text class="uml-member" x="1086" y="488">- LRU links</text>
+                    <text class="uml-member" x="1086" y="511">- replicas: vector&lt;GpuReplica&gt;</text>
+                    <line class="uml-divider" x1="1070" y1="526" x2="1420" y2="526"></line>
+                    <text class="uml-member" x="1086" y="550">+ initialize() / release()</text>
+                </g>
+
+                <g aria-label="GpuDataKey class">
+                    <rect class="uml-box frame" x="80" y="680" width="330" height="145" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="245" y="706">«value object»</text>
+                    <text class="uml-title" x="245" y="732">GpuDataKey</text>
+                    <line class="uml-divider" x1="80" y1="746" x2="410" y2="746"></line>
+                    <text class="uml-member" x="96" y="772">+ frameId: uint64_t</text>
+                    <text class="uml-member" x="96" y="795">+ cameraId: uint32_t</text>
+                </g>
+
+                <g aria-label="GpuResidencyTable class">
+                    <rect class="uml-box frame" x="585" y="660" width="330" height="180" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="750" y="686">«fixed open addressing»</text>
+                    <text class="uml-title" x="750" y="712">GpuResidencyTable</text>
+                    <line class="uml-divider" x1="585" y1="726" x2="915" y2="726"></line>
+                    <text class="uml-member" x="601" y="752">- slots[S] / residentLimit</text>
+                    <line class="uml-divider" x1="585" y1="767" x2="915" y2="767"></line>
+                    <text class="uml-member" x="601" y="792">+ find(key, entryIndex)</text>
+                    <text class="uml-member" x="601" y="815">+ insert() / erase()</text>
+                </g>
+
+                <g aria-label="GpuReplica class">
+                    <rect class="uml-box gpu" x="1070" y="680" width="350" height="145" rx="10"></rect>
+                    <text class="uml-stereotype-text" x="1245" y="706">«persistent device allocation»</text>
+                    <text class="uml-title" x="1245" y="732">GpuReplica</text>
+                    <line class="uml-divider" x1="1070" y1="746" x2="1420" y2="746"></line>
+                    <text class="uml-member" x="1086" y="772">+ gpuId: int</text>
+                    <text class="uml-member" x="1086" y="795">+ d_data: void* / valid: bool</text>
+                </g>
+            </svg>
+        </div>
+    </section>
+
+    <section class="section">
+        <h2>Class details</h2>
         <div class="class-grid">
             <article class="class-card gpu-card wide">
                 <header><span class="stereotype">process-wide service</span><h3>GpuContextManager</h3></header>

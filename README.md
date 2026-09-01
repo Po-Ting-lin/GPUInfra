@@ -49,7 +49,7 @@ a hit. Because the current input is immutable, a miss re-uploads from
   future payload constraints.
 - [`gpuinfra_class_diagram.html`](gpuinfra_class_diagram.html) and
   [`gpuinfra_resource_plot.html`](gpuinfra_resource_plot.html) visualize
-  ownership and hit/fallback flow.
+  UML ownership, multiplicity, resources, and hit/fallback flow.
 - [`gpu_cache_explained.html`](gpu_cache_explained.html) gives the complete
   incoming-frame walkthrough for K, residency slots, global LRU, cache
   hit/fill/fallback, and allocation lifetime.
