@@ -15,6 +15,13 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData);
 
 實際導入前必須確認 framework 能提供：
 
+- task construction 後立即且只呼叫一次 parameter-table registration，並在
+  初始 values 完整定義後才呼叫 load；
+- 明確的 start/stop execution-cycle hooks，且 stop 發生在所有 in-flight
+  execute 結束之後、unload 之前；示範版 hooks 只做 lifecycle 狀態守門，
+  不改變 CUDA resource lifetime；
+- parameter value 真正變更時，在沒有 active execute 的邊界通知每個 task
+  instance；不可依賴每個 phase 或每個 run 都固定收到 notify；
 - graph-copy scope 的 `StaticData::init()`/`release()` 時機；
 - 每個 run 開始前、所有舊 execute 已結束且新 execute 尚未開始時，呼叫
   一次 graph-copy-scoped `StaticData::resetCache()`；不需要每個 task 各自呼叫，

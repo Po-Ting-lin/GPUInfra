@@ -818,6 +818,8 @@
                 <h3>DummyGraph <span>scheduler owner</span></h3>
                 <ul>
                     <li>管理 ready、in-flight、terminal 與 phase collections。</li>
+                    <li>依序呼叫 task register/load/start，結束後 stop/unload。</li>
+                    <li>parameter revision 真的改變時，只在 quiescent boundary 通知。</li>
                     <li>先選 frame、task instance、NUMA-local worker，之後才查 cache。</li>
                     <li>不根據 cache hit／miss／GPU residency 改變選擇。</li>
                 </ul>
@@ -1054,7 +1056,7 @@
             <a href="src/DataCache/GpuResidencyTable.cpp"><strong>GpuResidencyTable.cpp</strong><small>fixed open addressing、linear probing、backward-shift erase</small></a>
             <a href="src/DataCache/GpuCacheEntry.cpp"><strong>GpuCacheEntry.cpp</strong><small>persistent GPU replica allocation 與 validity</small></a>
             <a href="src/DataCache/GpuDataAccess.cpp"><strong>GpuDataAccess.cpp</strong><small>RAII lease、stream completion、publish/abort</small></a>
-            <a href="graph.md"><strong>graph.md</strong><small>不可修改的 golden scheduler 與 task lifecycle</small></a>
+            <a href="graph.md"><strong>graph.md</strong><small>與真實 framework 對齊的 authoritative scheduler 與 task lifecycle</small></a>
         </div>
     </section>
 </main>

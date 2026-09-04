@@ -349,6 +349,20 @@
     </section>
 
     <section class="panel">
+        <h2>Graph and task lifecycle</h2>
+        <div class="flow">
+            <div class="flow-step"><div><strong>Register schema</strong><small>once, immediately after task construction</small></div></div>
+            <div class="flow-step"><div><strong>Define values</strong><small>shared schema becomes sealed</small></div></div>
+            <div class="flow-step"><div><strong>Load</strong><small>allocate resources + apply initial values</small></div></div>
+            <div class="flow-step"><div><strong>Start</strong><small>enter one execution cycle</small></div></div>
+            <div class="flow-step"><div><strong>Warmup + timed</strong><small>many execute calls</small></div></div>
+            <div class="flow-step"><div><strong>Stop</strong><small>after all executions finish</small></div></div>
+            <div class="flow-step"><div><strong>Unload</strong><small>release task resources</small></div></div>
+        </div>
+        <p class="flow-note"><code>notifyParameters()</code> is a side hook used only when the parameter revision changes at a quiescent boundary. Warmup and timed share one start/stop cycle and do not notify automatically. In this simulation, task <code>start()/stop()</code> only validate lifecycle state and perform no CUDA allocation or release.</p>
+    </section>
+
+    <section class="panel">
         <h2>Scheduler rendezvous</h2>
         <div class="assignment">
             <div class="box" style="border-color: var(--frame)"><strong>ReadyFrame</strong><br>FrameCpuAtom only</div>
@@ -408,6 +422,7 @@
             <div class="rule"><strong style="color: var(--frame)">CPU input reconstructs</strong><span>FrameCpuAtom owns immutable bytes used by every fill or fallback H2D.</span></div>
             <div class="rule"><strong style="color: var(--frame)">Active entries are safe</strong><span>Reader/fill leases prevent eviction; incomplete fills return to Empty.</span></div>
             <div class="rule"><strong style="color: var(--task)">Task fallback is persistent</strong><span>Each TaskGpuResources owns one d_input allocated in load and freed in unload.</span></div>
+            <div class="rule"><strong style="color: var(--task)">Task lifecycle is explicit</strong><span>Registration precedes load; graph start/stop bound every execute call; changed parameters notify only while execution is quiescent.</span></div>
             <div class="rule"><strong style="color: var(--task)">Task is graph-guarded</strong><span>DummyGraph removes it from freeTasks for the whole execute call; the task owns no atomic scheduling guard.</span></div>
             <div class="rule"><strong style="color: var(--thread)">Thread is temporary</strong><span>A worker owns only CPU affinity and one active call, never task or frame state.</span></div>
             <div class="rule"><strong>Hot path is fixed</strong><span>Fixed-slot insertion and erase are allowed, but there is no allocation, container growth, rehash, or device-wide synchronization; CUDA work runs outside the short metadata mutex.</span></div>

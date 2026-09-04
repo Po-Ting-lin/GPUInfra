@@ -76,10 +76,35 @@ bool loadTask(DummyTask& task, const GpuLocation& location) {
     return loaded;
 }
 
-bool notifyTask(DummyTask& task) {
-    ParameterRegistry registry;
-    ParameterSnapshot snapshot;
-    return task.registerParameters(registry) && registry.setString(DummyTask::NAME_PARAMETER, "test") && registry.setBytes(DummyTask::BLOB_PARAMETER, {1, 2, 3}) && registry.seal() && registry.snapshot(snapshot) && task.notifyParameters(snapshot);
+bool configureTaskParameters(DummyTask& task, ParameterRegistry& registry) {
+    return task.registerParameters(registry) && registry.setString(DummyTask::NAME_PARAMETER, "test") && registry.setBytes(DummyTask::BLOB_PARAMETER, {1, 2, 3}) && registry.seal();
+}
+
+bool startTask(DummyTask& task, const GpuLocation& location) {
+    bool started = false;
+    std::thread setup([&task, &location, &started] {
+        started = GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode) && task.start();
+    });
+    setup.join();
+    return started;
+}
+
+bool stopTask(DummyTask& task, const GpuLocation& location) {
+    bool stopped = false;
+    std::thread teardown([&task, &location, &stopped] {
+        stopped = GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode) && task.stop();
+    });
+    teardown.join();
+    return stopped;
+}
+
+bool notifyTask(DummyTask& task, const ParameterSnapshot& parameters, const GpuLocation& location) {
+    bool notified = false;
+    std::thread notifier([&task, &parameters, &location, &notified] {
+        notified = GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode) && task.notifyParameters(parameters);
+    });
+    notifier.join();
+    return notified;
 }
 
 bool unloadTask(DummyTask& task, const GpuLocation& location) {
@@ -191,15 +216,18 @@ void testParameterRegistry(TestContext& test) {
     test.expect(!registry.registerParameter("value", ParameterType::Bytes), "reject schema type mismatch");
     test.expect(!registry.setBytes("value", {1}), "reject value type mismatch");
     test.expect(registry.setString("value", "ready"), "set registered string value");
+    const std::uint64_t initialRevision = registry.revision();
     test.expect(registry.seal(), "seal complete registry");
-    test.expect(registry.isSealed(), "registry exposes sealed state");
-    test.expect(!registry.setString("value", "changed"), "reject update after seal");
-    test.expect(!registry.registerParameter("late", ParameterType::String), "reject registration after seal");
-    test.expect(registry.snapshot(snapshot), "create immutable snapshot");
+    test.expect(registry.isSealed(), "registry exposes sealed schema state");
+    test.expect(!registry.registerParameter("late", ParameterType::String), "reject schema registration after seal");
+    test.expect(registry.snapshot(snapshot) && snapshot.revision() == initialRevision, "snapshot captures the initial parameter revision");
     std::string value;
     test.expect(snapshot.getString("value", value) && value == "ready", "read typed snapshot value");
     std::vector<std::uint8_t> bytes;
     test.expect(!snapshot.getBytes("value", bytes), "reject snapshot type mismatch");
+    test.expect(registry.setString("value", "ready") && registry.revision() == initialRevision, "same value preserves parameter revision");
+    test.expect(registry.setString("value", "changed") && registry.revision() == initialRevision + 1, "changed value advances parameter revision after schema seal");
+    test.expect(registry.snapshot(snapshot) && snapshot.revision() == initialRevision + 1 && snapshot.getString("value", value) && value == "changed", "updated snapshot exposes changed parameter value");
 }
 
 void testGpuResidencyTable(TestContext& test) {
@@ -415,7 +443,9 @@ void testFrameDataAcrossTaskInstances(TestContext& test, const GpuLocation& loca
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
     DummyTask firstTask(90, location.gpuId, ExecutionModel::Batched, runtime);
     DummyTask secondTask(91, location.gpuId, ExecutionModel::Batched, runtime);
-    const bool tasksReady = loadTask(firstTask, location) && loadTask(secondTask, location) && notifyTask(firstTask) && notifyTask(secondTask);
+    ParameterRegistry parameters;
+    const bool parametersReady = firstTask.registerParameters(parameters) && secondTask.registerParameters(parameters) && parameters.setString(DummyTask::NAME_PARAMETER, "test") && parameters.setBytes(DummyTask::BLOB_PARAMETER, {1, 2, 3}) && parameters.seal();
+    const bool tasksReady = parametersReady && loadTask(firstTask, location) && loadTask(secondTask, location) && startTask(firstTask, location) && startTask(secondTask, location);
     test.expect(tasksReady, "prepare two task instances for frame GPU continuity");
 
     const FrameMetadata metadata = makeFrameMetadata(29, runtime);
@@ -446,6 +476,9 @@ void testFrameDataAcrossTaskInstances(TestContext& test, const GpuLocation& loca
     }
     test.expect(outputsMatch, "second task reads frame-owned GPU data instead of modified host input");
 
+    const bool firstTaskStopped = stopTask(firstTask, location);
+    const bool secondTaskStopped = stopTask(secondTask, location);
+    test.expect(firstTaskStopped && secondTaskStopped, "stop both frame continuity task instances");
     test.expect(releaseStaticData(staticData, location), "release shared StaticData frame GPU data");
     const bool firstTaskUnloaded = unloadTask(firstTask, location);
     const bool secondTaskUnloaded = unloadTask(secondTask, location);
@@ -514,7 +547,8 @@ void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location) {
 void testTaskFallbackExecution(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
     DummyTask task(92, location.gpuId, ExecutionModel::Batched, runtime);
-    const bool taskReady = loadTask(task, location) && notifyTask(task);
+    ParameterRegistry parameters;
+    const bool taskReady = configureTaskParameters(task, parameters) && loadTask(task, location) && startTask(task, location);
     test.expect(taskReady, "prepare task for zero-capacity fallback execution");
 
     const FrameMetadata metadata = makeFrameMetadata(30, runtime);
@@ -532,6 +566,7 @@ void testTaskFallbackExecution(TestContext& test, const GpuLocation& location) {
         }
     }
 
+    test.expect(stopTask(task, location), "stop fallback execution task");
     test.expect(releaseStaticData(staticData, location), "release zero-capacity StaticData");
     test.expect(unloadTask(task, location), "unload fallback execution task");
 }
@@ -539,8 +574,8 @@ void testTaskFallbackExecution(TestContext& test, const GpuLocation& location) {
 void testLifecycleAndResults(TestContext& test, const GpuLocation& location, ExecutionModel model, int taskId) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
     DummyTask task(taskId, location.gpuId, model, runtime);
-    ParameterRegistry prematureRegistry;
-    ParameterSnapshot prematureSnapshot;
+    ParameterRegistry parameters;
+    ParameterSnapshot parameterSnapshot;
     const FrameMetadata prematureMetadata = makeFrameMetadata(1, runtime);
     const FrameMetadata firstMetadata = makeFrameMetadata(7, runtime);
     const FrameMetadata secondMetadata = makeFrameMetadata(19, runtime);
@@ -550,9 +585,15 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
     const FrameMetadata mismatchedRecordMetadata = makeFrameMetadata(25, runtime);
     FrameCpuAtom prematureAtom(prematureMetadata, runtime);
     test.expect(prematureAtom.result.id == prematureMetadata.key.frameId && prematureAtom.result.ok && prematureAtom.result.outputs.size() == 3, "FrameCpuAtom owns a preallocated result");
-    test.expect(!task.registerParameters(prematureRegistry), "reject registerParameters before load");
-    test.expect(!task.notifyParameters(prematureSnapshot), "reject notifyParameters before registration");
+    test.expect(!loadTask(task, location), "reject load before parameter registration");
+    test.expect(!task.notifyParameters(parameterSnapshot), "reject notifyParameters before registration");
+    test.expect(task.registerParameters(parameters), "register parameters immediately after construction");
+    test.expect(task.lifecycle() == TaskLifecycle::Registered, "task reaches registered lifecycle state before load");
+    test.expect(!task.registerParameters(parameters), "reject repeated parameter registration");
+    test.expect(!loadTask(task, location), "reject load before initial parameters are complete");
+    test.expect(parameters.setString(DummyTask::NAME_PARAMETER, "test") && parameters.setBytes(DummyTask::BLOB_PARAMETER, {1, 2, 3}) && parameters.seal() && parameters.snapshot(parameterSnapshot), "define initial parameters before load");
     test.expect(loadTask(task, location), "load task resources");
+    test.expect(task.lifecycle() == TaskLifecycle::Loaded, "load applies initial parameters without a notify callback");
 
     StaticData staticData;
     test.expect(initializeStaticData(staticData, location, runtime), "initialize task StaticData cache");
@@ -560,9 +601,16 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
     ++wrongLayoutMetadata.width;
     test.expect(staticData.validateFrame(firstMetadata), "accept an arbitrary frame with the configured layout");
     test.expect(!staticData.validateFrame(wrongLayoutMetadata), "reject an arbitrary frame with mismatched metadata");
-    test.expect(staticData.execute() && !task.execute(prematureAtom, staticData), "reject execute before notification");
+    test.expect(staticData.execute() && !task.execute(prematureAtom, staticData), "reject execute before start");
     test.expect(!task.load(), "reject repeated load");
-    test.expect(notifyTask(task), "register and notify shared parameters");
+    test.expect(!stopTask(task, location), "reject stop before start");
+    test.expect(startTask(task, location), "start task execution cycle");
+    test.expect(task.lifecycle() == TaskLifecycle::Started, "task reaches started lifecycle state");
+    test.expect(!startTask(task, location), "reject repeated task start");
+
+    const std::uint64_t initialParameterRevision = parameters.revision();
+    test.expect(parameters.setString(DummyTask::NAME_PARAMETER, "test") && parameters.revision() == initialParameterRevision && parameters.snapshot(parameterSnapshot) && notifyTask(task, parameterSnapshot, location), "same parameter values preserve the applied revision");
+    test.expect(parameters.setString(DummyTask::NAME_PARAMETER, "changed") && parameters.revision() == initialParameterRevision + 1 && parameters.snapshot(parameterSnapshot) && notifyTask(task, parameterSnapshot, location), "changed parameters notify a started task at a quiescent boundary");
 
     FrameCpuAtom firstAtom(firstMetadata, runtime);
     FrameCpuAtom secondAtom(secondMetadata, runtime);
@@ -627,6 +675,9 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
     test.expect(staticData.execute() && !task.execute(mismatchedAtom, staticData), "reject an atom with a mismatched dtype");
     test.expect(!mismatchedAtom.result.ok && staticData.validateFrame(mismatchedRecordMetadata), "wrong-layout frame fails without affecting other incoming frames");
 
+    test.expect(stopTask(task, location), "stop task execution cycle");
+    test.expect(task.lifecycle() == TaskLifecycle::Stopped, "task reaches stopped lifecycle state");
+    test.expect(!task.execute(prematureAtom, staticData), "reject execute after stop");
     test.expect(releaseStaticData(staticData, location), "release task StaticData pool");
     test.expect(unloadTask(task, location), "unload task resources");
     test.expect(task.unload(), "repeated unload is harmless");
@@ -678,17 +729,43 @@ void testIndependentPools(TestContext& test, const GpuLocation& location) {
     {
         GraphSink sink;
         std::atomic<bool> cancellation{false};
-        DummyGraph graph(makeGraphConfig(location, 1, 2, ExecutionModel::Batched), sink, cancellation);
+        GraphConfig config = makeGraphConfig(location, 1, 2, ExecutionModel::Batched);
+        config.warmupFramesPerGpu = 1;
+        DummyGraph graph(config, sink, cancellation);
         test.expect(graph.initialize(), "initialize one-task two-worker graph");
+        PhaseGate beforeStartGate;
+        test.expect(!graph.startPhase(FramePhase::Warmup, beforeStartGate), "reject frame submission before graph start");
+        beforeStartGate.release();
+        AlgoParams loadedParameters = config.parameters;
+        loadedParameters.blob = {4, 5, 6};
+        test.expect(graph.changeParameters(loadedParameters), "notify changed parameters while graph tasks are loaded and quiescent");
+        test.expect(graph.start(), "start one graph execution cycle");
+        test.expect(graph.changeParameters(loadedParameters), "same graph parameters require no task notification");
         PhaseGate invalidPhaseGate;
         test.expect(!graph.startPhase(static_cast<FramePhase>(99), invalidPhaseGate), "reject an invalid graph-owned frame phase");
         invalidPhaseGate.release();
+
+        PhaseGate warmupGate;
+        test.expect(graph.startPhase(FramePhase::Warmup, warmupGate), "submit warmup inside the started execution cycle");
+        AlgoParams changedParameters = loadedParameters;
+        changedParameters.name = "graph-test-updated";
+        test.expect(!graph.changeParameters(changedParameters), "reject parameter changes while a phase is active");
+        test.expect(!graph.stop(), "reject graph stop while a phase is active");
+        warmupGate.release();
+        test.expect(graph.waitForPhase(), "finish warmup before changing parameters");
+        test.expect(graph.changeParameters(changedParameters), "notify changed parameters at a quiescent phase boundary");
+
         test.expect(runGraphPhase(graph, FramePhase::Timed), "run one-task two-worker graph");
         PhaseGate repeatedPhaseGate;
         test.expect(!graph.startPhase(FramePhase::Timed, repeatedPhaseGate), "graph-owned phase state rejects repeated submission");
         repeatedPhaseGate.release();
         test.expect(graph.lastMaxConcurrentExecutions() == 1, "DummyGraph free-task pool prevents concurrent reuse of its sole task instance");
-        test.expect(sink.count() == 8 && sink.failureCount() == 0, "one-task graph completes every frame once");
+        test.expect(sink.count() == 9 && sink.failureCount() == 0, "one-task graph completes every frame once across both phases");
+        test.expect(graph.stop(), "stop graph after all frame executions finish");
+        AlgoParams stoppedParameters = changedParameters;
+        stoppedParameters.name = "graph-test-stopped";
+        test.expect(graph.changeParameters(stoppedParameters), "notify changed parameters after the execution cycle stops and before unload");
+        test.expect(!graph.stop(), "reject repeated graph stop");
         test.expect(graph.shutdown(), "shutdown one-task graph");
     }
     {
@@ -696,9 +773,11 @@ void testIndependentPools(TestContext& test, const GpuLocation& location) {
         std::atomic<bool> cancellation{false};
         DummyGraph graph(makeGraphConfig(location, 2, 1, ExecutionModel::Interleaved), sink, cancellation);
         test.expect(graph.initialize(), "initialize two-task one-worker graph");
+        test.expect(graph.start(), "start two-task one-worker graph");
         test.expect(runGraphPhase(graph, FramePhase::Timed), "run two-task one-worker graph");
         test.expect(graph.lastMaxConcurrentExecutions() == 1, "worker pool limits concurrency independently");
         test.expect(sink.count() == 8 && sink.failureCount() == 0, "one-worker graph completes every frame once");
+        test.expect(graph.stop(), "stop two-task one-worker graph");
         test.expect(graph.shutdown(), "shutdown one-worker graph");
     }
 }
@@ -737,6 +816,9 @@ void testConditionalNumaGraphs(TestContext& test, const std::vector<GpuLocation>
     for (const std::unique_ptr<DummyGraph>& graph : graphs) {
         ok = graph->initialize() && ok;
     }
+    for (const std::unique_ptr<DummyGraph>& graph : graphs) {
+        ok = graph->start() && ok;
+    }
     PhaseGate gate;
     for (const std::unique_ptr<DummyGraph>& graph : graphs) {
         ok = graph->startPhase(FramePhase::Timed, gate) && ok;
@@ -744,6 +826,9 @@ void testConditionalNumaGraphs(TestContext& test, const std::vector<GpuLocation>
     gate.release();
     for (const std::unique_ptr<DummyGraph>& graph : graphs) {
         ok = graph->waitForPhase() && ok;
+    }
+    for (const std::unique_ptr<DummyGraph>& graph : graphs) {
+        ok = graph->stop() && ok;
     }
     for (const std::unique_ptr<DummyGraph>& graph : graphs) {
         ok = graph->shutdown() && ok;
@@ -759,9 +844,11 @@ void testGraphCancellation(TestContext& test, const GpuLocation& location) {
     config.timedFramesPerGpu = 4;
     DummyGraph graph(config, sink, cancellation);
     test.expect(graph.initialize(), "initialize graph used for failure propagation");
+    test.expect(graph.start(), "start graph used for failure propagation");
     test.expect(!runGraphPhase(graph, FramePhase::Warmup), "execution failure fails graph phase");
     test.expect(cancellation.load(std::memory_order_acquire), "execution failure raises global cancellation");
     test.expect(sink.count() == 2 && sink.failureCount() == 2, "active failed phase gives every frame one terminal result");
+    test.expect(graph.stop(), "failed graph still stops after in-flight execution ends");
     test.expect(graph.shutdown(), "failed graph still unloads cleanly");
     test.expect(sink.count() == 6 && sink.failureCount() == 6, "shutdown cancels every preallocated future frame exactly once");
 }

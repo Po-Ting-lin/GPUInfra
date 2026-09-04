@@ -69,6 +69,7 @@ The worker remains NUMA-bound; the selected task remains GPU-bound.
 | `GpuContextManager` | Process-wide discovery, NUMA mapping, task registry, primary-context lifetime |
 | `GpuContext` | One GPU's identity, NUMA node, retained context, active task table |
 | `DummyGraph` | One NUMA graph copy, workers, task pool, warmup/timed CPU-atom collections, queues, `StaticData`, parameters |
+| `ParameterRegistry` | Graph-owned sealed schema, updateable typed values, and monotonic change revision |
 | `FrameCpuAtom` | CPU input byte vector, intrinsic metadata, and preallocated result |
 | `StaticData` | Fixed frame layout, mandatory run-boundary reset, and bounded GPU cache |
 | `GpuCacheManager` | Fixed cache-entry array, fixed open-addressing residency table, short metadata mutex, lease counts, empty stack, and intrusive LRU |
@@ -97,10 +98,12 @@ host execution                  -> temporarily selected graph worker
 
 ```text
 validate every graph GPU belongs to the graph NUMA node
-  -> create/load every DummyTask
-  -> allocate stream, h_in, d_input, scratch, algo-private resources
-  -> register shared parameter schema
-  -> seal and notify immutable values
+  -> construct each DummyTask
+       -> immediately register its parameter schema exactly once
+  -> define initial parameter values and seal the shared schema
+  -> load every DummyTask
+       -> allocate stream, h_in, d_input, scratch, algo-private resources
+       -> apply the initial parameter snapshot inside load
   -> create all FrameCpuAtoms and preallocate their result buffers
   -> StaticData::init()
        -> store fixed frame layout
@@ -109,6 +112,23 @@ validate every graph GPU belongs to the graph NUMA node
        -> allocate fixed residency table, empty stack, and LRU metadata
   -> start and affinity-check workers
 ```
+
+After initialization, `DummyGraph::start()` invokes each task's empty
+lifecycle `start()` hook. Warmup and timed phases then share one execution
+cycle. `DummyGraph::stop()` is accepted only after all phase work is quiescent
+and invokes every task's `stop()` hook before unload.
+
+The simulated task lifecycle is:
+
+```text
+Constructed -> Registered -> Loaded -> Started -> Stopped -> Unloaded
+```
+
+Parameter notification is not a lifecycle state. The schema remains sealed,
+but existing values may change. A monotonically increasing revision changes
+only when a value differs. `DummyGraph::changeParameters()` notifies every task
+at a quiescent boundary; equal values and ordinary phase boundaries do not
+generate notifications.
 
 There is no 220-frame limit. The demo default happens to configure 20 warmup
 plus 200 timed frames. They use only four device cache entries by default and
@@ -245,7 +265,8 @@ in-flight calls return, all workers join, and teardown runs on a NUMA-pinned
 thread:
 
 ```text
-StaticData::release() cache allocations
+DummyTask::stop() execution-cycle hook
+  -> StaticData::release() cache allocations
   -> clear CPU atoms
   -> DummyTask::unload() task/algo allocations and streams
   -> unregister tasks
@@ -278,5 +299,7 @@ The CUDA tests verify:
 - release rejection while any lease is active;
 - wrong-GPU rejection;
 - data reuse across task instances and pure-fallback result correctness;
-- task lifecycle, thread mobility, exclusive graph checkout, both execution
-  models, cancellation, and idempotent cleanup.
+- register-before-load ordering, initial parameter application during load,
+  change-only notification, and explicit graph/task start-stop barriers;
+- thread mobility, exclusive graph checkout, both execution models,
+  cancellation, and idempotent cleanup.

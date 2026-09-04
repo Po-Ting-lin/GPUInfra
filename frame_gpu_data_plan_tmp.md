@@ -100,7 +100,11 @@ There is no fixed 220-frame capacity or frame registration list.
 Cold initialization:
 
 ```text
+construct DummyTask
+  -> immediately register parameter schema
+define initial parameter values
 DummyTask::load()
+  -> apply initial parameter values
   -> allocate one d_input fallback per task instance
 
 StaticData::init()
@@ -108,7 +112,14 @@ StaticData::init()
   -> allocate K GpuCacheEntries
   -> allocate one persistent GpuReplica per entry
   -> allocate fixed residency table and empty/LRU victim structures
+
+DummyGraph::start()
+  -> call the resource-free DummyTask::start() lifecycle hook
 ```
+
+Warmup and timed phases share this one execution cycle. Parameter notification
+is change-driven and may run only at a quiescent boundary; phase submission
+does not notify tasks automatically.
 
 Later cold run boundaries do not reallocate the device buffers:
 
@@ -128,6 +139,8 @@ mandatory before a new run reuses an identity with different bytes.
 Teardown happens only after workers stop:
 
 ```text
+DummyGraph::stop()
+  -> call DummyTask::stop() after all execute calls finish
 StaticData::release()
   -> release all cache-entry device allocations
 DummyTask::unload()

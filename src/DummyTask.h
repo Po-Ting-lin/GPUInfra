@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -14,9 +15,10 @@ class StaticData;
 
 enum class TaskLifecycle {
     Constructed,
-    Loaded,
     Registered,
-    Notified,
+    Loaded,
+    Started,
+    Stopped,
     Failed,
     Unloaded,
 };
@@ -29,12 +31,15 @@ public:
     DummyTask(int instanceId, int gpuId, ExecutionModel model, const AlgoRuntimeInfo& runtime);
     ~DummyTask();
 
-    bool load();
     bool registerParameters(ParameterRegistry& registry);
+    bool load();
     bool notifyParameters(const ParameterSnapshot& parameters);
+    bool start();
 
-    // DummyGraph owns execute/unload serialization. Direct concurrent calls are unsupported.
+    // DummyGraph owns lifecycle and execute serialization. Direct concurrent
+    // calls are unsupported.
     bool execute(FrameCpuAtom& atom, StaticData& staticData);
+    bool stop();
     bool unload();
 
     int instanceId() const;
@@ -45,6 +50,7 @@ public:
     DummyTask& operator=(const DummyTask&) = delete;
 
 private:
+    bool applyParameters(const ParameterSnapshot& parameters);
     bool releaseResources();
 
     int id;
@@ -53,5 +59,10 @@ private:
     AlgoRuntimeInfo algoRuntime;
     TaskGpuResources resources;
     std::vector<std::unique_ptr<IAlgo>> algorithms;
+
+    // Simulates parameter-table access supplied by the real task base class.
+    // DummyGraph owns the registry and keeps it alive longer than every task.
+    ParameterRegistry* parameterRegistry = nullptr;
+    std::uint64_t appliedParameterRevision = 0;
     TaskLifecycle state = TaskLifecycle::Constructed;
 };

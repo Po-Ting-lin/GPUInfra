@@ -23,24 +23,48 @@ examples below describe one graph copy and its NUMA-local graph threads.
 
 ## Task API and lifecycle
 
-Each task class provides the following API:
+The real framework invokes protected `doXxx()` callbacks. This simulation uses
+short public names with the same ordering and meaning:
 
-1. `load()`: Allocate the resources required by the task instance.
-2. `registerParameters()`: Register the task's parameters.
-3. `notifyParameters()`: Apply the parameter values for the current run.
-4. `execute()`: Process one frame at this graph stage.
-5. `unload()`: Release the resources owned by the task instance.
+| Simulation | Real callback | Meaning |
+| --- | --- | --- |
+| `registerParameters()` | `doRegisterTaskTables()` | Register the parameter schema once, immediately after construction. |
+| `load()` | `doLoad()` | Allocate parameter-derived resources after all initial parameter values are defined. |
+| `notifyParameters()` | `doNotifyParameters()` | Apply values that actually changed while no `execute()` call is active. |
+| `start()` | `doStart()` | Enter the execution cycle. |
+| `execute()` | `doExecute()` | Process one frame at this graph stage. |
+| `stop()` | `doStop()` | Leave the execution cycle after all calls to `execute()` finish. |
+| `unload()` | `doUnload()` | Release resources owned by the task instance. |
 
 The lifecycle is:
 
 ```text
-load -> registerParameters -> notifyParameters -> execute (for each frame) -> unload
+constructor
+  -> registerParameters
+  -> define initial parameter values
+  -> load
+  -> [notifyParameters only when values later change]
+  -> start
+  -> execute (zero or more frames)
+  -> stop
+  -> unload
+  -> destructor
 ```
 
-`load()` and `registerParameters()` are initialization operations.
-`notifyParameters()` runs once for every task instance before frame processing
-begins for the current run. `execute()` is the per-frame operation, and
-`unload()` is the shutdown operation.
+`registerParameters()` is called exactly once for each task instance, before
+any other task callback. Initial values are visible to `load()` and are treated
+as changed there, so an initial `notifyParameters()` call is not required.
+
+`notifyParameters()` is a change callback, not a mandatory per-run or per-phase
+callback. It may run repeatedly after later parameter changes, but only at a
+quiescent boundary where no `execute()` call is active. Writing the same values
+does not create a change notification.
+
+`start()` and `stop()` bound one execution cycle. `execute()` may be called many
+times between them. The real callbacks distinguish execution-cycle
+context/state from parameter-derived `load()` resources. This simulation keeps
+`start()` and `stop()` as lifecycle guards only; it intentionally leaves the
+existing CUDA allocations owned by `load()` and `unload()`.
 
 ---
 
@@ -57,19 +81,28 @@ graph copy creates six instances of `TaskA`.
 
 ### Cold path (initialization order)
 
-1. Call `TaskA::load()` once on each of the six instances.
-2. Call `TaskA::registerParameters()` once on each of the six instances.
+1. Construct each `TaskA` instance and immediately call
+   `TaskA::registerParameters()` on it.
+2. Define all initial parameter values.
+3. Call `TaskA::load()` once on each of the six instances. Each load observes
+   and applies the initial values.
+4. Call `TaskA::start()` once on each instance to begin the shared execution
+   cycle.
 
 ### Hot path (run order)
 
-1. Call `TaskA::notifyParameters()` once on each of the six instances.
-2. Call `TaskA::execute()` 200 times in total: once for each frame. Up to six
+1. Call `TaskA::execute()` 200 times in total: once for each frame. Up to six
    calls can run concurrently because six `TaskA` instances and six graph
    threads are available.
+2. If parameters change between quiescent runs or phases, call
+   `TaskA::notifyParameters()` once on every affected instance before admitting
+   more frame executions. Do not notify merely because a new phase starts.
 
 ### End cold path (shutdown order)
 
-1. Call `TaskA::unload()` once on each of the six instances.
+1. After every `TaskA::execute()` finishes, call `TaskA::stop()` once on each
+   instance.
+2. Call `TaskA::unload()` once on each instance.
 
 ### The `execute()` model for a one-task graph
 
@@ -118,30 +151,31 @@ graph copy creates six instances of each task type: six `TaskA` instances, six
 
 ### Cold path (initialization order)
 
-1. Call `TaskA::load()` once on each of its six instances.
-2. Call `TaskB::load()` once on each of its six instances.
-3. Call `TaskC::load()` once on each of its six instances.
-4. Call `TaskA::registerParameters()` once on each of its six instances.
-5. Call `TaskB::registerParameters()` once on each of its six instances.
-6. Call `TaskC::registerParameters()` once on each of its six instances.
+1. Construct every `TaskA`, `TaskB`, and `TaskC` instance. Immediately after
+   constructing an instance, call its `registerParameters()` exactly once.
+2. Define all initial parameter values.
+3. Call `load()` once on every task instance. Each load observes and applies
+   the initial values.
+4. Call `start()` once on every task instance to begin one graph execution
+   cycle.
 
 ### Hot path (run order)
 
-1. Call `TaskA::notifyParameters()` once on each of its six instances.
-2. Call `TaskB::notifyParameters()` once on each of its six instances.
-3. Call `TaskC::notifyParameters()` once on each of its six instances.
-4. For 200 frames, call each task's `execute()` method 200 times in total.
+1. For 200 frames, call each task's `execute()` method 200 times in total.
    Calls from different frames may overlap, but each individual frame must be
    processed in the order `TaskA -> TaskB -> TaskC`.
+2. If parameters change at a quiescent boundary, call `notifyParameters()` on
+   every affected instance before admitting more executions. A phase boundary
+   alone does not trigger notification.
 
 This produces 600 `execute()` calls: 200 for `TaskA`, 200 for `TaskB`, and 200
 for `TaskC`.
 
 ### End cold path (shutdown order)
 
-1. Call `TaskA::unload()` once on each of its six instances.
-2. Call `TaskB::unload()` once on each of its six instances.
-3. Call `TaskC::unload()` once on each of its six instances.
+1. After all in-flight executions finish, call `stop()` once on every task
+   instance.
+2. Call `unload()` once on every task instance.
 
 ### The `execute()` model for a multi-task graph
 

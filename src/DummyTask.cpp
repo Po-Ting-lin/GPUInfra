@@ -51,11 +51,24 @@ DummyTask::DummyTask(int instanceId, int gpuId, ExecutionModel model, const Algo
       algoRuntime(runtime) {}
 
 DummyTask::~DummyTask() {
+    if (state == TaskLifecycle::Started) {
+        stop();
+    }
     unload();
 }
 
+bool DummyTask::registerParameters(ParameterRegistry& registry) {
+    if (state != TaskLifecycle::Constructed || !registry.registerParameter(NAME_PARAMETER, ParameterType::String) || !registry.registerParameter(BLOB_PARAMETER, ParameterType::Bytes)) {
+        return false;
+    }
+    parameterRegistry = &registry;
+    state = TaskLifecycle::Registered;
+    return true;
+}
+
 bool DummyTask::load() {
-    if (state != TaskLifecycle::Constructed || id < 0 || gpu < 0 || !validRuntime(algoRuntime)) {
+    ParameterSnapshot initialParameters;
+    if (state != TaskLifecycle::Registered || parameterRegistry == nullptr || !parameterRegistry->snapshot(initialParameters) || id < 0 || gpu < 0 || !validRuntime(algoRuntime)) {
         return false;
     }
 
@@ -122,6 +135,9 @@ bool DummyTask::load() {
     if (ok) {
         CUDA_CHECK(cudaStreamSynchronize(resources.stream), ok = false);
     }
+    if (ok && !applyParameters(initialParameters)) {
+        ok = false;
+    }
     if (!ok) {
         state = TaskLifecycle::Failed;
         releaseResources();
@@ -132,38 +148,55 @@ bool DummyTask::load() {
     return true;
 }
 
-bool DummyTask::registerParameters(ParameterRegistry& registry) {
-    if (state != TaskLifecycle::Loaded || !registry.registerParameter(NAME_PARAMETER, ParameterType::String) || !registry.registerParameter(BLOB_PARAMETER, ParameterType::Bytes)) {
+bool DummyTask::notifyParameters(const ParameterSnapshot& parameters) {
+    if (state != TaskLifecycle::Loaded && state != TaskLifecycle::Started && state != TaskLifecycle::Stopped) {
         return false;
     }
-    state = TaskLifecycle::Registered;
+    if (parameters.revision() < appliedParameterRevision) {
+        return false;
+    }
+    if (parameters.revision() == appliedParameterRevision) {
+        return true;
+    }
+    if (!GpuContextManager::makeTaskCurrent(resources) || !applyParameters(parameters)) {
+        state = TaskLifecycle::Failed;
+        return false;
+    }
+
     return true;
 }
 
-bool DummyTask::notifyParameters(const ParameterSnapshot& parameters) {
-    if (state != TaskLifecycle::Registered) {
+bool DummyTask::start() {
+    if (state != TaskLifecycle::Loaded) {
         return false;
     }
 
+    // The simulation models only the lifecycle boundary. CUDA resources keep
+    // their existing load-to-unload lifetime.
+    state = TaskLifecycle::Started;
+    return true;
+}
+
+bool DummyTask::applyParameters(const ParameterSnapshot& parameters) {
     AlgoParams values;
     if (!parameters.getString(NAME_PARAMETER, values.name) || !parameters.getBytes(BLOB_PARAMETER, values.blob)) {
         return false;
     }
 
-    // notify each parameter
+    // Apply one complete parameter revision to every private algorithm.
     for (const std::unique_ptr<IAlgo>& algorithm : algorithms) {
         if (!algorithm->notifyParameter(values)) {
             return false;
         }
     }
 
-    state = TaskLifecycle::Notified;
+    appliedParameterRevision = parameters.revision();
     return true;
 }
 
 bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
     atom.result.id = atom.metadata.key.frameId;
-    if (state != TaskLifecycle::Notified) {
+    if (state != TaskLifecycle::Started) {
         atom.result.ok = false;
         return false;
     }
@@ -248,12 +281,27 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
     return atom.result.ok;
 }
 
+bool DummyTask::stop() {
+    if (state != TaskLifecycle::Started) {
+        return false;
+    }
+
+    // DummyGraph guarantees that no execute call is active at this boundary.
+    state = TaskLifecycle::Stopped;
+    return true;
+}
+
 bool DummyTask::unload() {
     if (state == TaskLifecycle::Unloaded) {
         return true;
     }
+    if (state == TaskLifecycle::Started) {
+        return false;
+    }
 
     const bool ok = releaseResources();
+    parameterRegistry = nullptr;
+    appliedParameterRevision = 0;
     state = TaskLifecycle::Unloaded;
     return ok;
 }

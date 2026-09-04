@@ -171,9 +171,69 @@ bool DummyGraph::initialize() {
     return true;
 }
 
+bool DummyGraph::start() {
+    std::lock_guard<std::mutex> guard(schedulerLock);
+    if (!initialized || executionCycleStarted || executionCycleStopped || phaseActive || stopping || cancellation->load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    bool startSucceeded = false;
+    try {
+        std::thread setupThread([this, &startSucceeded] { startSucceeded = startOnNumaNode(); });
+        setupThread.join();
+    } catch (const std::exception&) {
+        cancellation->store(true, std::memory_order_release);
+        return false;
+    }
+    if (!startSucceeded) {
+        cancellation->store(true, std::memory_order_release);
+        return false;
+    }
+
+    executionCycleStarted = true;
+    return true;
+}
+
+bool DummyGraph::changeParameters(const AlgoParams& parameters) {
+    std::lock_guard<std::mutex> guard(schedulerLock);
+    if (!initialized || phaseActive || inFlight != 0 || stopping || cancellation->load(std::memory_order_acquire) || !parameterRegistry.isSealed()) {
+        return false;
+    }
+    if (parameters.name == config.parameters.name && parameters.blob == config.parameters.blob) {
+        return true;
+    }
+
+    const std::uint64_t previousRevision = parameterRegistry.revision();
+    if (!parameterRegistry.setString(DummyTask::NAME_PARAMETER, parameters.name) || !parameterRegistry.setBytes(DummyTask::BLOB_PARAMETER, parameters.blob) || parameterRegistry.revision() == previousRevision) {
+        return false;
+    }
+
+    ParameterSnapshot updatedSnapshot;
+    if (!parameterRegistry.snapshot(updatedSnapshot)) {
+        return false;
+    }
+
+    bool notifySucceeded = false;
+    try {
+        std::thread notifyThread([this, &updatedSnapshot, &notifySucceeded] { notifySucceeded = notifyParametersOnNumaNode(updatedSnapshot); });
+        notifyThread.join();
+    } catch (const std::exception&) {
+        cancellation->store(true, std::memory_order_release);
+        return false;
+    }
+    if (!notifySucceeded) {
+        cancellation->store(true, std::memory_order_release);
+        return false;
+    }
+
+    config.parameters = parameters;
+    parameterSnapshot = std::move(updatedSnapshot);
+    return true;
+}
+
 bool DummyGraph::startPhase(FramePhase phase, PhaseGate& gate) {
     std::lock_guard<std::mutex> guard(schedulerLock);
-    if (!initialized || !validFramePhase(phase) || phaseActive || stopping || cancellation->load(std::memory_order_acquire)) {
+    if (!initialized || !executionCycleStarted || !validFramePhase(phase) || phaseActive || stopping || cancellation->load(std::memory_order_acquire)) {
         return false;
     }
 
@@ -228,6 +288,30 @@ bool DummyGraph::waitForPhase() {
     return phaseSucceeded && !cancellation->load(std::memory_order_acquire);
 }
 
+bool DummyGraph::stop() {
+    std::lock_guard<std::mutex> guard(schedulerLock);
+    if (!initialized || !executionCycleStarted || executionCycleStopped || phaseActive || inFlight != 0 || stopping) {
+        return false;
+    }
+
+    bool stopSucceeded = false;
+    try {
+        std::thread teardownThread([this, &stopSucceeded] { stopSucceeded = stopOnNumaNode(); });
+        teardownThread.join();
+    } catch (const std::exception&) {
+        cancellation->store(true, std::memory_order_release);
+        return false;
+    }
+    if (!stopSucceeded) {
+        cancellation->store(true, std::memory_order_release);
+        return false;
+    }
+
+    executionCycleStarted = false;
+    executionCycleStopped = true;
+    return true;
+}
+
 bool DummyGraph::shutdown() {
     {
         std::lock_guard<std::mutex> guard(schedulerLock);
@@ -257,6 +341,7 @@ bool DummyGraph::shutdown() {
     {
         std::lock_guard<std::mutex> guard(schedulerLock);
         initialized = false;
+        executionCycleStarted = false;
         readyFrames.clear();
         freeTasks.clear();
         phaseGate = nullptr;
@@ -301,26 +386,20 @@ bool DummyGraph::initializeOnNumaNode() {
         int taskId = 0;
         for (int gpuId : config.gpuIds) {
             for (std::size_t instance = 0; instance < config.taskInstancesPerGpu; ++instance) {
-                tasks.push_back(std::make_unique<DummyTask>(taskId, gpuId, config.executionModel, config.runtime));
+                std::unique_ptr<DummyTask> task = std::make_unique<DummyTask>(taskId, gpuId, config.executionModel, config.runtime);
+                if (!task->registerParameters(parameterRegistry)) {
+                    return false;
+                }
+                tasks.push_back(std::move(task));
                 ++taskId;
             }
         }
 
-        for (const std::unique_ptr<DummyTask>& task : tasks) {
-            if (!task->load()) {
-                return false;
-            }
-        }
-        for (const std::unique_ptr<DummyTask>& task : tasks) {
-            if (!task->registerParameters(parameterRegistry)) {
-                return false;
-            }
-        }
         if (!parameterRegistry.setString(DummyTask::NAME_PARAMETER, config.parameters.name) || !parameterRegistry.setBytes(DummyTask::BLOB_PARAMETER, config.parameters.blob) || !parameterRegistry.seal() || !parameterRegistry.snapshot(parameterSnapshot)) {
             return false;
         }
         for (const std::unique_ptr<DummyTask>& task : tasks) {
-            if (!task->notifyParameters(parameterSnapshot)) {
+            if (!task->load()) {
                 return false;
             }
         }
@@ -351,8 +430,64 @@ bool DummyGraph::initializeOnNumaNode() {
     return true;
 }
 
+bool DummyGraph::startOnNumaNode() {
+    if (!GpuContextManager::pinCurrentThreadToNumaNode(config.numaNode)) {
+        return false;
+    }
+
+    std::size_t startedTaskCount = 0;
+    for (const std::unique_ptr<DummyTask>& task : tasks) {
+        if (!task->start()) {
+            for (std::size_t index = startedTaskCount; index > 0; --index) {
+                tasks[index - 1]->stop();
+            }
+            return false;
+        }
+        ++startedTaskCount;
+    }
+    return true;
+}
+
+bool DummyGraph::notifyParametersOnNumaNode(const ParameterSnapshot& parameters) {
+    if (!GpuContextManager::pinCurrentThreadToNumaNode(config.numaNode)) {
+        return false;
+    }
+
+    for (const std::unique_ptr<DummyTask>& task : tasks) {
+        if (!task->notifyParameters(parameters)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool DummyGraph::stopOnNumaNode() {
+    if (!GpuContextManager::pinCurrentThreadToNumaNode(config.numaNode)) {
+        return false;
+    }
+
+    bool ok = true;
+    for (auto task = tasks.rbegin(); task != tasks.rend(); ++task) {
+        if ((*task)->lifecycle() == TaskLifecycle::Started && !(*task)->stop()) {
+            ok = false;
+        }
+        else if ((*task)->lifecycle() != TaskLifecycle::Stopped) {
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 bool DummyGraph::unloadOnNumaNode() {
     bool ok = GpuContextManager::pinCurrentThreadToNumaNode(config.numaNode);
+
+    if (executionCycleStarted) {
+        if (!stopOnNumaNode()) {
+            ok = false;
+        }
+        executionCycleStarted = false;
+        executionCycleStopped = true;
+    }
 
     if (!staticData.release()) {
         ok = false;

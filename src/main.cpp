@@ -195,9 +195,20 @@ int main(int argc, char* argv[]) {
     }
 
     bool runSucceeded = graphConfigsValid && !graphs.empty() && graphs.size() == gpusByNumaNode.size();
+    std::vector<bool> graphStarted(graphs.size(), false);
     if (runSucceeded) {
         for (const std::unique_ptr<DummyGraph>& graph : graphs) {
             if (!graph->initialize()) {
+                runSucceeded = false;
+                cancellation.store(true, std::memory_order_release);
+                break;
+            }
+        }
+    }
+    if (runSucceeded) {
+        for (std::size_t index = 0; index < graphs.size(); ++index) {
+            graphStarted[index] = graphs[index]->start();
+            if (!graphStarted[index]) {
                 runSucceeded = false;
                 cancellation.store(true, std::memory_order_release);
                 break;
@@ -226,6 +237,13 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    bool stopSucceeded = true;
+    for (std::size_t index = 0; index < graphs.size(); ++index) {
+        if (graphStarted[index] && !graphs[index]->stop()) {
+            stopSucceeded = false;
+        }
+    }
+
     bool shutdownSucceeded = true;
     for (const std::unique_ptr<DummyGraph>& graph : graphs) {
         if (!graph->shutdown()) {
@@ -239,7 +257,7 @@ int main(int argc, char* argv[]) {
     const std::size_t failedResults = sink.failureCount();
     const bool expectedFits = totalFramesPerGpu <= std::numeric_limits<std::size_t>::max() / gpuCount;
     const std::size_t expected = expectedFits ? gpuCount * static_cast<std::size_t>(totalFramesPerGpu) : 0;
-    runSucceeded = runSucceeded && shutdownSucceeded && expectedFits && delivered == expected && failedResults == 0;
+    runSucceeded = runSucceeded && stopSucceeded && shutdownSucceeded && expectedFits && delivered == expected && failedResults == 0;
     if (!runSucceeded) {
         std::cerr << "graph run failed: expected=" << expected << " delivered=" << delivered << " failures=" << failedResults << '\n';
         return 1;

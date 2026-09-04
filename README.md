@@ -26,7 +26,9 @@ The implementation demonstrates:
   buffers and a fixed-capacity open-addressing residency table;
 - task-private persistent `d_input` fallback on cache miss;
 - no hot-path `cudaMalloc()`/`cudaFree()`;
-- graph-wide lifecycle barriers and fail-fast cancellation.
+- explicit register/load/start/execute/stop/unload lifecycle barriers;
+- change-driven parameter notification at quiescent boundaries;
+- graph-wide fail-fast cancellation.
 
 The cache avoids repeated H2D when possible, but correctness does not depend on
 a hit. Because the current input is immutable, a miss re-uploads from
@@ -34,7 +36,8 @@ a hit. Because the current input is immutable, a miss re-uploads from
 
 ## Design references
 
-- [`graph.md`](graph.md) is the untouched golden scheduler/lifecycle reference.
+- [`graph.md`](graph.md) is the authoritative scheduler/lifecycle reference,
+  corrected to match the reviewed real-framework callbacks.
 - [`architecture.md`](architecture.md) documents the implemented model.
 - [`frame_gpu_data_plan_tmp.md`](frame_gpu_data_plan_tmp.md) specifies the
   implemented one-GPU cache.
@@ -147,11 +150,11 @@ resources. NUMA identity is not copied into `DummyTask`, `TaskGpuResources`,
 
 ```text
 validate graph GPU IDs belong to the graph NUMA node
-  -> create all DummyTask instances
+  -> construct each DummyTask and immediately register its parameter schema
+  -> define initial parameter values and seal the shared schema
   -> load all tasks
        -> stream + h_in + d_input fallback + scratch + algo-private buffers
-  -> register one shared parameter schema
-  -> seal and notify one immutable parameter snapshot
+       -> apply initial parameter values inside load
   -> create separate warmup/timed FrameCpuAtom collections
        -> preallocate each atom's input and CEL/SDD/MI result buffers
   -> StaticData::init()
@@ -159,7 +162,14 @@ validate graph GPU IDs belong to the graph NUMA node
        -> create exactly K persistent GpuCacheEntry cache entries
        -> allocate a fixed open-addressing table plus empty/LRU structures
   -> start NUMA-local workers
+  -> DummyGraph::start() calls DummyTask::start() on every task
 ```
+
+`DummyTask::start()` and `stop()` are lifecycle guards in this simulation; they
+do not move or resize CUDA resources. Warmup and timed phases share one graph
+execution cycle. A later `DummyGraph::changeParameters()` call is accepted only
+when no phase is active and no execution is in flight, and only a changed
+revision is delivered to task instances.
 
 `K = GraphConfig::gpuCacheEntries`. The default workload has 220
 `FrameCpuAtom` objects but only four GPU cache entries per graph copy. No list
@@ -304,7 +314,9 @@ receive terminal failed results, in-flight work finishes or fails, and workers
 join before resource teardown.
 
 ```text
-stop and join workers
+finish all in-flight execute calls
+  -> DummyTask::stop() for every task in the execution cycle
+  -> stop and join workers
   -> StaticData releases cache-entry device allocations
   -> clear CPU atoms
   -> unload tasks
@@ -345,6 +357,7 @@ src/
     FrameCpuAtom.*        CPU bytes, metadata, and preallocated result
     GraphTypes.h          simulated graph-owned execution types
   DummyTask.*             task lifecycle and CEL/SDD/MI execution
+  ParameterRegistry.*     sealed schema, mutable values, and revisions
   StaticData.*            graph-copy layout/reset/cache owner
   TaskGpuResources.h      task CUDA lane including fallback d_input
   GpuContextManager.*     GPU discovery, NUMA affinity, task registration

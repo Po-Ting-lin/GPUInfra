@@ -63,8 +63,11 @@ public:
     ~DummyGraph();
 
     bool initialize();
+    bool start();
+    bool changeParameters(const AlgoParams& parameters);
     bool startPhase(FramePhase phase, PhaseGate& gate);
     bool waitForPhase();
+    bool stop();
     bool shutdown();
 
     std::size_t taskCount() const;
@@ -80,6 +83,9 @@ private:
     };
 
     bool initializeOnNumaNode();
+    bool startOnNumaNode();
+    bool notifyParametersOnNumaNode(const ParameterSnapshot& parameters);
+    bool stopOnNumaNode();
     bool unloadOnNumaNode();
     void workerLoop();
     void cancelReadyFramesLocked();
@@ -117,5 +123,7 @@ private:
     bool phaseActive = false;
     bool phaseSucceeded = true;
     bool initialized = false;
+    bool executionCycleStarted = false;
+    bool executionCycleStopped = false;
     bool stopping = false;
 };

@@ -1,5 +1,6 @@
 #include "ParameterRegistry.h"
 
+#include <limits>
 #include <utility>
 
 bool ParameterSnapshot::getString(const std::string& name, std::string& output) const {
@@ -18,6 +19,10 @@ bool ParameterSnapshot::getBytes(const std::string& name, std::vector<std::uint8
     }
     output = std::get<std::vector<std::uint8_t>>(found->second);
     return true;
+}
+
+std::uint64_t ParameterSnapshot::revision() const {
+    return revisionNumber;
 }
 
 bool ParameterRegistry::registerParameter(const std::string& name, ParameterType type) {
@@ -53,6 +58,7 @@ bool ParameterRegistry::snapshot(ParameterSnapshot& output) const {
         return false;
     }
     output.values = values;
+    output.revisionNumber = revisionNumber;
     return true;
 }
 
@@ -60,14 +66,25 @@ bool ParameterRegistry::isSealed() const {
     return sealed;
 }
 
+std::uint64_t ParameterRegistry::revision() const {
+    return revisionNumber;
+}
+
 bool ParameterRegistry::setValue(const std::string& name, ParameterType type, ParameterValue value) {
-    if (sealed) {
-        return false;
-    }
     const auto found = schema.find(name);
     if (found == schema.end() || found->second != type) {
         return false;
     }
+
+    const auto current = values.find(name);
+    if (current != values.end() && current->second == value) {
+        return true;
+    }
+    if (revisionNumber == std::numeric_limits<std::uint64_t>::max()) {
+        return false;
+    }
+
     values[name] = std::move(value);
+    ++revisionNumber;
     return true;
 }

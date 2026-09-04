@@ -475,8 +475,8 @@
                     <text class="uml-member" x="96" y="465">- warmup/timed atoms</text>
                     <text class="uml-member" x="96" y="488">- staticData: StaticData</text>
                     <line class="uml-divider" x1="80" y1="503" x2="430" y2="503"></line>
-                    <text class="uml-member" x="96" y="528">+ initializeOnNumaNode()</text>
-                    <text class="uml-member" x="96" y="551">- workerLoop()</text>
+                    <text class="uml-member" x="96" y="528">+ initialize() / start() / stop()</text>
+                    <text class="uml-member" x="96" y="551">+ startPhase() / changeParameters()</text>
                 </g>
 
                 <g aria-label="FrameCpuAtom class">
@@ -511,7 +511,7 @@
                     <text class="uml-member" x="96" y="815">- algorithms: vector&lt;IAlgo&gt;</text>
                     <line class="uml-divider" x1="80" y1="830" x2="430" y2="830"></line>
                     <text class="uml-member" x="96" y="855">+ execute(atom, staticData): bool</text>
-                    <text class="uml-member" x="96" y="878">+ load() / unload()</text>
+                    <text class="uml-member" x="96" y="878">+ register / load / start / stop / unload</text>
                 </g>
 
                 <g aria-label="IAlgo interface">
@@ -724,7 +724,8 @@
                     <li>owns one graph-copy <code>StaticData</code></li>
                     <li><code>ReadyFrame</code> carries only an atom</li>
                     <li>temporarily requires exactly one eligible GPU</li>
-                    <li>lifecycle barriers, phase gate, and cancellation</li>
+                    <li>explicit initialize/start/phases/stop/shutdown barriers</li>
+                    <li>change-only parameter notification at quiescent boundaries</li>
                     <li>publishes terminal results to <code>GraphSink</code></li>
                 </ul>
             </article>
@@ -745,7 +746,10 @@
             <article class="class-card task-card wide">
                 <header><span class="stereotype">graph task instance</span><h3>DummyTask</h3></header>
                 <ul>
-                    <li>golden lifecycle API</li>
+                    <li><code>Registered → Loaded → Started → Stopped → Unloaded</code></li>
+                    <li>initial parameters are applied inside <code>load()</code></li>
+                    <li><code>notifyParameters()</code> is revision-driven, not a lifecycle state</li>
+                    <li><code>start()/stop()</code> are resource-free state guards in this simulation</li>
                     <li>permanent GPU binding; no host-thread binding</li>
                     <li>owns <code>TaskGpuResources</code></li>
                     <li>owns private CEL, SDD, and MI objects</li>
@@ -826,8 +830,9 @@
                 <ul>
                     <li>typed schema agreement</li>
                     <li>value validation</li>
-                    <li>sealed immutable snapshot</li>
-                    <li>one snapshot for all tasks</li>
+                    <li>sealed schema with updateable existing values</li>
+                    <li>revision advances only when a value changes</li>
+                    <li>one revisioned snapshot for all tasks</li>
                 </ul>
             </article>
             <article class="class-card frame-card">
@@ -903,12 +908,14 @@
     <section class="section">
         <h2>DummyTask lifecycle</h2>
         <div class="lifecycle">
-            <div class="step">load</div><div class="arrow">→</div>
             <div class="step">registerParameters</div><div class="arrow">→</div>
-            <div class="step">notifyParameters</div><div class="arrow">→</div>
-            <div class="step">execute per frame</div><div class="arrow">→</div>
+            <div class="step">load + initial values</div><div class="arrow">→</div>
+            <div class="step">start</div><div class="arrow">→</div>
+            <div class="step">execute many frames</div><div class="arrow">→</div>
+            <div class="step">stop</div><div class="arrow">→</div>
             <div class="step">unload</div>
         </div>
+        <p class="note"><code>notifyParameters()</code> is called only when a parameter revision changes at a quiescent boundary. It is not automatically inserted before warmup, timed, or any other phase.</p>
     </section>
 </main>
 </body>

@@ -17,10 +17,12 @@ class ParameterSnapshot {
 public:
     bool getString(const std::string& name, std::string& output) const;
     bool getBytes(const std::string& name, std::vector<std::uint8_t>& output) const;
+    std::uint64_t revision() const;
 
 private:
     friend class ParameterRegistry;
     std::unordered_map<std::string, ParameterValue> values;
+    std::uint64_t revisionNumber = 0;
 };
 
 class ParameterRegistry {
@@ -28,14 +30,19 @@ public:
     bool registerParameter(const std::string& name, ParameterType type);
     bool setString(const std::string& name, const std::string& value);
     bool setBytes(const std::string& name, const std::vector<std::uint8_t>& value);
+
+    // Freeze the schema. Existing typed values remain updateable and advance
+    // the revision only when their contents change.
     bool seal();
     bool snapshot(ParameterSnapshot& output) const;
     bool isSealed() const;
+    std::uint64_t revision() const;
 
 private:
     bool setValue(const std::string& name, ParameterType type, ParameterValue value);
 
     std::unordered_map<std::string, ParameterType> schema;
     std::unordered_map<std::string, ParameterValue> values;
+    std::uint64_t revisionNumber = 0;
     bool sealed = false;
 };
