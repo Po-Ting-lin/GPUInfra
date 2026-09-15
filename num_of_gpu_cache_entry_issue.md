@@ -56,7 +56,7 @@ StaticData
 
 ## Fixed table 與 global LRU 如何配合
 
-`GpuCacheManager::acquire()` 先在 fixed open-addressing table 查找目前
+`GpuCacheManager::getCacheData()` 先在 fixed open-addressing table 查找目前
 resident 或 loading 的 key：
 
 1. key 與完整 metadata 相符且 entry 為 `Valid`：回傳 `CacheHit`，不做 H2D。

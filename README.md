@@ -232,14 +232,16 @@ different logical frames over time while retaining the same device allocation.
 
 ## Cache access
 
-`GpuCacheManager::acquire()` uses its fixed residency table and returns an RAII
-`GpuDataAccess`:
+`GpuCacheManager::getCacheData()` uses its fixed residency table and returns an RAII
+`GpuDataAccess`. `status()` returns `CacheStatus`; `getStream()` returns the
+borrowed task stream supplied in `GpuCacheRequest`:
 
-| Source | Path |
+| Status | Path |
 | --- | --- |
 | `CacheHit` | Matching `Valid` entry; use its immutable device pointer without H2D |
-| `CacheFill` | Reserve an empty/inactive-LRU entry and H2D into its existing allocation |
-| `TaskFallback` | H2D into `TaskGpuResources::d_input` when capacity is zero, the matching entry is loading, or all entries are active |
+| `CacheFill` | Reserve an empty/inactive-LRU entry; caller uploads or computes its payload |
+| `TaskFallback` | Caller fills its supplied fallback buffer when capacity is zero, the matching entry is loading, or all entries are active |
+| `Invalid` | Metadata, GPU, stream, or fallback request is invalid; do not submit work |
 
 Lookup and resident-key insertion/erasure are average `O(1)`. The table is
 allocated at about twice `K`, uses linear probing and backward-shift deletion,
@@ -247,6 +249,56 @@ and never grows or rehashes. An empty-entry stack and intrusive LRU choose a
 victim in `O(1)`. Active entries cannot be evicted. A fill becomes `Valid` only
 after the task stream synchronizes successfully. Failed or abandoned fills
 return to `Empty`; a failed hit keeps the immutable cached payload.
+
+## Caller-owned miss handling and independent caches
+
+`GpuCacheRequest` explicitly supplies `gpuId`, `stream`, `d_fallback`, and
+`fallbackBytes`. The fallback pointer and stream must be valid, and fallback
+capacity must be at least the cache payload size, even on an expected hit.
+The cache borrows these resources; it never allocates or frees caller fallback
+buffers and does not perform H2D or run algorithms.
+
+```cpp
+GpuCacheRequest request;
+request.gpuId = resources.gpuId;
+request.stream = resources.stream;
+request.d_fallback = resources.d_input;
+request.fallbackBytes = resources.inBytes;
+GpuDataAccess access = staticData.getCacheData(metadata, request);
+const CacheStatus status = access.status();
+if (status == CacheStatus::Invalid) return false;
+const cudaStream_t stream = access.getStream();
+bool submittedSuccessfully = true;
+if (status == CacheStatus::CacheFill || status == CacheStatus::TaskFallback) {
+    submittedSuccessfully = enqueueH2D(access.writableData(), stream);
+}
+if (submittedSuccessfully) {
+    submittedSuccessfully = enqueueComputeAndD2H(access.data(), stream);
+}
+// Finish once after all work on stream, even if submission fails.
+bool succeeded = access.freeCacheData(submittedSuccessfully);
+```
+
+Independent `GpuCacheManager` instances may cache different fixed payload
+sizes with separate capacities, indexes, and LRU lists. A frame cache and a
+result cache may use the same key without sharing entries. Each live payload
+needs fallback storage that will not be overwritten by another live request;
+using the same task input buffer for simultaneous frame and result fallback
+is unsafe. Each request receives its own `GpuDataAccess`, including concurrent
+readers of the same key on different task streams.
+
+Fill publication occurs only in `freeCacheData()` after successful stream
+synchronization, not as soon as H2D completes. A second request for a Loading
+key gets fallback, so its caller may repeat the upload or computation. With
+all work on the returned stream, no extra H2D event is required. Each access
+finishes independently; finishing two accesses on one stream currently causes
+two synchronization calls and is not an atomic multi-cache publication.
+
+The demo still uses one frame cache in `StaticData`; it does not automatically
+cache CEL/SDD/MI outputs. A result-cache caller must define versioned identity
+or reset at parameter changes and be able to recreate evicted data. The
+existing frame-shaped metadata and immutable, best-effort eviction contract
+remain in place.
 
 ## Run boundaries and cache reset
 
@@ -271,7 +323,7 @@ FrameCpuAtom metadata/layout/result validation
   -> StaticData::getCacheData()
        -> validate fixed layout
        -> acquire CacheHit / CacheFill / TaskFallback
-  -> when needsUpload(): atom.data -> task h_in -> selected device buffer
+  -> when status is CacheFill / TaskFallback: atom.data -> task h_in -> selected device buffer
   -> CEL / SDD / MI read access.data()
   -> algorithm D2H staging
   -> GpuDataAccess::freeCacheData()
@@ -349,7 +401,8 @@ device reallocation, fill/hit/fallback, loading and busy
 fallback, RAII abort, failed fill, LRU eviction, stable device pointers,
 cross-task reuse, pure-fallback correctness, both execution models, load-time GPU discovery,
 framework affinity rejection, graph-level task exclusivity, cancellation, and
-cleanup. Synthetic topology tests also reject zero/multiple local GPUs and
+cleanup, independent frame/result caches with unequal payload sizes, and
+concurrent readers on separate task streams. Synthetic topology tests also reject zero/multiple local GPUs and
 verify selection when GPU IDs differ from NUMA IDs; multi-NUMA execution is
 checked when the hardware supports it.
 
@@ -364,7 +417,8 @@ src/
     GpuDataKey.h          frame/camera cache identity
     GpuCacheManager.*     bounded cache lookup, LRU, leases, fallback choice
     GpuCacheEntry.*       reusable entry with persistent per-GPU replicas
-    GpuDataAccess.*       scoped access source and completion
+    GpuDataAccess.*       explicit status, borrowed stream, scoped lease completion
+    GpuCacheRequest.h     caller GPU, stream, fallback pointer and capacity
     GpuResidencyTable.*   fixed open-addressing resident-key index
   Grape/
     README.md             immutable graph-simulation boundary rules

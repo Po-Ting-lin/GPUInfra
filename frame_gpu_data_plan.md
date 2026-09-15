@@ -83,7 +83,7 @@ matching entry + another GPU has Valid replica + local replica inactive
   -> publish local replica Valid
 ```
 
-This likely adds `GpuDataAccessSource::ReplicaFill`. Other valid replicas stay
+This likely adds `CacheStatus::ReplicaFill`. Other valid replicas stay
 valid because the payload is immutable.
 
 ### Frame cache miss
@@ -114,7 +114,7 @@ Cold initialization must:
 6. validate per-GPU VRAM budgets with checked arithmetic;
 7. unwind all partial allocations and peer state on failure.
 
-No capability discovery or resource creation belongs in `acquire()`.
+No capability discovery or resource creation belongs in `getCacheData()`.
 
 ## 6. Synchronization
 

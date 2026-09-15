@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -104,6 +105,15 @@ bool initializeStaticData(StaticData& staticData, const GpuLocation& location, c
 
 bool releaseStaticData(StaticData& staticData, const GpuLocation& location) {
     return NumaExecutor(location.numaNode).run([&staticData] { return staticData.release(); });
+}
+
+GpuCacheRequest makeCacheRequest(const TaskGpuResources& resources) {
+    GpuCacheRequest request;
+    request.gpuId = resources.gpuId;
+    request.stream = resources.stream;
+    request.d_fallback = resources.d_input;
+    request.fallbackBytes = resources.inBytes;
+    return request;
 }
 
 bool initializeAccessResources(TaskGpuResources& resources, const GpuLocation& location, std::size_t bytes) {
@@ -253,13 +263,13 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
     test.expect(cache.entryCount() == 1 && cache.bytes() == runtime.inBytes, "cache owns one correctly sized preallocated entry");
     void* cacheDeviceData = nullptr;
     {
-        GpuDataAccess firstFill = cache.acquire(firstMetadata, resources);
-        test.expect(static_cast<bool>(firstFill) && firstFill.source() == GpuDataAccessSource::CacheFill && firstFill.needsUpload(), "first miss reserves a cache fill");
+        GpuDataAccess firstFill = cache.getCacheData(firstMetadata, makeCacheRequest(resources));
+        test.expect(static_cast<bool>(firstFill) && firstFill.status() == CacheStatus::CacheFill, "first miss reserves a cache fill");
         cacheDeviceData = firstFill.writableData();
         test.expect(cacheDeviceData != nullptr && firstFill.data() == cacheDeviceData, "cache fill exposes the preallocated device pointer");
 
-        GpuDataAccess loadingFallback = cache.acquire(firstMetadata, resources);
-        test.expect(static_cast<bool>(loadingFallback) && loadingFallback.source() == GpuDataAccessSource::TaskFallback && loadingFallback.needsUpload(), "same frame loading uses task fallback without waiting");
+        GpuDataAccess loadingFallback = cache.getCacheData(firstMetadata, makeCacheRequest(resources));
+        test.expect(static_cast<bool>(loadingFallback) && loadingFallback.status() == CacheStatus::TaskFallback, "same frame loading uses task fallback without waiting");
         test.expect(loadingFallback.writableData() == resources.d_input, "loading fallback uses the task-private input buffer");
         const bool fallbackMemset = cudaMemsetAsync(loadingFallback.writableData(), 0x19, loadingFallback.bytes(), resources.stream) == cudaSuccess;
         test.expect(loadingFallback.freeCacheData(fallbackMemset), "complete loading fallback without publishing cache state");
@@ -270,36 +280,36 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
 
     FrameMetadata mismatchedMetadata = firstMetadata;
     ++mismatchedMetadata.width;
-    GpuDataAccess mismatchedAccess = cache.acquire(mismatchedMetadata, resources);
+    GpuDataAccess mismatchedAccess = cache.getCacheData(mismatchedMetadata, makeCacheRequest(resources));
     test.expect(!mismatchedAccess, "reject the same frame ID with different metadata");
 
-    GpuDataAccess failedHit = cache.acquire(firstMetadata, resources);
-    test.expect(static_cast<bool>(failedHit) && failedHit.source() == GpuDataAccessSource::CacheHit && !failedHit.freeCacheData(false), "failed cache reader releases its lease without publishing state");
-    GpuDataAccess hitAfterFailure = cache.acquire(firstMetadata, resources);
-    test.expect(static_cast<bool>(hitAfterFailure) && hitAfterFailure.source() == GpuDataAccessSource::CacheHit && hitAfterFailure.freeCacheData(true), "failed cache reader preserves the immutable cached payload");
+    GpuDataAccess failedHit = cache.getCacheData(firstMetadata, makeCacheRequest(resources));
+    test.expect(static_cast<bool>(failedHit) && failedHit.status() == CacheStatus::CacheHit && !failedHit.freeCacheData(false), "failed cache reader releases its lease without publishing state");
+    GpuDataAccess hitAfterFailure = cache.getCacheData(firstMetadata, makeCacheRequest(resources));
+    test.expect(static_cast<bool>(hitAfterFailure) && hitAfterFailure.status() == CacheStatus::CacheHit && hitAfterFailure.freeCacheData(true), "failed cache reader preserves the immutable cached payload");
 
-    GpuDataAccess activeHit = cache.acquire(firstMetadata, resources);
-    test.expect(static_cast<bool>(activeHit) && activeHit.source() == GpuDataAccessSource::CacheHit && !activeHit.needsUpload(), "valid matching entry returns a cache hit");
+    GpuDataAccess activeHit = cache.getCacheData(firstMetadata, makeCacheRequest(resources));
+    test.expect(static_cast<bool>(activeHit) && activeHit.status() == CacheStatus::CacheHit, "valid matching entry returns a cache hit");
     test.expect(activeHit.data() == cacheDeviceData && activeHit.writableData() == nullptr, "cache hit is immutable and reuses the cached pointer");
-    GpuDataAccess secondReader = cache.acquire(firstMetadata, resources);
-    test.expect(static_cast<bool>(secondReader) && secondReader.source() == GpuDataAccessSource::CacheHit && secondReader.freeCacheData(true), "matching immutable cache readers may coexist");
+    GpuDataAccess secondReader = cache.getCacheData(firstMetadata, makeCacheRequest(resources));
+    test.expect(static_cast<bool>(secondReader) && secondReader.status() == CacheStatus::CacheHit && secondReader.freeCacheData(true), "matching immutable cache readers may coexist");
 
-    GpuDataAccess busyFallback = cache.acquire(secondMetadata, resources);
-    test.expect(static_cast<bool>(busyFallback) && busyFallback.source() == GpuDataAccessSource::TaskFallback, "all active cache entries force task fallback");
+    GpuDataAccess busyFallback = cache.getCacheData(secondMetadata, makeCacheRequest(resources));
+    test.expect(static_cast<bool>(busyFallback) && busyFallback.status() == CacheStatus::TaskFallback, "all active cache entries force task fallback");
     test.expect(busyFallback.freeCacheData(true), "complete busy-cache fallback");
     test.expect(!cache.release(), "cache release rejects an active reader");
     test.expect(activeHit.freeCacheData(true), "release active cache reader");
 
     {
-        GpuDataAccess abandonedFill = cache.acquire(secondMetadata, resources);
-        test.expect(static_cast<bool>(abandonedFill) && abandonedFill.source() == GpuDataAccessSource::CacheFill, "inactive LRU entry can be reused for another frame");
+        GpuDataAccess abandonedFill = cache.getCacheData(secondMetadata, makeCacheRequest(resources));
+        test.expect(static_cast<bool>(abandonedFill) && abandonedFill.status() == CacheStatus::CacheFill, "inactive LRU entry can be reused for another frame");
     }
-    GpuDataAccess retryAfterAbort = cache.acquire(secondMetadata, resources);
-    test.expect(static_cast<bool>(retryAfterAbort) && retryAfterAbort.source() == GpuDataAccessSource::CacheFill && retryAfterAbort.writableData() == cacheDeviceData, "aborted fill returns the same allocation to the cache");
+    GpuDataAccess retryAfterAbort = cache.getCacheData(secondMetadata, makeCacheRequest(resources));
+    test.expect(static_cast<bool>(retryAfterAbort) && retryAfterAbort.status() == CacheStatus::CacheFill && retryAfterAbort.writableData() == cacheDeviceData, "aborted fill returns the same allocation to the cache");
     test.expect(!retryAfterAbort.freeCacheData(false), "failed fill is not published");
 
-    GpuDataAccess successfulRetry = cache.acquire(secondMetadata, resources);
-    test.expect(static_cast<bool>(successfulRetry) && successfulRetry.source() == GpuDataAccessSource::CacheFill, "failed fill leaves an empty reusable entry");
+    GpuDataAccess successfulRetry = cache.getCacheData(secondMetadata, makeCacheRequest(resources));
+    test.expect(static_cast<bool>(successfulRetry) && successfulRetry.status() == CacheStatus::CacheFill, "failed fill leaves an empty reusable entry");
     if (successfulRetry) {
         const bool memsetSucceeded = cudaMemsetAsync(successfulRetry.writableData(), 0x17, successfulRetry.bytes(), resources.stream) == cudaSuccess;
         test.expect(successfulRetry.freeCacheData(memsetSucceeded), "successful retry publishes the new frame");
@@ -307,7 +317,7 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
 
     TaskGpuResources wrongGpuResources = resources;
     wrongGpuResources.gpuId = location.gpuId + 1;
-    GpuDataAccess wrongGpuRead = cache.acquire(secondMetadata, wrongGpuResources);
+    GpuDataAccess wrongGpuRead = cache.getCacheData(secondMetadata, makeCacheRequest(wrongGpuResources));
     test.expect(!wrongGpuRead, "reject access from a GPU without a replica");
 
     test.expect(cache.release(), "release bounded frame GPU cache");
@@ -316,17 +326,185 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
 
     GpuCacheManager zeroCapacityCache;
     test.expect(zeroCapacityCache.initialize({location.gpuId}, runtime.inBytes, 0), "initialize a zero-capacity cache");
-    GpuDataAccess zeroCapacityAccess = zeroCapacityCache.acquire(firstMetadata, resources);
-    test.expect(static_cast<bool>(zeroCapacityAccess) && zeroCapacityAccess.source() == GpuDataAccessSource::TaskFallback && zeroCapacityAccess.writableData() == resources.d_input, "zero cache capacity always uses task fallback");
+    GpuDataAccess zeroCapacityAccess = zeroCapacityCache.getCacheData(firstMetadata, makeCacheRequest(resources));
+    test.expect(static_cast<bool>(zeroCapacityAccess) && zeroCapacityAccess.status() == CacheStatus::TaskFallback && zeroCapacityAccess.writableData() == resources.d_input, "zero cache capacity always uses task fallback");
     test.expect(!zeroCapacityCache.resetCache(), "cache reset rejects an active fallback lease");
     test.expect(!zeroCapacityCache.release(), "cache release rejects an active fallback lease");
     test.expect(zeroCapacityAccess.freeCacheData(true), "complete zero-capacity fallback");
     {
-        GpuDataAccess abandonedFallback = zeroCapacityCache.acquire(firstMetadata, resources);
-        test.expect(static_cast<bool>(abandonedFallback) && abandonedFallback.source() == GpuDataAccessSource::TaskFallback, "acquire fallback used for RAII abort");
+        GpuDataAccess abandonedFallback = zeroCapacityCache.getCacheData(firstMetadata, makeCacheRequest(resources));
+        test.expect(static_cast<bool>(abandonedFallback) && abandonedFallback.status() == CacheStatus::TaskFallback, "acquire fallback used for RAII abort");
     }
     test.expect(zeroCapacityCache.release(), "release zero-capacity cache");
     test.expect(releaseAccessResources(resources), "release frame cache test resources");
+}
+
+void testIndependentPayloadCaches(TestContext& test, const GpuLocation& location, std::size_t capacity) {
+    constexpr std::size_t FRAME_BYTES = 16;
+    constexpr std::size_t RESULT_BYTES = 64;
+    TaskGpuResources resources;
+    GpuCacheManager frameCache;
+    GpuCacheManager resultCache;
+    void* d_resultFallback = nullptr;
+    const bool initialized = initializeAccessResources(resources, location, FRAME_BYTES) && cudaMalloc(&d_resultFallback, RESULT_BYTES) == cudaSuccess && frameCache.initialize({location.gpuId}, FRAME_BYTES, capacity) && resultCache.initialize({location.gpuId}, RESULT_BYTES, capacity);
+    test.expect(initialized, "initialize independent frame/result caches with different payload sizes");
+    if (!initialized) {
+        frameCache.release();
+        resultCache.release();
+        if (d_resultFallback != nullptr) {
+            cudaFree(d_resultFallback);
+        }
+        releaseAccessResources(resources);
+        return;
+    }
+
+    FrameMetadata frameMetadata;
+    frameMetadata.key = {42, 7};
+    frameMetadata.width = 4;
+    frameMetadata.height = 4;
+    frameMetadata.dtype = 1;
+    frameMetadata.bytes = FRAME_BYTES;
+    FrameMetadata resultMetadata = frameMetadata;
+    resultMetadata.dtype = 4;
+    resultMetadata.bytes = RESULT_BYTES;
+    const GpuCacheRequest frameRequest = makeCacheRequest(resources);
+    GpuCacheRequest resultRequest = frameRequest;
+    resultRequest.d_fallback = d_resultFallback;
+    resultRequest.fallbackBytes = RESULT_BYTES;
+
+    GpuCacheRequest invalidRequest = resultRequest;
+    invalidRequest.fallbackBytes = RESULT_BYTES - 1;
+    GpuDataAccess tooSmall = resultCache.getCacheData(resultMetadata, invalidRequest);
+    test.expect(tooSmall.status() == CacheStatus::Invalid && tooSmall.data() == nullptr && tooSmall.getStream() == nullptr && !tooSmall.freeCacheData(true), "reject undersized fallback without exposing a usable access or stream");
+    invalidRequest = resultRequest;
+    invalidRequest.stream = nullptr;
+    GpuDataAccess noStream = resultCache.getCacheData(resultMetadata, invalidRequest);
+    test.expect(noStream.status() == CacheStatus::Invalid, "reject a request without an explicit stream");
+    invalidRequest = resultRequest;
+    invalidRequest.d_fallback = nullptr;
+    GpuDataAccess noFallback = resultCache.getCacheData(resultMetadata, invalidRequest);
+    test.expect(noFallback.status() == CacheStatus::Invalid, "reject a request without caller-owned fallback storage");
+
+    std::array<unsigned char, FRAME_BYTES> h_frame{};
+    std::array<unsigned char, RESULT_BYTES> h_result{};
+    {
+        GpuDataAccess frame = frameCache.getCacheData(frameMetadata, frameRequest);
+        GpuDataAccess result = resultCache.getCacheData(resultMetadata, resultRequest);
+        const CacheStatus expectedStatus = capacity == 0 ? CacheStatus::TaskFallback : CacheStatus::CacheFill;
+        test.expect(frame.status() == expectedStatus && result.status() == expectedStatus, "same key independently reserves a frame and a result payload");
+        test.expect(frame.bytes() == FRAME_BYTES && result.bytes() == RESULT_BYTES && frame.data() != result.data(), "different payload sizes use independent storage");
+        test.expect(frame.getStream() == resources.stream && result.getStream() == resources.stream, "both accesses expose the borrowed caller stream");
+        if (capacity == 0) {
+            test.expect(frame.data() == resources.d_input && result.data() == d_resultFallback, "simultaneous frame/result fallbacks do not alias");
+        }
+        bool submitted = static_cast<bool>(frame) && static_cast<bool>(result);
+        if (submitted) {
+            submitted = cudaMemsetAsync(frame.writableData(), 0x19, frame.bytes(), frame.getStream()) == cudaSuccess && cudaMemsetAsync(result.writableData(), 0x37, result.bytes(), result.getStream()) == cudaSuccess;
+        }
+        if (submitted) {
+            submitted = cudaMemcpyAsync(h_frame.data(), frame.data(), frame.bytes(), cudaMemcpyDeviceToHost, frame.getStream()) == cudaSuccess && cudaMemcpyAsync(h_result.data(), result.data(), result.bytes(), cudaMemcpyDeviceToHost, result.getStream()) == cudaSuccess;
+        }
+        test.expect(frame.freeCacheData(submitted), "finish the frame access after caller-submitted work");
+        test.expect(frame.status() == CacheStatus::Invalid && frame.getStream() == nullptr && frame.data() == nullptr && frame.writableData() == nullptr && !frame.freeCacheData(true), "finishing invalidates status, stream, pointers, and repeated finish");
+        test.expect(!resultCache.resetCache() && !resultCache.release(), "the other cache retains its live lease despite synchronization of the shared stream");
+        if (capacity != 0) {
+            GpuDataAccess pendingResult = resultCache.getCacheData(resultMetadata, resultRequest);
+            test.expect(pendingResult.status() == CacheStatus::TaskFallback && pendingResult.freeCacheData(true), "a result is not published until its own freeCacheData call");
+        }
+        test.expect(result.freeCacheData(submitted), "finish the independent result access");
+    }
+    test.expect(std::all_of(h_frame.begin(), h_frame.end(), [](unsigned char value) { return value == 0x19; }) && std::all_of(h_result.begin(), h_result.end(), [](unsigned char value) { return value == 0x37; }), "caller-generated frame/result bytes survive simultaneous access without overwriting each other");
+    if (capacity != 0) {
+        // A larger fallback allocation is valid even when the requested payload is smaller.
+        GpuDataAccess frameHit = frameCache.getCacheData(frameMetadata, resultRequest);
+        GpuDataAccess resultHit = resultCache.getCacheData(resultMetadata, resultRequest);
+        test.expect(frameHit.status() == CacheStatus::CacheHit && resultHit.status() == CacheStatus::CacheHit && frameHit.writableData() == nullptr && resultHit.writableData() == nullptr, "published frame and result keys hit independently as read-only data");
+        test.expect(frameHit.freeCacheData(true) && resultHit.freeCacheData(true), "release both independent readers");
+        test.expect(frameCache.resetCache(), "reset only the frame cache");
+        GpuDataAccess frameRefill = frameCache.getCacheData(frameMetadata, frameRequest);
+        GpuDataAccess preservedResult = resultCache.getCacheData(resultMetadata, resultRequest);
+        test.expect(frameRefill.status() == CacheStatus::CacheFill && preservedResult.status() == CacheStatus::CacheHit, "resetting one cache preserves the other cache's key");
+        test.expect(!frameRefill.freeCacheData(false) && preservedResult.freeCacheData(true), "rollback of a frame fill leaves the result cache intact");
+    }
+    test.expect(frameCache.release() && resultCache.release(), "release independent payload caches");
+    test.expect(cudaFree(d_resultFallback) == cudaSuccess && releaseAccessResources(resources), "caller releases fallback allocations and stream after all leases finish");
+}
+
+void testConcurrentCacheRequests(TestContext& test, const GpuLocation& location) {
+    constexpr std::size_t PAYLOAD_BYTES = 64;
+    std::array<TaskGpuResources, 3> resources;
+    GpuCacheManager cache;
+    bool initialized = cache.initialize({location.gpuId}, PAYLOAD_BYTES, 1);
+    for (TaskGpuResources& taskResources : resources) {
+        initialized = initializeAccessResources(taskResources, location, PAYLOAD_BYTES) && initialized;
+    }
+    test.expect(initialized, "initialize concurrent callers with independent streams and fallbacks");
+    if (!initialized) {
+        cache.release();
+        for (TaskGpuResources& taskResources : resources) {
+            releaseAccessResources(taskResources);
+        }
+        return;
+    }
+    FrameMetadata metadata;
+    metadata.key = {73, 2};
+    metadata.width = 8;
+    metadata.height = 8;
+    metadata.dtype = 1;
+    metadata.bytes = PAYLOAD_BYTES;
+    {
+        GpuDataAccess fill = cache.getCacheData(metadata, makeCacheRequest(resources[0]));
+        const bool submitted = fill.status() == CacheStatus::CacheFill && cudaMemsetAsync(fill.writableData(), 0x5a, fill.bytes(), fill.getStream()) == cudaSuccess;
+        test.expect(fill.freeCacheData(submitted), "publish payload before concurrent readers start");
+    }
+    std::mutex readerLock;
+    std::condition_variable readerCondition;
+    std::size_t readyReaders = 0;
+    bool finishReaders = false;
+    std::array<bool, 2> succeeded{};
+    std::array<std::array<unsigned char, PAYLOAD_BYTES>, 2> h_outputs{};
+    std::array<std::thread, 2> readers;
+    for (std::size_t index = 0; index < readers.size(); ++index) {
+        readers[index] = NumaExecutor(location.numaNode).start([&, index](bool numaReady) {
+            const bool deviceReady = numaReady && cudaSetDevice(location.gpuId) == cudaSuccess;
+            GpuDataAccess access = deviceReady ? cache.getCacheData(metadata, makeCacheRequest(resources[index + 1])) : GpuDataAccess();
+            const bool hit = access.status() == CacheStatus::CacheHit && access.writableData() == nullptr && access.getStream() == resources[index + 1].stream;
+            {
+                std::unique_lock<std::mutex> guard(readerLock);
+                ++readyReaders;
+                readerCondition.notify_all();
+                readerCondition.wait(guard, [&finishReaders] { return finishReaders; });
+            }
+            const bool submitted = hit && cudaMemcpyAsync(h_outputs[index].data(), access.data(), access.bytes(), cudaMemcpyDeviceToHost, access.getStream()) == cudaSuccess;
+            succeeded[index] = access.freeCacheData(submitted);
+        });
+    }
+    {
+        std::unique_lock<std::mutex> guard(readerLock);
+        readerCondition.wait(guard, [&readyReaders] { return readyReaders == 2; });
+    }
+    test.expect(!cache.resetCache() && !cache.release(), "concurrent reader leases block reset and release");
+    FrameMetadata anotherKey = metadata;
+    ++anotherKey.key.frameId;
+    {
+        GpuDataAccess busy = cache.getCacheData(anotherKey, makeCacheRequest(resources[0]));
+        test.expect(busy.status() == CacheStatus::TaskFallback && busy.freeCacheData(true), "a different key cannot evict the entry held by concurrent readers");
+    }
+    {
+        std::lock_guard<std::mutex> guard(readerLock);
+        finishReaders = true;
+    }
+    readerCondition.notify_all();
+    for (std::thread& reader : readers) {
+        reader.join();
+    }
+    for (std::size_t index = 0; index < succeeded.size(); ++index) {
+        test.expect(succeeded[index] && std::all_of(h_outputs[index].begin(), h_outputs[index].end(), [](unsigned char value) { return value == 0x5a; }), "each concurrent caller reads the same immutable payload on its own stream");
+    }
+    test.expect(cache.resetCache() && cache.release(), "the cache can reset and release after the last concurrent reader finishes");
+    for (TaskGpuResources& taskResources : resources) {
+        test.expect(releaseAccessResources(taskResources), "release concurrent caller stream and fallback");
+    }
 }
 
 void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location) {
@@ -351,16 +529,16 @@ void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location)
 
     void* persistentDeviceData = nullptr;
     {
-        GpuDataAccess firstFill = staticData.getCacheData(firstCamera, resources);
-        test.expect(static_cast<bool>(firstFill) && firstFill.source() == GpuDataAccessSource::CacheFill, "first composite key reserves the cache entry");
+        GpuDataAccess firstFill = staticData.getCacheData(firstCamera, makeCacheRequest(resources));
+        test.expect(static_cast<bool>(firstFill) && firstFill.status() == CacheStatus::CacheFill, "first composite key reserves the cache entry");
         persistentDeviceData = firstFill.writableData();
         const bool submitted = persistentDeviceData != nullptr && cudaMemsetAsync(persistentDeviceData, 0x2f, firstFill.bytes(), resources.stream) == cudaSuccess;
         test.expect(firstFill.freeCacheData(submitted), "publish the first composite-key fill");
     }
 
     {
-        GpuDataAccess activeHit = staticData.getCacheData(firstCamera, resources);
-        test.expect(static_cast<bool>(activeHit) && activeHit.source() == GpuDataAccessSource::CacheHit, "reacquire the first composite key as a hit");
+        GpuDataAccess activeHit = staticData.getCacheData(firstCamera, makeCacheRequest(resources));
+        test.expect(static_cast<bool>(activeHit) && activeHit.status() == CacheStatus::CacheHit, "reacquire the first composite key as a hit");
         if (activeHit) {
             test.expect(!staticData.resetCache(), "reject cache reset while a lease is active");
             test.expect(activeHit.freeCacheData(true), "release the active reset-boundary lease");
@@ -368,8 +546,8 @@ void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location)
     }
 
     {
-        GpuDataAccess secondCameraFill = staticData.getCacheData(secondCamera, resources);
-        test.expect(static_cast<bool>(secondCameraFill) && secondCameraFill.source() == GpuDataAccessSource::CacheFill, "camera ID participates in the cache key");
+        GpuDataAccess secondCameraFill = staticData.getCacheData(secondCamera, makeCacheRequest(resources));
+        test.expect(static_cast<bool>(secondCameraFill) && secondCameraFill.status() == CacheStatus::CacheFill, "camera ID participates in the cache key");
         test.expect(secondCameraFill.writableData() == persistentDeviceData, "composite-key eviction reuses the persistent cache allocation");
         const bool submitted = secondCameraFill.writableData() != nullptr && cudaMemsetAsync(secondCameraFill.writableData(), 0x30, secondCameraFill.bytes(), resources.stream) == cudaSuccess;
         test.expect(secondCameraFill.freeCacheData(submitted), "publish the second camera fill");
@@ -377,16 +555,16 @@ void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location)
 
     test.expect(staticData.resetCache(), "reset residency at a safe run boundary");
     {
-        GpuDataAccess fillAfterReset = staticData.getCacheData(secondCamera, resources);
-        test.expect(static_cast<bool>(fillAfterReset) && fillAfterReset.source() == GpuDataAccessSource::CacheFill, "the same frame identity requires a new upload after reset");
+        GpuDataAccess fillAfterReset = staticData.getCacheData(secondCamera, makeCacheRequest(resources));
+        test.expect(static_cast<bool>(fillAfterReset) && fillAfterReset.status() == CacheStatus::CacheFill, "the same frame identity requires a new upload after reset");
         test.expect(fillAfterReset.writableData() == persistentDeviceData, "reset retains the device allocation");
         const bool submitted = fillAfterReset.writableData() != nullptr && cudaMemsetAsync(fillAfterReset.writableData(), 0x31, fillAfterReset.bytes(), resources.stream) == cudaSuccess;
         test.expect(fillAfterReset.freeCacheData(submitted), "publish the post-reset fill");
     }
 
     {
-        GpuDataAccess unseenFill = staticData.getCacheData(arbitraryIncoming, resources);
-        test.expect(static_cast<bool>(unseenFill) && unseenFill.source() == GpuDataAccessSource::CacheFill, "cache an unregistered frame arriving after the reset boundary");
+        GpuDataAccess unseenFill = staticData.getCacheData(arbitraryIncoming, makeCacheRequest(resources));
+        test.expect(static_cast<bool>(unseenFill) && unseenFill.status() == CacheStatus::CacheFill, "cache an unregistered frame arriving after the reset boundary");
         test.expect(unseenFill.writableData() == persistentDeviceData, "unregistered-frame eviction reuses the persistent device allocation");
         const bool submitted = unseenFill.writableData() != nullptr && cudaMemsetAsync(unseenFill.writableData(), 0x33, unseenFill.bytes(), resources.stream) == cudaSuccess;
         test.expect(unseenFill.freeCacheData(submitted), "publish the unregistered incoming frame");
@@ -458,8 +636,8 @@ void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location) {
     }
 
     auto fillFrame = [&cache, &resources](const FrameMetadata& metadata) {
-        GpuDataAccess access = cache.acquire(metadata, resources);
-        if (!access || access.source() != GpuDataAccessSource::CacheFill) {
+        GpuDataAccess access = cache.getCacheData(metadata, makeCacheRequest(resources));
+        if (!access || access.status() != CacheStatus::CacheFill) {
             return false;
         }
         const bool submitted = cudaMemsetAsync(access.writableData(), static_cast<int>(metadata.key.frameId), access.bytes(), resources.stream) == cudaSuccess;
@@ -467,11 +645,11 @@ void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location) {
     };
 
     test.expect(fillFrame(firstMetadata) && fillFrame(secondMetadata), "fill both cache entries");
-    GpuDataAccess firstHit = cache.acquire(firstMetadata, resources);
-    test.expect(static_cast<bool>(firstHit) && firstHit.source() == GpuDataAccessSource::CacheHit && firstHit.freeCacheData(true), "touch first frame so second frame becomes LRU");
+    GpuDataAccess firstHit = cache.getCacheData(firstMetadata, makeCacheRequest(resources));
+    test.expect(static_cast<bool>(firstHit) && firstHit.status() == CacheStatus::CacheHit && firstHit.freeCacheData(true), "touch first frame so second frame becomes LRU");
     test.expect(fillFrame(thirdMetadata), "third frame evicts one inactive cache entry");
-    GpuDataAccess secondAgain = cache.acquire(secondMetadata, resources);
-    test.expect(static_cast<bool>(secondAgain) && secondAgain.source() == GpuDataAccessSource::CacheFill, "least-recently-used second frame was evicted");
+    GpuDataAccess secondAgain = cache.getCacheData(secondMetadata, makeCacheRequest(resources));
+    test.expect(static_cast<bool>(secondAgain) && secondAgain.status() == CacheStatus::CacheFill, "least-recently-used second frame was evicted");
     if (secondAgain) {
         test.expect(secondAgain.freeCacheData(true), "complete refill after LRU eviction");
     }
@@ -480,8 +658,8 @@ void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location) {
     FrameMetadata lastIncomingMetadata;
     for (std::uint64_t frameId = 1000; frameId < 1221; ++frameId) {
         lastIncomingMetadata = makeFrameMetadata(frameId, runtime, static_cast<std::uint32_t>(frameId % 13U));
-        GpuDataAccess incomingFill = cache.acquire(lastIncomingMetadata, resources);
-        if (!incomingFill || incomingFill.source() != GpuDataAccessSource::CacheFill) {
+        GpuDataAccess incomingFill = cache.getCacheData(lastIncomingMetadata, makeCacheRequest(resources));
+        if (!incomingFill || incomingFill.status() != CacheStatus::CacheFill) {
             churnSucceeded = false;
             break;
         }
@@ -493,8 +671,8 @@ void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location) {
     }
     test.expect(churnSucceeded, "cache more than 220 unregistered incoming frames through two fixed entries");
     if (churnSucceeded) {
-        GpuDataAccess lastIncomingHit = cache.acquire(lastIncomingMetadata, resources);
-        test.expect(static_cast<bool>(lastIncomingHit) && lastIncomingHit.source() == GpuDataAccessSource::CacheHit && lastIncomingHit.freeCacheData(true), "fixed residency table preserves the newest incoming frame after churn");
+        GpuDataAccess lastIncomingHit = cache.getCacheData(lastIncomingMetadata, makeCacheRequest(resources));
+        test.expect(static_cast<bool>(lastIncomingHit) && lastIncomingHit.status() == CacheStatus::CacheHit && lastIncomingHit.freeCacheData(true), "fixed residency table preserves the newest incoming frame after churn");
     }
 
     test.expect(cache.release(), "release LRU test cache");
@@ -850,6 +1028,9 @@ int main() {
         testLifecycleAndResults(test, locations.front(), ExecutionModel::Interleaved, 2);
         testStaticDataValidation(test, locations.front());
         testGpuDataAccessState(test, locations.front());
+        testIndependentPayloadCaches(test, locations.front(), 0);
+        testIndependentPayloadCaches(test, locations.front(), 1);
+        testConcurrentCacheRequests(test, locations.front());
         testGpuCacheResetBoundaries(test, locations.front());
         testGpuCacheManagerLru(test, locations.front());
         testFrameDataAcrossTaskInstances(test, locations.front());

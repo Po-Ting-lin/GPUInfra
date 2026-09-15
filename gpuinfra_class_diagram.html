@@ -621,7 +621,7 @@
                     <text class="uml-member" x="1086" y="165">- residencyTable</text>
                     <text class="uml-member" x="1086" y="188">- global LRU / active leases</text>
                     <line class="uml-divider" x1="1070" y1="202" x2="1420" y2="202"></line>
-                    <text class="uml-member" x="1086" y="228">+ acquire() / resetCache()</text>
+                    <text class="uml-member" x="1086" y="228">+ getCacheData() / resetCache()</text>
                 </g>
 
                 <g aria-label="TaskGpuResources class">
@@ -842,7 +842,8 @@
                 <ul>
                     <li><code>DataCache/GpuDataAccess.h/.cpp</code></li>
                     <li><code>CacheHit / CacheFill / TaskFallback</code></li>
-                    <li><code>needsUpload()</code> hides source selection</li>
+                    <li><code>CacheStatus status()</code> tells the caller how to handle a miss</li>
+                    <li><code>cudaStream_t getStream()</code> returns the borrowed request stream</li>
                     <li>cache hit exposes no mutable pointer</li>
                     <li><code>freeCacheData()</code> synchronizes then publishes/releases</li>
                     <li>destructor synchronizes then aborts if incomplete</li>

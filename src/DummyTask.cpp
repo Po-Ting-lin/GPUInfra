@@ -216,18 +216,25 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) { // TODO: n
         return false;
     }
 
-    GpuDataAccess access = staticData.getCacheData(atom.metadata, resources); // Tells everyone I am going to use the data
-    if (!access) {
+    GpuCacheRequest request;
+    request.gpuId = resources.gpuId;
+    request.stream = resources.stream;
+    request.d_fallback = resources.d_input;
+    request.fallbackBytes = resources.inBytes;
+    GpuDataAccess access = staticData.getCacheData(atom.metadata, request);
+    const CacheStatus status = access.status();
+    if (status == CacheStatus::Invalid) {
         atom.result.ok = false;
         return false;
     }
 
-    // Pageable to pinned staging.
-    // H2D
-    if (access.needsUpload()) {
+    const cudaStream_t stream = access.getStream();
+
+    // Caller handles a frame miss: pageable to pinned staging, then H2D.
+    if (status == CacheStatus::CacheFill || status == CacheStatus::TaskFallback) {
         std::memcpy(resources.h_in, atom.data.data(), atom.data.size());
         for (int repeat = 0; repeat < GPUINFRA_H2D_SIZE_MULTIPLIER && atom.result.ok; ++repeat) {
-            CUDA_CHECK(cudaMemcpyAsync(access.writableData(), resources.h_in, resources.inBytes, cudaMemcpyHostToDevice, resources.stream), atom.result.ok = false);
+            CUDA_CHECK(cudaMemcpyAsync(access.writableData(), resources.h_in, resources.inBytes, cudaMemcpyHostToDevice, stream), atom.result.ok = false);
         }
     }
 
@@ -235,7 +242,7 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) { // TODO: n
     if (executionModel == ExecutionModel::Batched) {
         if (atom.result.ok) {
             for (const std::unique_ptr<IAlgo>& algorithm : algorithms) {
-                if (!algorithm->launchKernels(resources, access.data(), resources.stream)) {
+                if (!algorithm->launchKernels(resources, access.data(), stream)) {
                     atom.result.ok = false;
                     break;
                 }
@@ -243,7 +250,7 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) { // TODO: n
         }
         if (atom.result.ok) {
             for (const std::unique_ptr<IAlgo>& algorithm : algorithms) {
-                if (!algorithm->launchD2H(resources, resources.stream)) {
+                if (!algorithm->launchD2H(resources, stream)) {
                     atom.result.ok = false;
                     break;
                 }
@@ -254,7 +261,7 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) { // TODO: n
     else if (executionModel == ExecutionModel::Interleaved) {
         if (atom.result.ok) {
             for (const std::unique_ptr<IAlgo>& algorithm : algorithms) {
-                if (!algorithm->launchKernels(resources, access.data(), resources.stream) || !algorithm->launchD2H(resources, resources.stream)) {
+                if (!algorithm->launchKernels(resources, access.data(), stream) || !algorithm->launchD2H(resources, stream)) {
                     atom.result.ok = false;
                     break;
                 }

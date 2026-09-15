@@ -8,7 +8,6 @@
 
 #include "CudaCheck.h"
 #include "GpuContextManager.h"
-#include "TaskGpuResources.h"
 
 namespace {
 
@@ -86,9 +85,9 @@ bool StaticData::validateFrame(const FrameMetadata& metadata) const {
     return initialized && matchesRuntime(metadata, frameRuntime);
 }
 
-GpuDataAccess StaticData::getCacheData(const FrameMetadata& metadata, const TaskGpuResources& resources) {
+GpuDataAccess StaticData::getCacheData(const FrameMetadata& metadata, const GpuCacheRequest& request) {
     if (!validateFrame(metadata)) {
         return GpuDataAccess();
     }
-    return gpuCacheManager.acquire(metadata, resources);
+    return gpuCacheManager.getCacheData(metadata, request);
 }

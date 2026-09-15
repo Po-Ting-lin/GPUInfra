@@ -6,8 +6,6 @@
 #include "DataCache/GpuCacheManager.h"
 #include "FrameMetadata.h"
 
-struct TaskGpuResources;
-
 struct StaticDataConfig {
     AlgoRuntimeInfo runtime;
     std::size_t gpuCacheEntries = 0;
@@ -28,7 +26,7 @@ public:
     bool isInitialized() const;
     std::size_t gpuCacheEntryCount() const;
     bool validateFrame(const FrameMetadata& metadata) const;
-    GpuDataAccess getCacheData(const FrameMetadata& metadata, const TaskGpuResources& resources);
+    GpuDataAccess getCacheData(const FrameMetadata& metadata, const GpuCacheRequest& request);
 
     StaticData(const StaticData&) = delete;
     StaticData& operator=(const StaticData&) = delete;

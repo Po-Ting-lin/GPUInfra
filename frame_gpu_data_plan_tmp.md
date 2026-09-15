@@ -157,9 +157,9 @@ and `StaticData` contain no phase or execution-state field.
 
 ## 5. Access contract
 
-`GpuDataAccess` reports its source:
+`GpuDataAccess::status()` returns an explicit `CacheStatus`:
 
-| Source | Meaning | `needsUpload()` | Writable pointer |
+| Status | Meaning | Caller writes data? | Writable pointer |
 | --- | --- | --- | --- |
 | `CacheHit` | Matching valid cache entry | false | no |
 | `CacheFill` | Miss reserved an inactive cache entry | true | cache-entry buffer |
@@ -172,7 +172,7 @@ of an incomplete access synchronizes submitted work and aborts it.
 
 ## 6. Lookup and replacement
 
-`GpuCacheManager::acquire(metadata, resources)` holds a short cache metadata
+`GpuCacheManager::getCacheData(metadata, request)` holds a short cache metadata
 mutex and performs an average `O(1)` lookup in a fixed open-addressing table.
 The table holds at most K resident/loading keys in at least 2K slots. Misses
 erase and insert keys with linear probing and backward-shift deletion. An
@@ -228,9 +228,9 @@ The task performs:
 ```text
 validate atom layout and preallocated outputs
   -> make the task GPU current
-  -> StaticData::getCacheData(metadata, resources)
+  -> StaticData::getCacheData(metadata, request)
        -> validate fixed layout
-  -> if needsUpload: atom.data -> h_in -> access.writableData()
+  -> if CacheFill / TaskFallback: atom.data -> h_in -> access.writableData()
   -> CEL / SDD / MI read access.data()
   -> algorithm D2H
   -> access.freeCacheData(result.ok), including one stream sync

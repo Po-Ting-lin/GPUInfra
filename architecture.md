@@ -164,9 +164,9 @@ resets, one `frameId + cameraId` must always identify the same immutable bytes.
 boundary:
 
 ```text
-StaticData::getCacheData(metadata, resources)
+StaticData::getCacheData(metadata, request)
   -> fixed layout validation
-  -> GpuCacheManager::acquire(metadata, resources)
+  -> GpuCacheManager::getCacheData(metadata, request)
        -> fixed open-addressing GpuDataKey -> resident entry index lookup
        -> empty stack or intrusive inactive-entry LRU on miss
 ```
@@ -185,16 +185,29 @@ Each `GpuCacheEntry` is in one state:
 - `Loading`: one cache fill owns the entry but has not published it;
 - `Valid`: the cached metadata and local replica are readable.
 
-`GpuDataAccessSource` describes the selected execution path:
+`GpuDataAccess::status()` returns `CacheStatus` for the selected execution path:
 
 - `CacheHit`: matching valid entry; immutable reader count increases;
-- `CacheFill`: empty or inactive-LRU entry reserved for H2D;
+- `CacheFill`: empty or inactive-LRU entry reserved for caller-produced data;
 - `TaskFallback`: no cache entry can be used immediately, or capacity is zero;
 - `Invalid`: metadata/resource/GPU contract failed.
 
 Multiple hit readers may coexist. An entry with active readers is not evicted.
 If the same frame is loading or all entries are active, the request immediately
 uses task fallback instead of waiting.
+
+`GpuCacheRequest` carries the caller GPU, borrowed stream, fallback pointer,
+and fallback capacity. `getStream()` exposes that same stream. The cache no
+longer depends on `TaskGpuResources::d_input` or its input size. Different
+manager instances may use different payload sizes and independent fallback
+allocations; each still has one fixed entry size and its own index/LRU/lock.
+The current demo supplies its task input buffer for the frame cache only.
+
+The caller performs uploads or result computation for CacheFill/TaskFallback.
+No early publication occurs: `freeCacheData()` synchronizes all queued work
+on the access stream and then publishes or rolls back its fill. A concurrent
+request for Loading uses fallback instead of waiting. No access object may be
+shared for concurrent mutation; each caller acquires its own lease.
 
 ## 7. CUDA hot path
 

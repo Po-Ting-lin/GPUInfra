@@ -9,12 +9,12 @@
 #include "FrameMetadata.h"
 #include "DataCache/GpuCacheEntry.h"
 #include "DataCache/GpuDataAccess.h"
+#include "DataCache/GpuCacheRequest.h"
 #include "DataCache/GpuResidencyTable.h"
 
-struct TaskGpuResources;
-
 // Graph-copy-scoped, fixed-capacity GPU data cache. The current implementation
-// indexes immutable frame inputs by GpuDataKey and may use task fallback.
+// indexes immutable fixed-size payloads by GpuDataKey. The caller handles
+// misses and supplies independent fallback storage for each live payload.
 class GpuCacheManager {
 public:
     GpuCacheManager() = default;
@@ -22,7 +22,7 @@ public:
 
     bool initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount);
     bool resetCache();
-    GpuDataAccess acquire(const FrameMetadata& metadata, const TaskGpuResources& resources);
+    GpuDataAccess getCacheData(const FrameMetadata& metadata, const GpuCacheRequest& request);
     bool release();
 
     bool isInitialized() const;
@@ -45,7 +45,7 @@ private:
     bool removeEvictableEntry(std::size_t index);
     bool completeAccess(GpuDataAccess& access, bool succeeded);
     void abortAccess(GpuDataAccess& access);
-    GpuDataAccess makeFallbackAccess(const FrameMetadata& metadata, const TaskGpuResources& resources);
+    GpuDataAccess makeFallbackAccess(const FrameMetadata& metadata, const GpuCacheRequest& request);
     void resetFillEntry(GpuCacheEntry& entry, std::size_t index);
 
     mutable std::mutex lock;

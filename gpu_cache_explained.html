@@ -20,7 +20,7 @@
 <p class="lede">Cache 的工作是讓相同影像少傳一次 H2D。從一個 frame 進來開始，看懂資料放在哪裡、何時能重用，以及每種失敗如何收尾。</p>
 <div class="grid">
 <div class="card"><span class="step-label">01 / 取得</span><h3><code>getCacheData()</code></h3><p>檢查 layout、查找 key，取得可用的 cache 或 task buffer。</p></div>
-<div class="card"><span class="step-label">02 / 使用</span><h3>需要時上傳，再運算</h3><p><code>needsUpload()</code> 決定 H2D；kernel 一律讀 <code>access.data()</code>。</p></div>
+<div class="card"><span class="step-label">02 / 使用</span><h3>需要時上傳，再運算</h3><p><code>status()</code> 告訴 caller 是否需上傳；<code>getStream()</code> 回傳 task stream；kernel 一律讀 <code>access.data()</code>。</p></div>
 <div class="card"><span class="step-label">03 / 收尾</span><h3><code>freeCacheData(ok)</code></h3><p>同步 stream，發布或回滾 fill，釋放這次存取權。</p></div>
 </div>
 <div class="callout"><strong>「free」結束的是這次存取。</strong> GPU buffer 會保留供重用；呼叫後 access 與其指標失效。真正釋放 cache 配置的是 <code>release()</code>。</div>
@@ -59,14 +59,14 @@
 </section>
 <section id="decisions">
 <div class="section-head"><span class="num">03</span><h2>取得資料：依這個順序判斷</h2></div>
-<p><code>StaticData::getCacheData(metadata, resources)</code> 先驗證固定 layout，再進入 <code>GpuCacheManager::acquire()</code>。Miss 可以填入 cache，也可以使用 fallback。</p>
+<p><code>StaticData::getCacheData(metadata, request)</code> 先驗證固定 layout，再進入 <code>GpuCacheManager::getCacheData()</code>。Miss 可以填入 cache，也可以使用 fallback。</p>
 <div class="card">
 <div class="branch"><strong>① 輸入與資源有效？</strong><p>否 → <span class="badge invalid">Invalid</span>停止。是 → 查完整 key。</p></div>
 <div class="branch"><strong>② Key 已在索引？</strong><div><p>有，但 metadata 不一致 → <span class="badge invalid">Invalid</span></p><p>有，狀態是 Loading → <span class="badge fallback">TaskFallback</span></p><p>有，Valid 且本 GPU replica 可用 → <span class="badge hit">CacheHit</span></p><p>有，Valid 但本 GPU replica 不可用 → <span class="badge fallback">TaskFallback</span></p><p>沒有 → 尋找可用 entry。</p></div></div>
 <div class="branch"><strong>③ 有 Empty entry？</strong><p>有 → <span class="badge fill">CacheFill</span>建立 key mapping，標為 Loading。沒有 → 看 LRU。</p></div>
 <div class="branch"><strong>④ 有閒置 LRU entry？</strong><p>有 → 移除最舊 key，重用其 buffer → <span class="badge fill">CacheFill</span>。沒有 → <span class="badge fallback">TaskFallback</span>（K = 0，或全部使用中 / Loading）。</p></div>
 </div>
-<div class="table-wrap"><table><caption>回傳結果決定指標與 H2D</caption><thead><tr><th scope="col">Source</th><th scope="col">data() 指向</th><th scope="col">needsUpload()</th><th scope="col">writableData()</th><th scope="col">取得時的變化</th></tr></thead><tbody>
+<div class="table-wrap"><table><caption>回傳結果決定指標與 H2D</caption><thead><tr><th scope="col">Status</th><th scope="col">data() 指向</th><th scope="col">Caller 需要填入？</th><th scope="col">writableData()</th><th scope="col">取得時的變化</th></tr></thead><tbody>
 <tr><td><span class="badge hit">CacheHit</span></td><td>Entry 的 GPU buffer</td><td>false</td><td>nullptr（唯讀）</td><td>Reader +1；第一位 reader 將 entry 移出 LRU</td></tr>
 <tr><td><span class="badge fill">CacheFill</span></td><td>Entry 的 GPU buffer</td><td>true</td><td>同一 buffer</td><td>先插入 mapping；Loading，active = 1，replica 尚無效</td></tr>
 <tr><td><span class="badge fallback">TaskFallback</span></td><td>Task 的 d_input</td><td>true</td><td>同一 buffer</td><td>Fallback lease +1；不建立 cache mapping</td></tr>
@@ -75,7 +75,7 @@
 <details><summary>Invalid：輸入錯誤與內部防禦分支</summary><div>
 <ul>
 <li><strong>StaticData：</strong>未初始化，或 bytes 為 0、bytes / width / height / dtype 不符合初始化時的固定 layout。</li>
-<li><strong>Manager：</strong>未初始化或正在 release；metadata bytes 不符、width / height 非正值；GPU ID 無效或不在允許清單；stream / d_input 為空；resources.inBytes 不符。即使預期 cache hit，也要提供有效 fallback 資源。</li>
+<li><strong>Manager：</strong>未初始化或正在 release；metadata bytes 不符、width / height 非正值；GPU ID 無效或不在允許清單；request.stream / request.d_fallback 為空；request.fallbackBytes 小於 cache payload。即使預期 cache hit，也要提供有效 fallback 資源。</li>
 <li><strong>已有 key：</strong>entry index 越界 / entry 為空、metadata 不一致、狀態既非 Loading 也非 Valid，或 active count 與 LRU membership 不一致。</li>
 <li><strong>填入候選：</strong>GPU pointer 缺失、Empty / Valid / active / LRU 狀態不符、舊 mapping erase 失敗，或新 mapping insert 失敗 → 歸還候選並回傳 Invalid。替換時 insert 失敗會嘗試還原舊 mapping；歸還 Valid 候選會加入 MRU。取 LRU 候選時若無法移出 list，則視為沒有候選而走 fallback。</li>
 </ul><p class="muted">在正常初始化與不變條件成立時，內部一致性錯誤不應發生。它們與一般「cache 滿了」不同：正常容量不足會使用 fallback。</p>
@@ -95,21 +95,29 @@
 <div class="card"><h3>同時有多位 reader</h3><p>Reader 不互相排斥，且都只能讀。任何一位成功、失敗或 abort 都只減少自己的 lease；還有人在讀時，entry 持續受到保護。</p></div>
 </div>
 <pre aria-label="典型呼叫流程示意"><code>// 示意：H2D、kernel、D2H 都使用 resources.stream
-GpuDataAccess access = staticData.getCacheData(metadata, resources);
-if (!access) return false;
+GpuCacheRequest request;
+request.gpuId = resources.gpuId;
+request.stream = resources.stream;
+request.d_fallback = resources.d_input;
+request.fallbackBytes = resources.inBytes;
+GpuDataAccess access = staticData.getCacheData(metadata, request);
+const CacheStatus status = access.status();
+if (status == CacheStatus::Invalid) return false;
+const cudaStream_t stream = access.getStream();
 
 bool ok = true;
-if (access.needsUpload()) {
-    ok = enqueueH2D(access.writableData(), resources.stream);
+if (status == CacheStatus::CacheFill || status == CacheStatus::TaskFallback) {
+    ok = enqueueH2D(access.writableData(), stream);
 }
 if (ok) {
-    ok = enqueueComputeAndD2H(access.data(), resources.stream);
+    ok = enqueueComputeAndD2H(access.data(), stream);
 }
 // 提交失敗也要呼叫，讓已提交的工作同步並結束 lease。
 if (!access.freeCacheData(ok)) return false;
 // 這裡才能收集 D2H 結果；access 的指標已不可使用。</code></pre>
-<details><summary>重複呼叫、發布失敗，以及同步的邊界</summary><div><p>正常路徑只呼叫一次。Default Invalid access 或已完成的 access 呼叫 <code>freeCacheData()</code> 會回傳 false；已 reset 的 access 析構不再同步。Access 不可複製或移動。</p><p>Fill 若無法標記 replica 有效，或無法加入 LRU，會回滾至 Empty 並回傳 false。Manager 會檢查 owner、key、pointer、bytes、狀態與 lease 計數；內部驗證失敗不視為成功發布，也不能假設受損的計數已修復。</p><p>正常收尾會檢查 CUDA 同步結果；析構是錯誤路徑的保護網，會嘗試同步並記錄 CUDA 錯誤後 abort，無法回傳成功結果。它不會把未完成的 fill 發布成 Valid。Cache mutex 保護管理狀態；CUDA 工作在各 task stream 執行，收尾時的同步發生在 manager 的狀態鎖之外。</p></div></details>
-<div class="callout"><strong>呼叫端的責任：</strong>成功 flag 代表所需 H2D、compute、D2H 已正確提交；cache 不檢查影像內容。相同 key 的內容若改變，需使用新 identity 或先在安全邊界 reset。每個 task 只有一個 fallback input，同時處理兩份資料時不可讓兩個 live fallback 覆寫彼此；目前 graph 以 task exclusive checkout 防止跨 worker 重用同一 task。</div>
+<details><summary>重複呼叫、發布失敗，以及同步的邊界</summary><div><p>正常路徑只呼叫一次。Default Invalid access 或已完成的 access 呼叫 <code>freeCacheData()</code> 會回傳 false；收尾後 <code>status()</code> 為 Invalid、<code>getStream()</code> 為 nullptr，所有指標不可再用；已 reset 的 access 析構不再同步。Access 不可複製或移動。</p><p>Fill 若無法標記 replica 有效，或無法加入 LRU，會回滾至 Empty 並回傳 false。Manager 會檢查 owner、key、pointer、bytes、狀態與 lease 計數；內部驗證失敗不視為成功發布，也不能假設受損的計數已修復。</p><p>正常收尾會檢查 CUDA 同步結果；析構是錯誤路徑的保護網，會嘗試同步並記錄 CUDA 錯誤後 abort，無法回傳成功結果。它不會把未完成的 fill 發布成 Valid。Cache mutex 保護管理狀態；CUDA 工作在各 task stream 執行，收尾時的同步發生在 manager 的狀態鎖之外。</p></div></details>
+<div class="callout"><strong>Miss 由 caller 處理。</strong> Frame 的 CacheFill／TaskFallback 要 H2D；result 則由算法產生資料。<code>GpuCacheRequest</code> 提供 GPU、stream、fallback pointer 與容量；<code>GpuDataAccess</code> 回傳 status 與同一條借用的 stream。全部工作結束後才發布，不需額外 H2D event。目前 demo 僅使用 frame cache；result 的版本識別與重算策略由 caller 定義。</div>
+<div class="callout"><strong>呼叫端的責任：</strong>成功 flag 代表所需 H2D、compute、D2H 已正確提交；cache 不檢查影像內容。相同 key 的內容若改變，需使用新 identity 或先在安全邊界 reset。Frame demo 以 task d_input 作 fallback；每次 request 明確提供 fallback pointer 與容量。Frame／result 同時存取時必須使用不會互相覆寫的空間，不同 cache instance 可有不同 payload 大小；目前 graph 以 task exclusive checkout 防止跨 worker 重用同一 task。</div>
 </section>
 <section id="lifetime">
 <div class="section-head"><span class="num">05</span><h2>從初始化到關閉，什麼會被清掉？</h2></div>

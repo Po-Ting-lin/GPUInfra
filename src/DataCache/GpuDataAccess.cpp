@@ -3,7 +3,7 @@
 #include "CudaCheck.h"
 #include "DataCache/GpuCacheManager.h"
 
-GpuDataAccess::GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, GpuDataAccessSource source)
+GpuDataAccess::GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, CacheStatus status)
     : owner(accessOwner),
       d_data(deviceData),
       dataBytes(bytes),
@@ -11,7 +11,7 @@ GpuDataAccess::GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std
       dataKey(targetDataKey),
       stream(accessStream),
       deviceId(gpuId),
-      accessSource(source) {}
+      accessStatus(status) {}
 
 GpuDataAccess::~GpuDataAccess() {
     if (owner == nullptr) {
@@ -32,7 +32,7 @@ const void* GpuDataAccess::data() const {
 }
 
 void* GpuDataAccess::writableData() const {
-    return needsUpload() ? d_data : nullptr;
+    return accessStatus == CacheStatus::CacheFill || accessStatus == CacheStatus::TaskFallback ? d_data : nullptr;
 }
 
 std::size_t GpuDataAccess::bytes() const {
@@ -43,12 +43,12 @@ int GpuDataAccess::gpuId() const {
     return deviceId;
 }
 
-bool GpuDataAccess::needsUpload() const {
-    return accessSource == GpuDataAccessSource::CacheFill || accessSource == GpuDataAccessSource::TaskFallback;
+CacheStatus GpuDataAccess::status() const {
+    return accessStatus;
 }
 
-GpuDataAccessSource GpuDataAccess::source() const {
-    return accessSource;
+cudaStream_t GpuDataAccess::getStream() const {
+    return stream;
 }
 
 bool GpuDataAccess::freeCacheData(bool submittedSuccessfully) {
@@ -69,5 +69,5 @@ void GpuDataAccess::reset() {
     dataKey = GpuDataKey();
     stream = nullptr;
     deviceId = -1;
-    accessSource = GpuDataAccessSource::Invalid;
+    accessStatus = CacheStatus::Invalid;
 }

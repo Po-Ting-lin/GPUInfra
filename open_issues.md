@@ -60,13 +60,18 @@ frame-owned output plane、spill/recompute 規則及其 lifetime。Best-effort
 
 ## Non-frame GPU data
 
-`GpuCacheManager`、`GpuCacheEntry` 與 `GpuDataAccess` 的名稱預留未來保存其他
-GPU data 的空間。雖然現在已有 `GpuDataKey(frameId, cameraId)`，它仍是
-frame-specific；`acquire()` 也只接受
-`FrameMetadata`，所有 entries 使用相同的 frame byte size。正式支援 static
-data 或 algorithm intermediate 以前，仍須把 key／descriptor 泛化，並定義
-不同 payload size、mutability、重建或 fallback source，以及 eviction
-lifetime。本次 key 擴充不代表已具備這些功能。
+`GpuCacheRequest` 已將 GPU、stream、fallback pointer 與容量交由 caller
+提供；不同 `GpuCacheManager` instances 可有不同的固定 payload 大小。
+`GpuDataAccess::status()` 回傳 CacheStatus，`getStream()` 回傳 request 的
+stream。CacheFill／TaskFallback 的上傳或計算由 caller 執行，最後才由
+`freeCacheData()` 同步並發布／回滾，不提早發布。
+
+目前 demo 的 `StaticData` 仍只有 frame cache，CEL／SDD／MI outputs 尚未
+接入 result cache。Key 仍是 `GpuDataKey(frameId, cameraId)`，descriptor
+仍是 `FrameMetadata`。加入 result cache 時，caller 必須定義參數／算法版本
+與 key 的關係或安全 reset 時機、可重算來源，以及獨立的 fallback buffer。
+每個 manager 仍使用固定 entry size；mutable 或不可重建的 GPU intermediate
+仍需另外定義 ownership 與 eviction lifetime。
 
 ## Cache sizing 與觀測
 

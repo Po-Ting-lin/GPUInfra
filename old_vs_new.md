@@ -143,7 +143,7 @@ A more reusable API is to let the caller provide the fallback pointer for each
 acquisition:
 
 ```cpp
-GpuDataAccess acquire(const GpuDataKey& key,
+GpuDataAccess getCacheData(const GpuDataKey& key,
                       const GpuDataDescriptor& descriptor,
                       const TaskGpuResources& resources,
                       void* d_fallback);

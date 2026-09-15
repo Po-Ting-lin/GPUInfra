@@ -5,8 +5,6 @@
 #include <utility>
 #include <vector>
 
-#include "TaskGpuResources.h"
-
 GpuCacheManager::~GpuCacheManager() {
     release();
 }
@@ -71,9 +69,9 @@ bool GpuCacheManager::resetCache() {
     return true;
 }
 
-GpuDataAccess GpuCacheManager::acquire(const FrameMetadata& metadata, const TaskGpuResources& resources) {
+GpuDataAccess GpuCacheManager::getCacheData(const FrameMetadata& metadata, const GpuCacheRequest& request) {
     std::lock_guard<std::mutex> guard(lock);
-    if (!initialized || releasing || metadata.bytes != dataBytes || metadata.width <= 0 || metadata.height <= 0 || resources.gpuId < 0 || resources.stream == nullptr || resources.d_input == nullptr || resources.inBytes != dataBytes || std::find(eligibleGpuIds.begin(), eligibleGpuIds.end(), resources.gpuId) == eligibleGpuIds.end()) {
+    if (!initialized || releasing || metadata.bytes != dataBytes || metadata.width <= 0 || metadata.height <= 0 || request.gpuId < 0 || request.stream == nullptr || request.d_fallback == nullptr || request.fallbackBytes < dataBytes || std::find(eligibleGpuIds.begin(), eligibleGpuIds.end(), request.gpuId) == eligibleGpuIds.end()) {
         return GpuDataAccess();
     }
 
@@ -89,33 +87,33 @@ GpuDataAccess GpuCacheManager::acquire(const FrameMetadata& metadata, const Task
             return GpuDataAccess();
         }
         if (entry.cacheState == GpuCacheState::Loading) {
-            return makeFallbackAccess(metadata, resources);
+            return makeFallbackAccess(metadata, request);
         }
         if (entry.cacheState != GpuCacheState::Valid) {
             return GpuDataAccess();
         }
 
-        void* deviceData = entry.dataForGpu(resources.gpuId);
-        if (deviceData == nullptr || !entry.replicaValid(resources.gpuId)) {
+        void* deviceData = entry.dataForGpu(request.gpuId);
+        if (deviceData == nullptr || !entry.replicaValid(request.gpuId)) {
             // A future multi-GPU implementation can reserve a local replica
-            // fill here. The current one-GPU scope safely re-uploads instead.
-            return makeFallbackAccess(metadata, resources);
+            // fill here. In the current one-GPU scope, the caller handles fallback.
+            return makeFallbackAccess(metadata, request);
         }
         if ((entry.activeAccesses == 0 && !removeEvictableEntry(index)) || (entry.activeAccesses != 0 && entry.inEvictableList)) {
             return GpuDataAccess();
         }
         ++entry.activeAccesses;
-        return GpuDataAccess(this, deviceData, dataBytes, index, metadata.key, resources.stream, resources.gpuId, GpuDataAccessSource::CacheHit);
+        return GpuDataAccess(this, deviceData, dataBytes, index, metadata.key, request.stream, request.gpuId, CacheStatus::CacheHit);
     }
 
     bool wasEmpty = false;
     const std::size_t candidateIndex = takeCandidate(wasEmpty);
     if (candidateIndex == NO_ENTRY) {
-        return makeFallbackAccess(metadata, resources);
+        return makeFallbackAccess(metadata, request);
     }
 
     GpuCacheEntry& candidate = *entries[candidateIndex];
-    void* deviceData = candidate.dataForGpu(resources.gpuId);
+    void* deviceData = candidate.dataForGpu(request.gpuId);
     if (deviceData == nullptr) {
         restoreCandidate(candidateIndex, wasEmpty);
         return GpuDataAccess();
@@ -148,7 +146,7 @@ GpuDataAccess GpuCacheManager::acquire(const FrameMetadata& metadata, const Task
     candidate.invalidateReplicas();
     candidate.cacheState = GpuCacheState::Loading;
     candidate.activeAccesses = 1;
-    return GpuDataAccess(this, deviceData, dataBytes, candidateIndex, metadata.key, resources.stream, resources.gpuId, GpuDataAccessSource::CacheFill);
+    return GpuDataAccess(this, deviceData, dataBytes, candidateIndex, metadata.key, request.stream, request.gpuId, CacheStatus::CacheFill);
 }
 
 bool GpuCacheManager::release() {
@@ -320,7 +318,7 @@ bool GpuCacheManager::completeAccess(GpuDataAccess& access, bool succeeded) {
     if (access.owner != this) {
         return false;
     }
-    if (access.accessSource == GpuDataAccessSource::TaskFallback) {
+    if (access.accessStatus == CacheStatus::TaskFallback) {
         std::lock_guard<std::mutex> guard(lock);
         const bool valid = initialized && !releasing && activeFallbackAccesses > 0 && access.entryIndex == NO_ENTRY && access.d_data != nullptr && access.dataBytes == dataBytes;
         if (valid) {
@@ -337,7 +335,7 @@ bool GpuCacheManager::completeAccess(GpuDataAccess& access, bool succeeded) {
         valid = entry != nullptr && entry->metadata.key == access.dataKey && entry->dataForGpu(access.deviceId) == access.d_data && access.dataBytes == dataBytes;
     }
 
-    if (access.accessSource == GpuDataAccessSource::CacheHit) {
+    if (access.accessStatus == CacheStatus::CacheHit) {
         valid = valid && entry->cacheState == GpuCacheState::Valid && entry->activeAccesses > 0 && !entry->inEvictableList && entry->replicaValid(access.deviceId);
         if (valid) {
             --entry->activeAccesses;
@@ -346,7 +344,7 @@ bool GpuCacheManager::completeAccess(GpuDataAccess& access, bool succeeded) {
             }
         }
     }
-    else if (access.accessSource == GpuDataAccessSource::CacheFill) {
+    else if (access.accessStatus == CacheStatus::CacheFill) {
         valid = valid && entry->cacheState == GpuCacheState::Loading && entry->activeAccesses == 1 && !entry->inEvictableList;
         if (valid && succeeded) {
             if (entry->markReplicaValid(access.deviceId)) {
@@ -381,7 +379,7 @@ void GpuCacheManager::abortAccess(GpuDataAccess& access) {
     if (access.owner != this) {
         return;
     }
-    if (access.accessSource == GpuDataAccessSource::TaskFallback) {
+    if (access.accessStatus == CacheStatus::TaskFallback) {
         std::lock_guard<std::mutex> guard(lock);
         if (activeFallbackAccesses > 0) {
             --activeFallbackAccesses;
@@ -394,22 +392,22 @@ void GpuCacheManager::abortAccess(GpuDataAccess& access) {
     if (access.entryIndex < entries.size()) {
         GpuCacheEntry& entry = *entries[access.entryIndex];
         const bool matchingAccess = entry.metadata.key == access.dataKey && entry.dataForGpu(access.deviceId) == access.d_data && access.dataBytes == dataBytes;
-        if (matchingAccess && access.accessSource == GpuDataAccessSource::CacheHit && entry.cacheState == GpuCacheState::Valid && entry.activeAccesses > 0 && !entry.inEvictableList) {
+        if (matchingAccess && access.accessStatus == CacheStatus::CacheHit && entry.cacheState == GpuCacheState::Valid && entry.activeAccesses > 0 && !entry.inEvictableList) {
             --entry.activeAccesses;
             if (entry.activeAccesses == 0) {
                 addEvictableEntry(access.entryIndex);
             }
         }
-        else if (matchingAccess && access.accessSource == GpuDataAccessSource::CacheFill && entry.cacheState == GpuCacheState::Loading && entry.activeAccesses == 1 && !entry.inEvictableList) {
+        else if (matchingAccess && access.accessStatus == CacheStatus::CacheFill && entry.cacheState == GpuCacheState::Loading && entry.activeAccesses == 1 && !entry.inEvictableList) {
             resetFillEntry(entry, access.entryIndex);
         }
     }
     access.reset();
 }
 
-GpuDataAccess GpuCacheManager::makeFallbackAccess(const FrameMetadata& metadata, const TaskGpuResources& resources) {
+GpuDataAccess GpuCacheManager::makeFallbackAccess(const FrameMetadata& metadata, const GpuCacheRequest& request) {
     ++activeFallbackAccesses;
-    return GpuDataAccess(this, resources.d_input, dataBytes, NO_ENTRY, metadata.key, resources.stream, resources.gpuId, GpuDataAccessSource::TaskFallback);
+    return GpuDataAccess(this, request.d_fallback, dataBytes, NO_ENTRY, metadata.key, request.stream, request.gpuId, CacheStatus::TaskFallback);
 }
 
 void GpuCacheManager::resetFillEntry(GpuCacheEntry& entry, std::size_t index) {

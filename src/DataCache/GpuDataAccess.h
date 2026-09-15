@@ -7,7 +7,7 @@
 
 #include "DataCache/GpuDataKey.h"
 
-enum class GpuDataAccessSource {
+enum class CacheStatus {
     Invalid,
     CacheHit,
     CacheFill,
@@ -21,38 +21,38 @@ class GpuCacheManager;
 // queued CUDA work may still read the returned pointer; task fallback use is
 // tracked for the same lifetime.
 //
-// Typical call sequence:
+// Typical caller-owned miss handling:
 //
-//   GpuDataAccess access = staticData.getCacheData(metadata, resources);
-//   if (!access) {
+//   GpuDataAccess access = cache.getCacheData(metadata, request);
+//   const CacheStatus status = access.status();
+//   if (status == CacheStatus::Invalid) {
 //       return false;
 //   }
-//
+//   const cudaStream_t stream = access.getStream();
 //   bool submitted = true;
-//   if (access.needsUpload()) {
-//       submitted = enqueueH2D(access.writableData(), resources.stream);
+//   if (status == CacheStatus::CacheFill || status == CacheStatus::TaskFallback) {
+//       submitted = enqueueData(access.writableData(), stream);
 //   }
 //   if (submitted) {
-//       submitted = enqueueComputeAndD2H(access.data(), resources.stream);
+//       submitted = enqueueComputeAndD2H(access.data(), stream);
 //   }
 //   if (!access.freeCacheData(submitted)) {
 //       return false;
 //   }
 //
-// data() is the read-only pointer consumed by kernels for every valid source.
-// writableData() is non-null only for CacheFill and TaskFallback, where the
-// caller must enqueue H2D before compute. CacheHit requires no upload.
+// CacheHit is read-only. CacheFill and TaskFallback expose writableData();
+// the caller uploads or computes the entire payload before reading it.
+// The cache does not upload, compute, or inspect the payload itself.
 //
-// Submit H2D, compute, and D2H to the same TaskGpuResources stream used during
-// acquire. Call freeCacheData() exactly once on the normal path, even when enqueueing
-// failed. It synchronizes that stream, publishes a successful CacheFill, or
-// releases/rolls back the cache or fallback reservation. After freeCacheData(), the
-// access and its pointers are invalid.
+// Submit all work using this pointer to getStream(), the borrowed request
+// stream. Call freeCacheData() once even if submission fails. It synchronizes
+// that stream, publishes a successful fill or rolls back a failed fill, and
+// ends this lease. No fill is published early. The access and its pointers
+// are invalid afterwards; getStream() returns nullptr and status() is Invalid.
 //
-// The destructor is an error-path safety net: if freeCacheData() was not called, it
-// synchronizes already-submitted work and aborts the access. Do not rely on the
-// destructor for successful completion because an unfinished CacheFill will
-// not be published.
+// The destructor is an error-path safety net: an unfinished access attempts
+// synchronization and aborts. It never publishes an unfinished CacheFill.
+// Keep the manager, stream, and fallback allocation alive through completion.
 class GpuDataAccess {
 public:
     GpuDataAccess() = default;
@@ -63,8 +63,8 @@ public:
     void* writableData() const;
     std::size_t bytes() const;
     int gpuId() const;
-    bool needsUpload() const;
-    GpuDataAccessSource source() const;
+    CacheStatus status() const;
+    cudaStream_t getStream() const;
 
     // Required normal-path finish operation; invalidates this access.
     // Releases the reservation while retaining the underlying GPU allocation.
@@ -78,7 +78,7 @@ public:
 private:
     friend class GpuCacheManager;
 
-    GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, GpuDataAccessSource accessSource);
+    GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, CacheStatus accessStatus);
     void reset();
 
     GpuCacheManager* owner = nullptr;
@@ -88,5 +88,5 @@ private:
     GpuDataKey dataKey;
     cudaStream_t stream = nullptr;
     int deviceId = -1;
-    GpuDataAccessSource accessSource = GpuDataAccessSource::Invalid;
+    CacheStatus accessStatus = CacheStatus::Invalid;
 };
