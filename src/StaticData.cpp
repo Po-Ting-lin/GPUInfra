@@ -2,10 +2,12 @@
 
 #include <cstdio>
 #include <limits>
+#include <vector>
 
 #include <cuda_runtime.h>
 
 #include "CudaCheck.h"
+#include "GpuContextManager.h"
 #include "TaskGpuResources.h"
 
 namespace {
@@ -21,7 +23,12 @@ StaticData::~StaticData() {
 }
 
 bool StaticData::init(const StaticDataConfig& config) {
-    if (initialized || gpuCacheManager.isInitialized() || frameRuntime.inBytes != 0 || config.gpuIds.size() != 1 || config.gpuIds.front() < 0 || config.runtime.inBytes == 0) {
+    if (initialized || gpuCacheManager.isInitialized() || frameRuntime.inBytes != 0 || config.runtime.inBytes == 0) {
+        return false;
+    }
+
+    std::vector<int> gpuIds;
+    if (!GpuContextManager::gpuIdsForCurrentNumaNode(gpuIds)) {
         return false;
     }
 
@@ -32,20 +39,20 @@ bool StaticData::init(const StaticDataConfig& config) {
     std::size_t freeBytes = 0;
     std::size_t totalBytes = 0;
     if (cacheGpuBytes != 0) {
-        CUDA_CHECK(cudaSetDevice(config.gpuIds.front()), return false);
+        CUDA_CHECK(cudaSetDevice(gpuIds.front()), return false);
         CUDA_CHECK(cudaMemGetInfo(&freeBytes, &totalBytes), return false);
         if (cacheGpuBytes > freeBytes) {
-            std::fprintf(stderr, "[GPUInfra] insufficient StaticData GPU cache memory gpu=%d required=%zu free=%zu total=%zu\n", config.gpuIds.front(), cacheGpuBytes, freeBytes, totalBytes);
+            std::fprintf(stderr, "[GPUInfra] insufficient StaticData GPU cache memory gpu=%d required=%zu free=%zu total=%zu\n", gpuIds.front(), cacheGpuBytes, freeBytes, totalBytes);
             return false;
         }
     }
-    if (!gpuCacheManager.initialize(config.gpuIds, config.runtime.inBytes, config.gpuCacheEntries)) {
+    if (!gpuCacheManager.initialize(gpuIds, config.runtime.inBytes, config.gpuCacheEntries)) {
         return false;
     }
 
     frameRuntime = config.runtime;
     initialized = true;
-    std::fprintf(stderr, "[GPUInfra] StaticData GPU cache plan gpu=%d cache_entries=%zu bytes_per_entry=%zu allocated_bytes=%zu\n", config.gpuIds.front(), config.gpuCacheEntries, config.runtime.inBytes, cacheGpuBytes);
+    std::fprintf(stderr, "[GPUInfra] StaticData GPU cache plan gpu=%d cache_entries=%zu bytes_per_entry=%zu allocated_bytes=%zu\n", gpuIds.front(), config.gpuCacheEntries, config.runtime.inBytes, cacheGpuBytes);
     return true;
 }
 
@@ -79,7 +86,7 @@ bool StaticData::validateFrame(const FrameMetadata& metadata) const {
     return initialized && matchesRuntime(metadata, frameRuntime);
 }
 
-GpuDataAccess StaticData::acquireGpuData(const FrameMetadata& metadata, const TaskGpuResources& resources) {
+GpuDataAccess StaticData::getCacheData(const FrameMetadata& metadata, const TaskGpuResources& resources) {
     if (!validateFrame(metadata)) {
         return GpuDataAccess();
     }

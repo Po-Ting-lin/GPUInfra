@@ -37,12 +37,14 @@ add_library(gpuinfra
     src/Algo/Sdd.cu
     src/DummyTask.cpp
     src/Grape/DummyGraph.cpp
+    src/Grape/NumaExecutor.cpp
     src/Grape/FrameCpuAtom.cpp
     src/DataCache/GpuCacheEntry.cpp
     src/DataCache/GpuCacheManager.cpp
     src/DataCache/GpuDataAccess.cpp
     src/DataCache/GpuResidencyTable.cpp
     src/GpuContextManager.cpp
+    src/GpuTopology.cpp
     src/ParameterRegistry.cpp
     src/StaticData.cpp
 )

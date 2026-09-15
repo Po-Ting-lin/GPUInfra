@@ -44,9 +44,8 @@ bool validRuntime(const AlgoRuntimeInfo& runtime) {
 
 }  // namespace
 
-DummyTask::DummyTask(int instanceId, int gpuId, ExecutionModel model, const AlgoRuntimeInfo& runtime)
+DummyTask::DummyTask(int instanceId, ExecutionModel model, const AlgoRuntimeInfo& runtime)
     : id(instanceId),
-      gpu(gpuId),
       executionModel(model),
       algoRuntime(runtime) {}
 
@@ -68,12 +67,13 @@ bool DummyTask::registerParameters(ParameterRegistry& registry) {
 
 bool DummyTask::load() {
     ParameterSnapshot initialParameters;
-    if (state != TaskLifecycle::Registered || parameterRegistry == nullptr || !parameterRegistry->snapshot(initialParameters) || id < 0 || gpu < 0 || !validRuntime(algoRuntime)) {
+    if (state != TaskLifecycle::Registered || parameterRegistry == nullptr || !parameterRegistry->snapshot(initialParameters) || id < 0 || !validRuntime(algoRuntime)) {
         return false;
     }
 
-    // GpuContextManager register
-    if (!GpuContextManager::registerTask(gpu, resources)) {
+    // The framework establishes graph-local NUMA affinity before load().
+    std::vector<int> gpuIds;
+    if (!GpuContextManager::gpuIdsForCurrentNumaNode(gpuIds) || !GpuContextManager::registerTask(gpuIds.front(), resources)) {
         state = TaskLifecycle::Failed;
         releaseResources();
         return false;
@@ -194,7 +194,7 @@ bool DummyTask::applyParameters(const ParameterSnapshot& parameters) {
     return true;
 }
 
-bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
+bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) { // TODO: not sure where is the correct place for static data
     atom.result.id = atom.metadata.key.frameId;
     if (state != TaskLifecycle::Started) {
         atom.result.ok = false;
@@ -216,7 +216,7 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
         return false;
     }
 
-    GpuDataAccess access = staticData.acquireGpuData(atom.metadata, resources);
+    GpuDataAccess access = staticData.getCacheData(atom.metadata, resources); // Tells everyone I am going to use the data
     if (!access) {
         atom.result.ok = false;
         return false;
@@ -265,7 +265,7 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
         atom.result.ok = false;
     }
 
-    if (!access.complete(atom.result.ok)) {
+    if (!access.freeCacheData(atom.result.ok)) {  // Tells everyone the data is free now. Only 1 sync here
         atom.result.ok = false;
     }
 
@@ -311,7 +311,7 @@ int DummyTask::instanceId() const {
 }
 
 int DummyTask::gpuId() const {
-    return gpu;
+    return resources.gpuId;
 }
 
 TaskLifecycle DummyTask::lifecycle() const {

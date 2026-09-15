@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU Cache | From Access to Release</title>
+<style>
+:root{color-scheme:light;--bg:#f5f6f3;--ink:#20342e;--muted:#53665e;--line:#d6dfd8;--green:#176349;--blue:#285da2;--amber:#8b530b;--purple:#704497;--red:#aa333c}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:90px}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--green);text-underline-offset:4px}button,select,input{font:inherit}button,select{cursor:pointer}button{border:1px solid var(--line);border-radius:8px;background:white;color:var(--ink);padding:9px 18px}button:hover:not(:disabled){border-color:var(--green);background:#edf5ef}button:disabled{opacity:.4;cursor:default}:focus-visible{outline:3px solid var(--blue);outline-offset:4px}code,.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;overflow-wrap:anywhere}code{color:#245542}h1,h2,h3,p{margin-top:0}h1{font-size:clamp(36px,6vw,68px);line-height:1.15;letter-spacing:-.04em;margin-bottom:22px}h2{font-size:clamp(26px,3vw,36px);line-height:1.3;letter-spacing:-.025em;margin-bottom:14px}h3{font-size:19px;line-height:1.4;margin-bottom:10px}p{margin-bottom:16px}.wrap{max-width:1160px;margin:auto;padding:0 28px}.top{background:#fbfcf9;border-bottom:1px solid var(--line)}.top .wrap{display:flex;justify-content:space-between;gap:18px;padding-top:16px;padding-bottom:16px;font-size:13px}.brand{font-weight:800;letter-spacing:.14em}.muted{color:var(--muted)}header.wrap{padding:68px 28px 42px}.eyebrow{color:var(--green);font-size:12px;letter-spacing:.16em;font-weight:800;margin-bottom:16px}.lede{max-width:770px;font-size:19px;color:var(--muted)}nav{position:sticky;top:0;z-index:2;background:#fbfcf9f5;border-block:1px solid var(--line);backdrop-filter:blur(12px)}nav .wrap{display:flex;gap:26px;overflow:auto;white-space:nowrap;padding-top:12px;padding-bottom:12px}nav a{font-size:14px;text-decoration:none;font-weight:650}section{padding:48px 0;border-bottom:1px solid var(--line)}.section-head{display:flex;gap:20px;align-items:baseline}.num{color:var(--green);font:500 14px ui-monospace,monospace}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.two{grid-template-columns:repeat(2,minmax(0,1fr))}.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:24px}.card p:last-child{margin-bottom:0}.step-label{display:block;font-size:12px;letter-spacing:.08em;color:var(--muted);margin-bottom:12px}.callout{border-left:3px solid var(--green);padding:16px 20px;background:#eaf1e9;border-radius:0 8px 8px 0;margin-top:20px}.badge{display:inline-block;border-radius:6px;padding:2px 9px;font:600 12px/1.8 ui-monospace,monospace;white-space:nowrap;background:#edf0ed;color:var(--muted)}.hit,.Valid{color:var(--green);background:#e5f2e9}.fill,.Loading{color:var(--amber);background:#fff1d9}.fallback{color:var(--purple);background:#f1e9f9}.invalid{color:var(--red);background:#fae9eb}.Empty{background:#edf0ed;color:var(--muted)}.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:white;margin:18px 0}table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}th{background:#edf1eb;color:#3a5146;font-weight:650}th,td{padding:15px 18px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}th:first-child{min-width:155px}td p{margin:0}caption{text-align:left;padding:16px 18px;font-weight:700}pre{overflow:auto;background:#21372e;color:#eff6f0;padding:24px;border-radius:12px;font-size:13px;line-height:1.85}pre code{color:inherit;overflow-wrap:normal}.branch{display:grid;grid-template-columns:190px 1fr;gap:20px;padding:17px 0;border-bottom:1px solid var(--line)}.branch:last-child{border:0}.branch p{margin:0}.branch strong{font-size:15px}.branch .badge{margin-right:8px}.sim{background:white;border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-top:24px}.sim-controls{padding:22px 26px;background:#edf1eb;display:flex;gap:14px;align-items:center;flex-wrap:wrap}.sim-controls label{font-weight:700}.sim-controls select{flex:1;min-width:0;max-width:100%;padding:10px 12px;border:1px solid #acbdb0;border-radius:8px;background:white;color:var(--ink)}.sim-body{padding:26px}.sim-summary{min-height:58px}.timeline{display:flex;gap:6px;margin:18px 0}.timeline span{height:4px;flex:1;border-radius:5px;background:var(--line)}.timeline .done{background:var(--green)}.event{background:#f5f7f3;padding:20px;border-radius:10px;margin-bottom:22px;min-height:150px}.event h3{margin:10px 0}.event p{margin:0}.entries{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.entry{border:1px solid var(--line);border-top:4px solid #acb9ad;border-radius:10px;padding:18px}.entries>.entry:only-child,.entries>.card:only-child{grid-column:1/-1}.entry.Loading{border-top-color:#bf852e;background:#fffaf0}.entry.Valid{border-top-color:var(--green);background:#f5faf6}.entry-title{display:flex;justify-content:space-between;align-items:center;gap:8px}.entry-key{font-size:23px;font-weight:700;margin:12px 0 5px}.entry small{display:block;color:var(--muted)}.ledger{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}.ledger>div{border:1px solid var(--line);padding:16px;border-radius:10px}.ledger h3{font-size:13px;color:var(--muted);margin:0 0 8px}.ledger p{margin:0;font-size:14px}.sim-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:22px}.actions{display:flex;gap:8px}.primary{background:var(--green);color:white;border-color:var(--green)}button.primary:hover:not(:disabled){background:#114d38;color:white}.legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;font-size:12px;color:var(--muted)}details{border:1px solid var(--line);background:white;border-radius:10px;margin-top:14px;padding:0 20px}summary{cursor:pointer;font-weight:650;padding:17px 0}details>div{padding:0 0 18px}details li{margin-bottom:10px}.capacity{display:flex;flex-wrap:wrap;gap:16px;align-items:end}.capacity label{font-size:14px;display:block}.capacity input{display:block;width:110px;padding:8px;border:1px solid var(--line);border-radius:6px;margin-top:4px}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px}.metrics div{background:#f1f5ee;border-radius:8px;padding:16px}.metrics strong{display:block;font-size:25px}.metrics span{font-size:12px;color:var(--muted)}footer{padding:32px 0 48px;font-size:13px}footer .links{display:flex;gap:18px;flex-wrap:wrap}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.no-js{padding:20px;background:#fff1d9}
+@media(max-width:700px){.wrap{padding-inline:18px}header.wrap{padding:42px 18px 32px}table{min-width:650px}section{padding-block:34px}.grid,.two,.ledger{grid-template-columns:1fr}.branch{grid-template-columns:1fr;gap:8px}.sim-controls,.sim-body{padding:18px}.sim-controls select{flex-basis:100%}.entries{grid-template-columns:1fr}.event{min-height:0}.metrics{gap:7px}.metrics div{padding:10px}.metrics strong{font-size:21px}.top .wrap{flex-direction:column;gap:2px}nav .wrap{gap:20px}.sim-footer{align-items:start}.actions{flex-wrap:wrap}th,td{padding:12px}.card{padding:20px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+@media print{nav,.sim-controls,.sim-footer,.timeline{display:none}.wrap{max-width:none}body{background:white;font-size:12px}header,section{padding-block:18px}.card,table,details{break-inside:avoid}.sim{display:none}a{color:inherit}}
+</style>
+</head>
+<body>
+<div class="top"><div class="wrap"><span class="brand">GPUINFRA / FIELD GUIDE</span><span class="muted">Current implementation: one GPU per graph copy · immutable frame input</span></div></div>
+<header class="wrap">
+<p class="eyebrow">GPU CACHE, STEP BY STEP</p>
+<h1>One frame,<br>from access to release.</h1>
+<p class="lede">The cache avoids repeating H2D transfers for the same image. Follow an incoming frame to see where its data lives, when it can be reused, and how every failure path ends.</p>
+<div class="grid">
+<div class="card"><span class="step-label">01 / GET ACCESS</span><h3><code>getCacheData()</code></h3><p>Validate the layout, look up the key, and obtain a usable cache or task buffer.</p></div>
+<div class="card"><span class="step-label">02 / USE DATA</span><h3>Upload if needed, then compute</h3><p><code>needsUpload()</code> determines whether to perform H2D. Kernels always read <code>access.data()</code>.</p></div>
+<div class="card"><span class="step-label">03 / FINISH</span><h3><code>freeCacheData(ok)</code></h3><p>Synchronize the stream, publish or roll back a fill, and release this access lease.</p></div>
+</div>
+<div class="callout"><strong>“Free” ends this access lease.</strong> The GPU buffer remains allocated for reuse; the access and its pointers become invalid after the call. <code>release()</code> actually frees the cache allocations.</div>
+</header>
+<nav aria-label="Section navigation"><div class="wrap"><a href="#model">Data &amp; ownership</a><a href="#walkthrough">Walkthrough</a><a href="#decisions">Access decisions</a><a href="#finish">Success &amp; failure</a><a href="#lifetime">Reset &amp; release</a><a href="#capacity">Capacity &amp; index</a></div></nav>
+<main class="wrap">
+<section id="model">
+<div class="section-head"><span class="num">01</span><h2>Separate the data, the index, and the lease</h2></div>
+<p class="muted">The scheduler selects a ready frame, a free task, and a NUMA-local worker before checking the cache. Cache residency does not change scheduling decisions.</p>
+<div class="grid">
+<article class="card"><h3>Original CPU data</h3><p><code>FrameCpuAtom</code> owns the image and metadata. The key is <code>(frameId, cameraId)</code>; the same frameId from different cameras produces different keys.</p><p class="muted">Keys need no preregistration. Between resets, the same key must identify the same immutable content.</p></article>
+<article class="card"><h3>GPU storage</h3><p><code>StaticData</code> owns the manager, which manages a fixed set of K entries. Each entry owns a persistent GPU buffer.</p><p class="muted">The framework establishes NUMA affinity before every task callback. <code>load()</code> selects the unique local GPU; zero or multiple GPUs cause an error. Each task also has its own <code>d_input</code>. When the cache cannot serve a request, the task uploads into this fallback buffer.</p></article>
+<article class="card"><h3>One access lease</h3><p><code>GpuDataAccess</code> records the buffer and stream used by this access. It owns neither the allocation nor the stream.</p><p class="muted">A live cache lease prevents its entry from being evicted. A live fallback lease also blocks reset / release.</p></article>
+</div>
+<div class="table-wrap"><table><caption>Three entry states; for Valid entries, the reader count matters too</caption><thead><tr><th scope="col">Entry state</th><th scope="col">Active accesses</th><th scope="col">Same key arrives again</th><th scope="col">Reusable for another key?</th></tr></thead><tbody>
+<tr><td><span class="badge Empty">Empty</span></td><td>0</td><td>No mapping yet; available for a fill</td><td>Yes; chosen first</td></tr>
+<tr><td><span class="badge Loading">Loading</span></td><td>1 fill owner</td><td>Use fallback; do not wait for the fill owner</td><td>No</td></tr>
+<tr><td><span class="badge Valid">Valid</span> idle</td><td>0</td><td>CacheHit; begin reading</td><td>Yes; evict according to global LRU</td></tr>
+<tr><td><span class="badge Valid">Valid</span> in use</td><td>1 or more readers</td><td>CacheHit; add another reader</td><td>No; return to LRU after the last reader leaves</td></tr>
+</tbody></table></div>
+<p class="muted">“Active” is not a fourth entry state. Loading counts a fill lease; Valid counts reader leases. Only entries that are <strong>Valid with zero active accesses</strong> belong to the evictable LRU list.</p>
+</section>
+<section id="walkthrough">
+<div class="section-head"><span class="num">02</span><h2>Walk through one scenario at a time</h2></div>
+<p class="muted">Choose a scenario, then press “Next.” Each step shows the current state. A, B, and C represent different complete keys. E0 and E1 are fixed GPU buffers: replacing a key reuses the same allocation.</p>
+<noscript><p class="no-js">The interactive walkthrough requires JavaScript. The decision tables, finish matrix, and lifecycle reference below still cover the full workflow.</p></noscript>
+<div class="sim">
+<div class="sim-controls"><label for="scenario">Scenario</label><select id="scenario"></select></div>
+<div class="sim-body">
+<p class="sim-summary muted" id="scenario-note"></p>
+<div class="timeline" id="timeline" aria-hidden="true"></div>
+<div id="scene" aria-live="polite" aria-atomic="true"></div>
+<div class="sim-footer"><span class="muted" id="step-count"></span><div class="actions"><button id="restart" type="button">Restart</button><button id="prev" type="button">Previous</button><button id="next" type="button" class="primary">Next →</button></div></div>
+<p class="legend">Scope: cache states and lease decisions; no CUDA execution. The index panel shows logical mappings, not physical hash slot positions.</p>
+</div></div>
+</section>
+<section id="decisions">
+<div class="section-head"><span class="num">03</span><h2>Getting data: follow this decision order</h2></div>
+<p><code>StaticData::getCacheData(metadata, resources)</code> validates the fixed layout before calling <code>GpuCacheManager::acquire()</code>. A miss may reserve a cache fill or use fallback.</p>
+<div class="card">
+<div class="branch"><strong>① Valid input and resources?</strong><p>No → <span class="badge invalid">Invalid</span> Stop. Yes → Look up the complete key.</p></div>
+<div class="branch"><strong>② Key already indexed?</strong><div><p>Yes, but metadata differs → <span class="badge invalid">Invalid</span></p><p>Yes, state is Loading → <span class="badge fallback">TaskFallback</span></p><p>Yes, Valid with a usable replica on this GPU → <span class="badge hit">CacheHit</span></p><p>Yes, Valid but the local GPU replica is unavailable → <span class="badge fallback">TaskFallback</span></p><p>No → Look for an available entry.</p></div></div>
+<div class="branch"><strong>③ Any Empty entry?</strong><p>Yes → <span class="badge fill">CacheFill</span> Create the key mapping and mark Loading. No → Check LRU.</p></div>
+<div class="branch"><strong>④ Any idle LRU entry?</strong><p>Yes → Remove the oldest key and reuse its buffer → <span class="badge fill">CacheFill</span>. No → <span class="badge fallback">TaskFallback</span> (K = 0, or every entry is in use / Loading).</p></div>
+</div>
+<div class="table-wrap"><table><caption>The returned source determines the pointer and H2D requirement</caption><thead><tr><th scope="col">Source</th><th scope="col">data() points to</th><th scope="col">needsUpload()</th><th scope="col">writableData()</th><th scope="col">Change on acquisition</th></tr></thead><tbody>
+<tr><td><span class="badge hit">CacheHit</span></td><td>Entry GPU buffer</td><td>false</td><td>nullptr (read-only)</td><td>Reader +1; the first reader removes the entry from LRU</td></tr>
+<tr><td><span class="badge fill">CacheFill</span></td><td>Entry GPU buffer</td><td>true</td><td>Same buffer</td><td>Insert mapping first; Loading, active = 1, replica not yet valid</td></tr>
+<tr><td><span class="badge fallback">TaskFallback</span></td><td>Task d_input</td><td>true</td><td>Same buffer</td><td>Fallback lease +1; no cache mapping is created</td></tr>
+<tr><td><span class="badge invalid">Invalid</span></td><td>nullptr</td><td>false</td><td>nullptr</td><td>Do not submit GPU work; check with <code>if (!access)</code></td></tr>
+</tbody></table></div>
+<details><summary>Invalid: input errors and defensive internal checks</summary><div>
+<ul>
+<li><strong>StaticData:</strong> Not initialized, zero bytes, or bytes / width / height / dtype differ from the fixed layout established at initialization.</li>
+<li><strong>Manager:</strong> Not initialized or currently releasing; metadata bytes mismatch or nonpositive width / height; invalid or ineligible GPU ID; null stream / d_input; resources.inBytes mismatch. Valid fallback resources are required even when a cache hit is expected.</li>
+<li><strong>Existing key:</strong> Entry index out of bounds / null entry, mismatched metadata, state neither Loading nor Valid, or inconsistent active count and LRU membership.</li>
+<li><strong>Fill candidate:</strong> Missing GPU pointer, inconsistent Empty / Valid / active / LRU state, failure to erase the old mapping, or failure to insert the new mapping → restore the candidate and return Invalid. If insertion fails during replacement, the manager attempts to restore the old mapping; restoring a Valid candidate places it at MRU. If taking an LRU candidate fails to remove it from the list, the manager treats this as no available candidate and uses fallback.</li>
+</ul><p class="muted">Internal consistency errors should not occur after normal initialization while invariants hold. They differ from an ordinary full cache: normal capacity pressure uses fallback.</p>
+</div></details>
+<details><summary>How does an unavailable local replica differ from the wrong GPU?</summary><div><p>Each manager currently accepts one GPU. Resources targeting another GPU are rejected at the entrance with Invalid. If an eligible GPU has a Valid entry but lacks a pointer or valid replica, a defensive path uses fallback; normal single-GPU execution usually does not reach it. Cross-GPU replica fills / migration are future extensions and are not implemented.</p></div></details>
+</section>
+<section id="finish">
+<div class="section-head"><span class="num">04</span><h2>Finishing: success determines what stays cached</h2></div>
+<p><code>freeCacheData(submittedSuccessfully)</code> first synchronizes the task stream captured when access was obtained. Passing false or failing synchronization counts as failure; returning true also requires a valid lease and internal state.</p>
+<div class="table-wrap"><table><caption>Three valid access sources × three ways to finish</caption><thead><tr><th scope="col">Access</th><th scope="col">Pass true; synchronization succeeds</th><th scope="col">Pass false, or synchronization fails</th><th scope="col">Destruction without finishing (RAII abort)</th></tr></thead><tbody>
+<tr><td><span class="badge fill">CacheFill</span></td><td>Mark replica valid; Loading → Valid; active becomes zero; add to MRU</td><td>Erase the new key; return to Empty; invalidate replica; retain buffer</td><td>Attempt synchronization, then abort; return to Empty; do not publish even if GPU work succeeded</td></tr>
+<tr><td><span class="badge hit">CacheHit</span></td><td>Reader −1; add to MRU when the last reader leaves</td><td>Release the reader as usual; preserve the immutable cached payload</td><td>Attempt synchronization, then release the reader; add to MRU when the last reader leaves</td></tr>
+<tr><td><span class="badge fallback">TaskFallback</span></td><td>Fallback lease −1; results may be used; no cache publication</td><td>Fallback lease −1; cache unchanged</td><td>Attempt synchronization, then release the fallback lease; cache unchanged</td></tr>
+</tbody></table></div>
+<div class="grid two">
+<div class="card"><h3>A fill fails after eviction</h3><p>Once the new key has obtained CacheFill, the old key is already evicted. If the new fill fails, the entry returns to Empty; <strong>the old cached data is not restored</strong>. Either key may be filled again on a later request.</p></div>
+<div class="card"><h3>Multiple simultaneous readers</h3><p>Readers can coexist and are all read-only. Success, failure, or abort removes only that reader’s lease. The entry remains protected while any reader is still using it.</p></div>
+</div>
+<pre aria-label="Typical call sequence example"><code>// Example: H2D, kernels, and D2H all use resources.stream.
+GpuDataAccess access = staticData.getCacheData(metadata, resources);
+if (!access) return false;
+
+bool ok = true;
+if (access.needsUpload()) {
+    ok = enqueueH2D(access.writableData(), resources.stream);
+}
+if (ok) {
+    ok = enqueueComputeAndD2H(access.data(), resources.stream);
+}
+// Call even after submission fails: synchronize queued work and end the lease.
+if (!access.freeCacheData(ok)) return false;
+// Collect D2H results here. The access pointers must no longer be used.</code></pre>
+<details><summary>Repeated calls, publication failures, and synchronization boundaries</summary><div><p>Call once on the normal path. Calling <code>freeCacheData()</code> on a default Invalid access or an already finished access returns false. Destruction of a reset access does not synchronize again. Access objects cannot be copied or moved.</p><p>If a fill cannot mark its replica valid or join LRU, it rolls back to Empty and returns false. The manager checks owner, key, pointer, bytes, state, and lease counts. Failed internal validation is not successful publication, and corrupted counts cannot be assumed repaired.</p><p>Normal finishing checks the CUDA synchronization result. Destruction is an error-path safety net: it attempts synchronization, logs CUDA errors, and then aborts, with no success result to return. It never publishes an unfinished fill as Valid. The cache mutex protects management state; CUDA work runs on each task stream, and finishing synchronizes outside the manager’s state lock.</p></div></details>
+<div class="callout"><strong>Caller responsibilities:</strong> The success flag means the required H2D, compute, and D2H work was submitted correctly; the cache does not inspect image contents. If content changes for the same key, use a new identity or reset at a safe boundary first. Each task has one fallback input. When processing two inputs simultaneously, two live fallbacks must not overwrite each other. The current graph uses exclusive task checkout to prevent workers from concurrently reusing the same task.</div>
+</section>
+<section id="lifetime">
+<div class="section-head"><span class="num">05</span><h2>From initialization to shutdown: what gets cleared?</h2></div>
+<div class="table-wrap"><table><thead><tr><th scope="col">Operation</th><th scope="col">When allowed</th><th scope="col">Mappings / state</th><th scope="col">GPU allocations</th></tr></thead><tbody>
+<tr><td>initialize / init</td><td>Not yet initialized; one valid GPU; valid layout / bytes; successful allocation</td><td>Create a fixed index and K Empty entries</td><td>Preallocate K cache buffers; task resources are allocated separately</td></tr>
+<tr><td>freeCacheData(ok)</td><td>Holding a valid access</td><td>Publish, release a reader, or roll back as shown above</td><td>Retained</td></tr>
+<tr><td>resetCache()</td><td>Initialized, not releasing, no cache / fallback leases, and no Loading entry</td><td>Clear mappings, metadata, replica validity, and LRU; all entries become Empty</td><td>Keep the same pointers; subsequent access requires a new upload</td></tr>
+<tr><td>release()</td><td>No live lease and no Loading entry</td><td>After successful release, clear index and management data; become uninitialized</td><td>Free entry GPU allocations; task d_input is freed through the task resource lifecycle</td></tr>
+</tbody></table></div>
+<p><strong>A live fallback also blocks reset / release, including when K = 0.</strong> Reset at a quiescent phase / run boundary. Finish every access before shutting down its owner and task resources.</p>
+<details><summary>Lifecycle failures and retries</summary><div><p>Initialization rejects repeated initialization, multiple GPUs, invalid GPU IDs / bytes, capacity overflow, or allocation failure. StaticData resolves its GPU from the current framework NUMA environment, rejecting zero or multiple local GPUs, and also checks fixed-layout bytes and available GPU memory. K = 0 is valid.</p><p>If reset preconditions fail, it returns false without clearing the cache. Manager release also returns false while a lease is live or another release is in progress. Repeating release after complete cleanup returns true.</p><p>If CUDA allocation release fails, release returns false. Entries with remaining allocations are retained for retry, and the manager stops providing new accesses. <code>StaticData::release()</code> sets its own initialized flag to false before calling the manager. Thus, even if a live lease causes rejection, no new access can be obtained through StaticData; finish existing leases, then retry release. The owner must outlive every access.</p></div></details>
+</section>
+<section id="capacity">
+<div class="section-head"><span class="num">06</span><h2>Fixed capacity, an ongoing stream of frames</h2></div>
+<div class="grid two">
+<div class="card"><h3>N, K, and S count different things</h3><p><strong>N</strong> counts frames arriving over time; <strong>K</strong> counts GPU cache entries; <strong>S</strong> counts slots in the CPU residency table.</p><p><code>S = K == 0 ? 0 : nextPow2(2 × K)</code></p><p>The index stores only current Loading / Valid keys, at most K mappings. Eviction erases the old key and inserts a new one, so execution can continue when N exceeds K or S. The default is K = 4.</p></div>
+<div class="card"><h3>Estimate cache allocation</h3><div class="capacity"><label for="k">Entries (K)<input id="k" type="number" min="0" max="1000000" step="1" value="4"></label><label for="mb">Frame size (MiB)<input id="mb" type="number" min="1" max="1000000" step="1" value="16"></label></div><div class="metrics" aria-live="polite"><div><strong id="slots">8</strong><span>CPU slots (S)</span></div><div><strong id="resident">4</strong><span>Max resident keys</span></div><div><strong id="memory">64 MiB</strong><span>Cache GPU bytes</span></div></div><p class="muted" id="capacity-note" style="margin-top:14px;font-size:13px">Cache only; task fallback, staging, and algorithm allocations are additional.</p></div>
+</div>
+<details><summary>Hash collisions, deletion, and the full LRU rules</summary><div><p>The residency table stores <code>key → entryIndex</code>. Keys hashing to the same slot use linear probing to find the complete key or an empty slot; an empty slot indicates a miss. Collisions do not make different cameras / frames share data. Erase uses backward shifting to preserve the probe chain, keeping later keys reachable.</p><p>For K &gt; 0, S ≥ 2K, so at most half the slots are occupied. Loading entries also consume a mapping. Slots are allocated at initialization; the hot path never grows or rehashes the table. Lookups are O(1) on average and O(S) in the worst case; average complexity does not guarantee constant latency.</p><p>The Empty pool takes priority over LRU. Global LRU is a single list shared within this manager, independent of hash slot order; read it left to right as LRU → MRU. The first hit removes an entry; the last reader finishing returns it to MRU. A successful fill also joins MRU. Eviction order therefore depends on when leases end, not simply when requests arrive.</p><p>Eviction, failed fills returning to Empty, and reset never reallocate GPU buffers. The hot path has no <code>cudaMalloc()</code> / <code>cudaFree()</code>; allocation and release occur at lifecycle boundaries.</p></div></details>
+</section>
+</main>
+<footer class="wrap"><p>Based on the current single-GPU implementation. The walkthrough illustrates state transitions; defensive errors and caller contracts appear in each section’s expandable details.</p><div class="links"><a href="src/StaticData.cpp">StaticData</a><a href="src/DataCache/GpuCacheManager.cpp">GpuCacheManager</a><a href="src/DataCache/GpuDataAccess.cpp">GpuDataAccess</a><a href="src/DataCache/GpuResidencyTable.cpp">Residency table</a><a href="tests/gpuinfra_tests.cpp">Related tests</a><a href="architecture.md">Architecture</a></div></footer>
+<script>
+'use strict';
+// A deterministic teaching model: each scenario is replayed from an empty cache.
+// It models lease/state transitions, not CUDA execution or physical hash slots.
+const get = (key, id, extra = {}) => ({op:'get', key, id, ...extra});
+const end = (id, outcome = 'ok') => ({op:'end', id, outcome});
+const scenarios = [
+ {name:'01 · First fill → later hit', k:2, note:'Fill E0 with A; it becomes Valid only after finishing. The next access to A reads the same buffer and skips H2D.', steps:[get('A','a1'),end('a1'),get('A','a2'),end('a2')]},
+ {name:'02 · Full cache → LRU eviction → old key returns', k:2, note:'Fill A and B, then read A again. A moves to MRU when that access ends, so C evicts B. A later request for B requires another fill.', steps:[get('A','a'),end('a'),get('B','b'),end('b'),get('A','r'),end('r'),get('C','c'),end('c'),get('B','b2'),end('b2')]},
+ {name:'03 · The same key is still Loading', k:2, note:'Even with E1 Empty, the second request for the same key uses its own task fallback. It neither creates a second cache fill nor waits.', steps:[get('A','fill'),get('A','other'),end('other'),end('fill'),get('A','hit'),end('hit')]},
+ {name:'04 · Multiple readers → last reader returns entry to LRU', k:1, note:'R1 and R2 read A together. One reader leaving is not enough to allow eviction, so new key B uses fallback. B can reserve a fill after the last reader leaves.', steps:[get('A','fill'),end('fill'),get('A','R1'),get('A','R2'),end('R1'),get('B','b1'),end('b1'),end('R2'),get('B','b2'),end('b2')]},
+ {name:'05 · All entries are Loading', k:2, note:'A and B each hold a fill. With no available entry, C uses task fallback. A successful fallback does not add C to the cache.', steps:[get('A','a'),get('B','b'),get('C','c'),end('c'),end('a'),end('b')]},
+ {name:'06 · K = 0: cache disabled', k:0, note:'Every valid request uploads into task d_input. Leases are still tracked and block reset / release while live.', steps:[get('A','a'),{op:'reset'},{op:'release'},end('a'),get('A','a2'),end('a2'),{op:'reset'},{op:'release'}]},
+ {name:'07 · Fill submission fails after eviction → retry', k:1, note:'After B replaces the mapping for A, freeCacheData(false) returns E0 to Empty. The old A is not restored; the GPU allocation remains reusable.', steps:[get('A','a'),end('a'),get('B','b'),end('b','fail'),get('B','retry'),end('retry')]},
+ {name:'08 · Fill synchronization fails', k:1, note:'Even when true is passed, a cudaStreamSynchronize failure prevents publication. The next request repeats H2D.', steps:[get('A','a'),end('a','sync'),get('A','retry'),end('retry')]},
+ {name:'09 · Early exit during fill → RAII abort', k:1, note:'Destruction without calling freeCacheData attempts synchronization and then aborts the fill. The entry does not become Valid, even if the work succeeded.', steps:[get('A','a'),end('a','abort'),get('A','retry'),end('retry')]},
+ {name:'10 · Reader fails or aborts: cached payload survives', k:1, note:'A is immutable. R1 failing releases only its own reader lease. After R2 aborts, the entry returns to MRU, and later requests can still hit A.', steps:[get('A','a'),end('a'),get('A','R1'),get('A','R2'),end('R1','fail'),end('R2','abort'),get('A','R3'),end('R3')]},
+ {name:'11 · Fallback submission failure, sync failure, and abort', k:0, note:'All three failures end the fallback lease. They do not create, publish, or damage cache mappings.', steps:[get('A','a'),end('a','fail'),get('B','b'),end('b','sync'),get('C','c'),end('c','abort')]},
+ {name:'12 · Invalid layout / resources / same-key metadata', k:2, note:'Invalid stops submission instead of selecting fallback. A metadata conflict is a defensive manager check; normal StaticData fixed-layout validation usually rejects it earlier.', steps:[get('A','bad-layout',{invalid:'Layout mismatch'}),get('A','bad-gpu',{invalid:'GPU is not eligible'}),get('A','bad-stream',{invalid:'Stream is null'}),get('A','good'),end('good'),get('A','conflict',{invalid:'Metadata differs for the same key'})]},
+ {name:'13 · Same frameId, different cameras', k:2, note:'A = (47, camera 3), B = (47, camera 4). They have different complete keys and separate mappings. A later request for A hits only A.', steps:[get('A','cam3'),end('cam3'),get('B','cam4'),end('cam4'),get('A','cam3-again'),end('cam3-again')]},
+ {name:'14 · Reset rejected → safe reset → upload again', k:1, note:'A live fill, reader, or fallback lease blocks reset. A safe reset clears identity and validity while retaining the allocation for E0.', steps:[get('A','a'),{op:'reset'},end('a'),get('A','r'),get('B','f'),{op:'reset'},end('r'),{op:'reset'},end('f'),{op:'reset'},get('A','again'),end('again')]},
+ {name:'15 · Manager release and repeated finishing', k:1, note:'This demonstrates GpuCacheManager::release. A live lease blocks release; successful release prevents new access. See the lifecycle section for the StaticData wrapper difference.', steps:[get('A','a'),{op:'release'},end('a'),end('a'),{op:'release'},get('A','after'),{op:'release'}]},
+ {name:'16 · Valid entry with an unavailable local replica', k:1, note:'Defensive path: an eligible GPU without a valid replica uses a new upload to task fallback. Normal single-GPU execution does not deliberately produce this state; a wrong GPU ID returns Invalid.', steps:[get('A','a'),end('a'),{op:'replica'},get('A','f'),end('f'),{op:'reset'}]}
+];
+function initial(k){return {entries:Array.from({length:k},()=>({state:'Empty',key:null,count:0,replica:false})),empty:Array.from({length:k},(_,i)=>i),lru:[],leases:{},released:false,event:{kind:'Empty',title:'Ready: no access acquired yet',text:`K = ${k}. All entries are Empty, with no key mappings or live leases.`}};}
+function apply(s, action){
+ const event=(kind,title,text)=>{s.event={kind,title,text};};
+ if(action.op==='get'){
+  const {key,id}=action;
+  if(s.released||action.invalid){event('invalid','Invalid · '+id,s.released?'The manager has been released and rejects new access.':action.invalid+'; no lease is acquired and no GPU work is submitted.');return;}
+  let index=s.entries.findIndex(e=>e.key===key);
+  let source;
+  if(index>=0){
+   const e=s.entries[index];
+   if(e.state==='Loading'||!e.replica){source='TaskFallback';}
+   else{source='CacheHit';s.lru=s.lru.filter(i=>i!==index);e.count++;}
+  }else{
+   index=s.empty.length?s.empty.shift():(s.lru.length?s.lru.shift():-1);
+   if(index<0){source='TaskFallback';}
+   else{source='CacheFill';const old=s.entries[index].key;s.entries[index]={state:'Loading',key,count:1,replica:false};action={...action,evicted:old};}
+  }
+  s.leases[id]={source,index:source==='TaskFallback'?-1:index,key};
+  if(source==='CacheHit')event('hit',`${id} gets ${key} → CacheHit`,`Read E${index} without H2D. Reader +1; an entry in use is excluded from the evictable LRU list.`);
+  if(source==='CacheFill')event('fill',`${id} gets ${key} → CacheFill`,`${action.evicted?'Evict '+action.evicted+' and reuse':'Use Empty'} E${index}. The index already contains ${key}, but the entry is still Loading. H2D is required; hits are possible only after successful finishing.`);
+  if(source==='TaskFallback'){
+   const resident=s.entries.find(e=>e.key===key);
+   const reason=resident?(resident.state==='Loading'?'The same key is still Loading':'The local GPU replica is unavailable'):(s.entries.length?'All entries are in use or Loading':'K = 0');
+   event('fallback',`${id} gets ${key} → TaskFallback`,`${reason}. Upload into this task’s d_input. Cache mappings stay unchanged; do not wait for a cache entry.`);
+  }
+  return;
+ }
+ if(action.op==='end'){
+  const lease=s.leases[action.id];
+  if(!lease){event('invalid','freeCacheData() → false','This access is already finished or invalid. No repeated synchronization or count change occurs.');return;}
+  const ok=action.outcome==='ok', abort=action.outcome==='abort';
+  const how=abort?'Destruction → attempt sync → abort':action.outcome==='sync'?'freeCacheData(true), but synchronization fails':`freeCacheData(${ok?'true':'false'})`;
+  let text;
+  if(lease.source==='CacheFill'){
+   const e=s.entries[lease.index];e.count=0;
+   if(ok){e.state='Valid';e.replica=true;s.lru.push(lease.index);text=`${lease.key} is published as Valid; E${lease.index} joins MRU.`;}
+   else{e.state='Empty';e.key=null;e.replica=false;s.empty.unshift(lease.index);text=`Remove the ${lease.key} mapping. E${lease.index} returns to Empty; retain its GPU buffer.`;}
+  }else if(lease.source==='CacheHit'){
+   const e=s.entries[lease.index];e.count--;
+   if(!e.count)s.lru.push(lease.index);
+   text=`${lease.key}: reader −1; cached payload retained. `+(e.count?'Readers remain, so eviction is blocked.':`The last reader has left; E${lease.index} joins MRU.`);
+  }else{text='Fallback lease −1; retain the task buffer and leave cache mappings unchanged.';}
+  delete s.leases[action.id];
+  event(ok?'hit':abort?'Empty':'invalid',`${action.id} · ${how}`,text+(abort?' Destruction has no return value.':` Returns ${ok?'true':'false'}.`));return;
+ }
+ if(action.op==='replica'){s.entries[0].replica=false;event('fallback','Assume the local replica of E0 is invalid','This state is injected only to illustrate a defensive branch; it is not a normal single-GPU operation.');return;}
+ const busy=Object.keys(s.leases).length>0;
+ if(action.op==='reset'){
+  if(busy||s.released){event('invalid','resetCache() → false',busy?'A cache / fallback lease is still live. Keep the current state.':'The manager is uninitialized or has been released.');}
+  else{const k=s.entries.length;Object.assign(s,initial(k));event('Empty','resetCache() → true','Clear all mappings and LRU; return entries to Empty. Retain GPU allocations and pointers.');}
+ }
+ if(action.op==='release'){
+  if(busy){event('invalid','Manager release() → false','A live lease prevents allocation release. Finish the access and retry.');}
+  else{const wasReleased=s.released;s.entries=[];s.empty=[];s.lru=[];s.released=true;event('Empty','Manager release() → true',wasReleased?'Already fully released; repeating the call has no side effects.':'Free cache GPU buffers and the CPU index. The task releases its fallback separately.');}
+ }
+}
+const select=document.getElementById('scenario');
+scenarios.forEach((s,i)=>{const o=document.createElement('option');o.value=i;o.textContent=s.name;select.append(o);});
+let position=0;
+const escapeHtml=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function render(){
+ const scenario=scenarios[Number(select.value)];const state=initial(scenario.k);
+ for(let i=0;i<position;i++)apply(state,scenario.steps[i]);
+ document.getElementById('scenario-note').textContent=scenario.note;
+ document.getElementById('timeline').innerHTML=Array.from({length:scenario.steps.length},(_,i)=>`<span class="${i<position?'done':''}"></span>`).join('');
+ const entries=state.entries.map((e,i)=>`<div class="entry ${e.state}"><div class="entry-title"><strong class="mono">E${i}</strong><span class="badge ${e.state}">${e.state}</span></div><div class="entry-key">${e.key?escapeHtml(e.key):'—'}</div><small>${e.state==='Loading'?'Fill lease':'Reader'}: ${e.count} · ${e.state==='Empty'?'Ready for a fill':e.state==='Loading'?'Not readable yet':e.replica?'Replica valid':'Replica invalid'}</small><small>GPU buffer: E${i}, persistent allocation</small></div>`).join('');
+ const mapping=state.entries.flatMap((e,i)=>e.key?[`${e.key} → E${i} (${e.state})`]:[]);
+ const leases=Object.entries(state.leases).map(([id,l])=>`${id}: ${l.source} / ${l.key}`);
+ const fallback=Object.values(state.leases).filter(l=>l.source==='TaskFallback').length;
+ document.getElementById('scene').innerHTML=`<div class="event"><span class="badge ${state.event.kind}">${position?'Step '+position:'Initial state'}</span><h3>${escapeHtml(state.event.title)}</h3><p>${escapeHtml(state.event.text)}</p></div><div class="entries">${entries||`<div class="card"><strong>${state.released?'Cache allocations released':'K = 0: no cache buffers'}</strong><p class="muted">${state.released?'New requests return Invalid.':'Valid requests use task d_input.'}</p></div>`}</div><div class="ledger"><div><h3>CPU INDEX · KEY → ENTRY</h3><p class="mono">${mapping.map(escapeHtml).join('<br>')||'Empty'}</p></div><div><h3>EVICTION ORDER · LRU → MRU</h3><p class="mono">${state.lru.map(i=>`E${i} (${escapeHtml(state.entries[i].key)})`).join(' → ')||'No evictable entry'}</p></div><div><h3>LIVE ACCESSES</h3><p class="mono">${leases.map(escapeHtml).join('<br>')||'None'}</p></div><div><h3>FALLBACK LEASES</h3><p>${fallback} · ${fallback?'Blocks reset / release':'No fallback currently in use'}</p></div></div>`;
+ document.getElementById('step-count').textContent=`${position} / ${scenario.steps.length} steps${position===scenario.steps.length?' · Scenario finished':''}`;
+ document.getElementById('prev').disabled=position===0;
+ document.getElementById('next').disabled=position===scenario.steps.length;
+ document.getElementById('restart').disabled=position===0;
+}
+select.addEventListener('change',()=>{position=0;render();});
+document.getElementById('next').addEventListener('click',()=>{if(position<scenarios[Number(select.value)].steps.length){position++;render();}});
+document.getElementById('prev').addEventListener('click',()=>{if(position>0){position--;render();}});
+document.getElementById('restart').addEventListener('click',()=>{position=0;render();});
+function capacity(){
+ const kInput=document.getElementById('k'),mbInput=document.getElementById('mb');
+ const k=kInput.valueAsNumber,mb=mbInput.valueAsNumber;
+ const valid=kInput.value!==''&&mbInput.value!==''&&kInput.checkValidity()&&mbInput.checkValidity();
+ if(!valid){for(const id of ['slots','resident','memory'])document.getElementById(id).textContent='—';document.getElementById('capacity-note').textContent='Enter whole numbers in range: K from 0 to 1,000,000; frame MiB from 1 to 1,000,000.';return;}
+ let slots=0;if(k>0){slots=1;while(slots<2*k)slots*=2;}
+ document.getElementById('slots').textContent=slots.toLocaleString();document.getElementById('resident').textContent=k.toLocaleString();
+ document.getElementById('memory').textContent=(k*mb).toLocaleString()+' MiB';
+ document.getElementById('capacity-note').textContent=k?'Cache only; task fallback, staging, and algorithm allocations are additional. This formula does not guarantee that the GPU can allocate this capacity.':'Cache disabled; the task fallback buffer still requires allocation.';
+}
+for(const id of ['k','mb'])document.getElementById(id).addEventListener('input',capacity);
+render();capacity();
+</script>
+</body>
+</html>

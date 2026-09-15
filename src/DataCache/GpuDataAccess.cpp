@@ -51,7 +51,7 @@ GpuDataAccessSource GpuDataAccess::source() const {
     return accessSource;
 }
 
-bool GpuDataAccess::complete(bool submittedSuccessfully) {
+bool GpuDataAccess::freeCacheData(bool submittedSuccessfully) {
     if (owner == nullptr || stream == nullptr) {
         return false;
     }

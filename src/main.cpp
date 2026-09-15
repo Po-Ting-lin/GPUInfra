@@ -142,7 +142,7 @@ int main(int argc, char* argv[]) {
 
     GpuInfraConfig infrastructureConfig;
     infrastructureConfig.requireNuma = true;
-    if (!GpuContextManager::init(infrastructureConfig)) {
+    if (!GpuContextManager::init(infrastructureConfig)) { // for pure harware mapping, nothing to do with Graph
         std::cerr << "GpuContextManager::init failed\n";
         return 1;
     }
@@ -180,8 +180,6 @@ int main(int argc, char* argv[]) {
             break;
         }
         GraphConfig graphConfig;
-        graphConfig.numaNode = entry.first;
-        graphConfig.gpuIds = entry.second;
         graphConfig.taskInstancesPerGpu = TASKS_PER_GPU;
         graphConfig.graphThreads = TASKS_PER_GPU * entry.second.size();
         graphConfig.warmupFramesPerGpu = warmupFramesPerGpu;
@@ -190,7 +188,7 @@ int main(int argc, char* argv[]) {
         graphConfig.executionModel = executionModel;
         graphConfig.runtime = runtime;
         graphConfig.parameters = parameters;
-        graphs.push_back(std::make_unique<DummyGraph>(graphConfig, sink, cancellation));
+        graphs.push_back(std::make_unique<DummyGraph>(NumaExecutor(entry.first), graphConfig, sink, cancellation));
         firstFrameId += graphFrameCount;
     }
 

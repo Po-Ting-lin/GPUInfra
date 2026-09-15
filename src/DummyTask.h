@@ -28,7 +28,7 @@ public:
     inline static constexpr const char* NAME_PARAMETER = "dummy.name";
     inline static constexpr const char* BLOB_PARAMETER = "dummy.blob";
 
-    DummyTask(int instanceId, int gpuId, ExecutionModel model, const AlgoRuntimeInfo& runtime);
+    DummyTask(int instanceId, ExecutionModel model, const AlgoRuntimeInfo& runtime);
     ~DummyTask();
 
     bool registerParameters(ParameterRegistry& registry);
@@ -54,7 +54,6 @@ private:
     bool releaseResources();
 
     int id;
-    int gpu;
     ExecutionModel executionModel;
     AlgoRuntimeInfo algoRuntime;
     TaskGpuResources resources;

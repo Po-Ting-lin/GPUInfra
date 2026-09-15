@@ -498,7 +498,7 @@
                     <text class="uml-member" x="1086" y="442">- gpuCacheManager</text>
                     <text class="uml-member" x="1086" y="465">- frameRuntime</text>
                     <line class="uml-divider" x1="1070" y1="480" x2="1420" y2="480"></line>
-                    <text class="uml-member" x="1086" y="505">+ acquireGpuData()</text>
+                    <text class="uml-member" x="1086" y="505">+ getCacheData()</text>
                     <text class="uml-member" x="1086" y="525">+ resetCache()</text>
                 </g>
 
@@ -553,7 +553,7 @@
                 </defs>
 
                 <path class="uml-edge dependency" d="M410 140 H585" marker-end="url(#cache-arrow)"></path>
-                <text class="uml-edge-label" x="440" y="128">acquireGpuData()</text>
+                <text class="uml-edge-label" x="440" y="128">getCacheData()</text>
 
                 <path class="uml-edge" d="M915 140 H1070" marker-start="url(#cache-composition)"></path>
                 <text class="uml-multiplicity" x="932" y="128">1</text>
@@ -608,7 +608,7 @@
                     <line class="uml-divider" x1="585" y1="116" x2="915" y2="116"></line>
                     <text class="uml-member" x="601" y="142">- gpuCacheManager</text>
                     <line class="uml-divider" x1="585" y1="157" x2="915" y2="157"></line>
-                    <text class="uml-member" x="601" y="181">+ acquireGpuData()</text>
+                    <text class="uml-member" x="601" y="181">+ getCacheData()</text>
                     <text class="uml-member" x="601" y="204">+ resetCache()</text>
                 </g>
 
@@ -643,7 +643,7 @@
                     <text class="uml-member" x="601" y="465">- d_data / stream / source</text>
                     <line class="uml-divider" x1="585" y1="480" x2="915" y2="480"></line>
                     <text class="uml-member" x="601" y="505">+ data() / writableData()</text>
-                    <text class="uml-member" x="601" y="528">+ complete(success)</text>
+                    <text class="uml-member" x="601" y="528">+ freeCacheData(success)</text>
                 </g>
 
                 <g aria-label="GpuCacheEntry class">
@@ -698,10 +698,10 @@
                 <header><span class="stereotype">process-wide service</span><h3>GpuContextManager</h3></header>
                 <ul>
                     <li><code>init(config)</code> discovers GPUs and NUMA nodes</li>
-                    <li><code>validateGpuIdsForNumaNode(node, gpuIds)</code></li>
+                    <li><code>gpuIdsForCurrentNumaNode(gpuIds)</code></li>
                     <li><code>registerTask(gpu, resources)</code></li>
                     <li><code>makeTaskCurrent(resources)</code></li>
-                    <li><code>pinCurrentThreadToNumaNode(node)</code></li>
+                    <li>CPU affinity is supplied by the framework <code>NumaExecutor</code></li>
                     <li><code>shutdown()</code> releases retained contexts</li>
                 </ul>
             </article>
@@ -733,6 +733,7 @@
                 <header><span class="stereotype">one per graph copy</span><h3>StaticData</h3></header>
                 <ul>
                     <li><code>StaticData.h/.cpp</code></li>
+                    <li>resolves exactly one local GPU from framework NUMA affinity during <code>init()</code></li>
                     <li>stores one fixed frame layout</li>
                     <li>accepts any matching incoming key without a registration list</li>
                     <li><code>resetCache()</code> clears residency at a quiescent run boundary without freeing device buffers</li>
@@ -748,13 +749,14 @@
                 <ul>
                     <li><code>Registered → Loaded → Started → Stopped → Unloaded</code></li>
                     <li>initial parameters are applied inside <code>load()</code></li>
+                    <li>zero or multiple GPUs on the current NUMA node cause <code>load()</code> to fail</li>
                     <li><code>notifyParameters()</code> is revision-driven, not a lifecycle state</li>
                     <li><code>start()/stop()</code> are resource-free state guards in this simulation</li>
-                    <li>permanent GPU binding; no host-thread binding</li>
+                    <li>GPU binding discovered in <code>load()</code>; no host-thread binding</li>
                     <li>owns <code>TaskGpuResources</code></li>
                     <li>owns private CEL, SDD, and MI objects</li>
                     <li><code>execute(FrameCpuAtom&amp;, StaticData&amp;)</code></li>
-                    <li><code>acquireGpuData()</code> validates the fixed input layout</li>
+                    <li><code>getCacheData()</code> validates the fixed input layout</li>
                     <li>uses cache hit/fill or task fallback transparently</li>
                     <li>exclusive checkout is owned by <code>DummyGraph</code></li>
                     <li>not an independent thread-safe scheduling boundary</li>
@@ -842,7 +844,7 @@
                     <li><code>CacheHit / CacheFill / TaskFallback</code></li>
                     <li><code>needsUpload()</code> hides source selection</li>
                     <li>cache hit exposes no mutable pointer</li>
-                    <li><code>complete()</code> synchronizes then publishes/releases</li>
+                    <li><code>freeCacheData()</code> synchronizes then publishes/releases</li>
                     <li>destructor synchronizes then aborts if incomplete</li>
                 </ul>
             </article>
@@ -902,7 +904,7 @@
             <div class="arrow">+</div>
             <div class="node"><strong style="color: var(--graph)">Free graph thread</strong><span>NUMA-local host execution</span></div>
         </div>
-        <p class="note">After scheduler selection, the graph calls <code>StaticData::execute()</code> and <code>DummyTask::execute(atom, staticData)</code>. One <code>StaticData::acquireGpuData()</code> call validates the fixed layout and resolves cache or fallback access. No incoming key must be pre-registered, and lookup never changes ready-frame, task, or worker selection.</p>
+        <p class="note">After scheduler selection, the graph calls <code>StaticData::execute()</code> and <code>DummyTask::execute(atom, staticData)</code>. One <code>StaticData::getCacheData()</code> call validates the fixed layout and resolves cache or fallback access. No incoming key must be pre-registered, and lookup never changes ready-frame, task, or worker selection.</p>
     </section>
 
     <section class="section">

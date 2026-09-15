@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <vector>
 
 #include "Algo/IAlgo.h"
 #include "DataCache/GpuCacheManager.h"
@@ -10,7 +9,6 @@
 struct TaskGpuResources;
 
 struct StaticDataConfig {
-    std::vector<int> gpuIds;
     AlgoRuntimeInfo runtime;
     std::size_t gpuCacheEntries = 0;
 };
@@ -30,7 +28,7 @@ public:
     bool isInitialized() const;
     std::size_t gpuCacheEntryCount() const;
     bool validateFrame(const FrameMetadata& metadata) const;
-    GpuDataAccess acquireGpuData(const FrameMetadata& metadata, const TaskGpuResources& resources);
+    GpuDataAccess getCacheData(const FrameMetadata& metadata, const TaskGpuResources& resources);
 
     StaticData(const StaticData&) = delete;
     StaticData& operator=(const StaticData&) = delete;

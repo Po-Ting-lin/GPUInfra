@@ -23,7 +23,7 @@ class GpuCacheManager;
 //
 // Typical call sequence:
 //
-//   GpuDataAccess access = staticData.acquireGpuData(metadata, resources);
+//   GpuDataAccess access = staticData.getCacheData(metadata, resources);
 //   if (!access) {
 //       return false;
 //   }
@@ -35,7 +35,7 @@ class GpuCacheManager;
 //   if (submitted) {
 //       submitted = enqueueComputeAndD2H(access.data(), resources.stream);
 //   }
-//   if (!access.complete(submitted)) {
+//   if (!access.freeCacheData(submitted)) {
 //       return false;
 //   }
 //
@@ -44,12 +44,12 @@ class GpuCacheManager;
 // caller must enqueue H2D before compute. CacheHit requires no upload.
 //
 // Submit H2D, compute, and D2H to the same TaskGpuResources stream used during
-// acquire. Call complete() exactly once on the normal path, even when enqueueing
+// acquire. Call freeCacheData() exactly once on the normal path, even when enqueueing
 // failed. It synchronizes that stream, publishes a successful CacheFill, or
-// releases/rolls back the cache or fallback reservation. After complete(), the
+// releases/rolls back the cache or fallback reservation. After freeCacheData(), the
 // access and its pointers are invalid.
 //
-// The destructor is an error-path safety net: if complete() was not called, it
+// The destructor is an error-path safety net: if freeCacheData() was not called, it
 // synchronizes already-submitted work and aborts the access. Do not rely on the
 // destructor for successful completion because an unfinished CacheFill will
 // not be published.
@@ -67,7 +67,8 @@ public:
     GpuDataAccessSource source() const;
 
     // Required normal-path finish operation; invalidates this access.
-    bool complete(bool submittedSuccessfully);
+    // Releases the reservation while retaining the underlying GPU allocation.
+    bool freeCacheData(bool submittedSuccessfully);
 
     GpuDataAccess(const GpuDataAccess&) = delete;
     GpuDataAccess& operator=(const GpuDataAccess&) = delete;

@@ -165,7 +165,7 @@ masterAccess + referenceAccess
   -> publish/release both accesses
 ```
 
-Calling the current `GpuDataAccess::complete()` twice is correct on one stream,
+Calling the current `GpuDataAccess::freeCacheData()` twice is correct on one stream,
 but it calls `cudaStreamSynchronize()` twice. A batch-completion API or a
 `completeAfterStreamSync()` path should publish multiple leases after one
 successful synchronization.
@@ -244,7 +244,7 @@ Task::execute()
   ├─ TaskFallback: required ROI H2D
   ├─ run comparison algorithms
   ├─ synchronize once
-  └─ complete both accesses
+  └─ call freeCacheData() on both accesses
 ```
 
 There should be one `StaticData` instance per graph copy, not one

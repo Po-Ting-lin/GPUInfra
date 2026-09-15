@@ -3,17 +3,13 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
-#include <fstream>
 #include <mutex>
 #include <new>
-#include <sstream>
 #include <string>
 #include <vector>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <pthread.h>
-#include <sched.h>
 
 #include "CudaCheck.h"
 #include "GpuContext.h"
@@ -23,60 +19,6 @@ std::mutex GpuContextManager::lock;
 std::atomic<bool> GpuContextManager::initialised{false};
 
 namespace {
-
-bool addCpuRange(cpu_set_t& set, const std::string& token) {
-    const std::size_t separator = token.find('-');
-    try {
-        const int first = std::stoi(token.substr(0, separator));
-        const int last = separator == std::string::npos ? first : std::stoi(token.substr(separator + 1));
-        if (first < 0 || last < first) {
-            return false;
-        }
-        for (int cpu = first; cpu <= last && cpu < CPU_SETSIZE; ++cpu) {
-            CPU_SET(cpu, &set);
-        }
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-bool nodeCpuSet(int node, cpu_set_t& set) {
-    std::ifstream input("/sys/devices/system/node/node" + std::to_string(node) + "/cpulist");
-    std::string cpuList;
-    if (!(input >> cpuList)) {
-        return false;
-    }
-
-    CPU_ZERO(&set);
-    std::istringstream tokens(cpuList);
-    std::string token;
-    while (std::getline(tokens, token, ',')) {
-        if (!addCpuRange(set, token)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool pinToNumaNode(int node) {
-    if (node < 0) {
-        return false;
-    }
-
-    cpu_set_t nodeSet;
-    cpu_set_t allowedSet;
-    if (!nodeCpuSet(node, nodeSet) || pthread_getaffinity_np(pthread_self(), sizeof(allowedSet), &allowedSet) != 0) {
-        return false;
-    }
-
-    // Respect a container or cgroup's existing CPU allowance.
-    CPU_AND(&nodeSet, &nodeSet, &allowedSet);
-    if (CPU_COUNT(&nodeSet) == 0) {
-        return false;
-    }
-    return pthread_setaffinity_np(pthread_self(), sizeof(nodeSet), &nodeSet) == 0;
-}
 
 int probeNumaNodeOfGpu(int gpuId) {
     char busId[32]{};
@@ -135,7 +77,7 @@ void releaseContexts(std::vector<GpuContext*>& availableContexts) {
 
 }  // namespace
 
-bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
+bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) { // Open Issue: 1 global GpuContextManager or 1 GpuContextManager per numa node?
     std::lock_guard<std::mutex> guard(lock);
     if (initialised.load(std::memory_order_acquire)) {
         return false;
@@ -151,7 +93,7 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
     contexts.clear();
 
     for (int gpu = 0; gpu < deviceCount; ++gpu) {
-        int node = probeNumaNodeOfGpu(gpu);
+        int node = probeNumaNodeOfGpu(gpu); // Map GPU to NUMA node. Save info into contexts.
         if (node < 0 && !requestedConfig.requireNuma) {
             node = 0;
         }
@@ -188,6 +130,7 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
             return false;
         });
 
+        // A list of context, including the primary context, GPU id, NUMA node id.
         contexts.push_back(context);
 
         cudaDeviceProp properties{};
@@ -202,23 +145,14 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) {
     return true;
 }
 
-bool GpuContextManager::pinCurrentThreadToNumaNode(int numaNode) {
-    return pinToNumaNode(numaNode);
-}
-
-bool GpuContextManager::validateGpuIdsForNumaNode(int numaNode, const std::vector<int>& gpuIds) {
-    if (!initialised.load(std::memory_order_acquire) || numaNode < 0 || gpuIds.empty()) {
+bool GpuContextManager::gpuIdsForCurrentNumaNode(std::vector<int>& gpuIds) {
+    gpuIds.clear();
+    if (!initialised.load(std::memory_order_acquire)) {
+        std::fprintf(stderr, "[GPUInfra] cannot resolve NUMA GPU before infrastructure initialization\n");
         return false;
     }
-
-    std::lock_guard<std::mutex> guard(lock);
-    for (int gpuId : gpuIds) {
-        const GpuContext* context = findGpu(contexts, gpuId);
-        if (context == nullptr || context->numaNode != numaNode) {
-            return false;
-        }
-    }
-    return true;
+    const int numaNode = GpuTopology::currentNumaNode();
+    return GpuTopology::resolveGpuIds(numaNode, gpuLocations(), gpuIds);
 }
 
 bool GpuContextManager::registerTask(int gpuId, TaskGpuResources& resources) {
@@ -243,7 +177,7 @@ bool GpuContextManager::registerTask(int gpuId, TaskGpuResources& resources) {
         }
     }
     if (resourceId == context->taskResources.size()) {
-        context->taskResources.push_back(&resources);
+        context->taskResources.push_back(&resources); // context does not own TaskGpuResources, it keeps a pointer only. TaskGpuResources is owned by Graph Task.
     }
     else {
         context->taskResources[resourceId] = &resources;

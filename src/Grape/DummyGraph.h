@@ -14,6 +14,7 @@
 #include "DummyTask.h"
 #include "FrameCpuAtom.h"
 #include "ParameterRegistry.h"
+#include "NumaExecutor.h"
 #include "StaticData.h"
 
 class PhaseGate {
@@ -44,8 +45,6 @@ private:
 };
 
 struct GraphConfig {
-    int numaNode = -1;
-    std::vector<int> gpuIds;
     std::size_t taskInstancesPerGpu = 4;
     std::size_t graphThreads = 0;
     std::size_t gpuCacheEntries = 4;
@@ -59,7 +58,7 @@ struct GraphConfig {
 
 class DummyGraph {
 public:
-    DummyGraph(const GraphConfig& graphConfig, GraphSink& outputSink, std::atomic<bool>& globalCancellation);
+    DummyGraph(const NumaExecutor& graphExecutor, const GraphConfig& graphConfig, GraphSink& outputSink, std::atomic<bool>& globalCancellation);
     ~DummyGraph();
 
     bool initialize();
@@ -87,14 +86,16 @@ private:
     bool notifyParametersOnNumaNode(const ParameterSnapshot& parameters);
     bool stopOnNumaNode();
     bool unloadOnNumaNode();
-    void workerLoop();
+    void workerLoop(bool numaReady);
     void cancelReadyFramesLocked();
     void cancelPreparedFramesLocked();
     void deliverFrameResult(const FrameCpuAtom& atom);
     void finishPhaseIfCompleteLocked();
     std::vector<std::unique_ptr<FrameCpuAtom>>& atomsForPhase(FramePhase phase);
 
+    NumaExecutor executor;
     GraphConfig config;
+    std::vector<int> gpuIds;
     GraphSink* sink;
     std::atomic<bool>* cancellation;
     ParameterRegistry parameterRegistry;

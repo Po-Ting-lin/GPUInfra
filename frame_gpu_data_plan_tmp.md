@@ -166,7 +166,7 @@ and `StaticData` contain no phase or execution-state field.
 | `TaskFallback` | No entry can be used immediately, or capacity is zero | true | task `d_input` |
 | `Invalid` | Contract/metadata/GPU validation failed | n/a | no |
 
-The scoped access owns neither allocation nor stream. `complete()` synchronizes
+The scoped access owns neither allocation nor stream. `freeCacheData()` synchronizes
 the captured stream once and then releases or publishes the lease. Destruction
 of an incomplete access synchronizes submitted work and aborts it.
 
@@ -207,7 +207,7 @@ Empty or inactive Valid
   -> Valid
 ```
 
-Only successful `GpuDataAccess::complete(true)` publishes the new cached
+Only successful `GpuDataAccess::freeCacheData(true)` publishes the new cached
 metadata/replica. Submission failure, synchronization failure, or RAII abort
 resets a fill entry to `Empty`.
 
@@ -228,12 +228,12 @@ The task performs:
 ```text
 validate atom layout and preallocated outputs
   -> make the task GPU current
-  -> StaticData::acquireGpuData(metadata, resources)
+  -> StaticData::getCacheData(metadata, resources)
        -> validate fixed layout
   -> if needsUpload: atom.data -> h_in -> access.writableData()
   -> CEL / SDD / MI read access.data()
   -> algorithm D2H
-  -> access.complete(result.ok), including one stream sync
+  -> access.freeCacheData(result.ok), including one stream sync
   -> collect into FrameCpuAtom.result
 ```
 

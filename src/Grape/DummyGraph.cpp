@@ -68,8 +68,9 @@ std::size_t GraphSink::failureCount() const {
     return failedResults;
 }
 
-DummyGraph::DummyGraph(const GraphConfig& graphConfig, GraphSink& outputSink, std::atomic<bool>& globalCancellation)
-    : config(graphConfig),
+DummyGraph::DummyGraph(const NumaExecutor& graphExecutor, const GraphConfig& graphConfig, GraphSink& outputSink, std::atomic<bool>& globalCancellation)
+    : executor(graphExecutor),
+      config(graphConfig),
       sink(&outputSink),
       cancellation(&globalCancellation) {}
 
@@ -78,21 +79,16 @@ DummyGraph::~DummyGraph() {
 }
 
 bool DummyGraph::initialize() {
-    if (config.gpuIds.size() != 1) {
-        std::fprintf(stderr, "[GPUInfra] unsupported graph topology numa=%d gpu_count=%zu; temporary scope requires exactly one GPU per NUMA graph copy\n", config.numaNode, config.gpuIds.size());
+    if (initialized || config.taskInstancesPerGpu == 0 || config.runtime.inBytes == 0 || cancellation == nullptr || sink == nullptr || cancellation->load(std::memory_order_acquire)) {
         return false;
     }
-    if (initialized || config.numaNode < 0 || config.taskInstancesPerGpu == 0 || config.runtime.inBytes == 0 || cancellation == nullptr || sink == nullptr || cancellation->load(std::memory_order_acquire)) {
+    if (!executor.run([this] { return GpuContextManager::gpuIdsForCurrentNumaNode(gpuIds); })) {
         return false;
     }
-    if (!GpuContextManager::validateGpuIdsForNumaNode(config.numaNode, config.gpuIds)) {
-        std::fprintf(stderr, "[GPUInfra] graph GPU/NUMA mismatch numa=%d gpu=%d\n", config.numaNode, config.gpuIds.front());
+    if (config.taskInstancesPerGpu > std::numeric_limits<std::size_t>::max() / gpuIds.size()) {
         return false;
     }
-    if (config.taskInstancesPerGpu > std::numeric_limits<std::size_t>::max() / config.gpuIds.size()) {
-        return false;
-    }
-    const std::size_t configuredTaskCount = config.taskInstancesPerGpu * config.gpuIds.size();
+    const std::size_t configuredTaskCount = config.taskInstancesPerGpu * gpuIds.size();
     if (configuredTaskCount > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         return false;
     }
@@ -103,18 +99,10 @@ bool DummyGraph::initialize() {
         return false;
     }
 
-    bool setupSucceeded = false;
-    try {
-        std::thread setupThread([this, &setupSucceeded] { setupSucceeded = initializeOnNumaNode(); });
-        setupThread.join();
-    } catch (const std::exception&) {
-        cancellation->store(true, std::memory_order_release);
-        return false;
-    }
+    const bool setupSucceeded = executor.run([this] { return initializeOnNumaNode(); });
     if (!setupSucceeded) {
         cancellation->store(true, std::memory_order_release);
-        std::thread teardownThread([this] { unloadOnNumaNode(); });
-        teardownThread.join();
+        executor.run([this] { return unloadOnNumaNode(); });
         return false;
     }
 
@@ -128,7 +116,7 @@ bool DummyGraph::initialize() {
         }
         workers.reserve(config.graphThreads);
         for (std::size_t workerId = 0; workerId < config.graphThreads; ++workerId) {
-            workers.emplace_back(&DummyGraph::workerLoop, this);
+            workers.push_back(executor.start([this](bool numaReady) { workerLoop(numaReady); }));
         }
     } catch (const std::exception&) {
         cancellation->store(true, std::memory_order_release);
@@ -143,8 +131,7 @@ bool DummyGraph::initialize() {
             }
         }
         workers.clear();
-        std::thread teardownThread([this] { unloadOnNumaNode(); });
-        teardownThread.join();
+        executor.run([this] { return unloadOnNumaNode(); });
         return false;
     }
 
@@ -162,8 +149,7 @@ bool DummyGraph::initialize() {
         }
         workers.clear();
         cancellation->store(true, std::memory_order_release);
-        std::thread teardownThread([this] { unloadOnNumaNode(); });
-        teardownThread.join();
+        executor.run([this] { return unloadOnNumaNode(); });
         return false;
     }
 
@@ -177,14 +163,7 @@ bool DummyGraph::start() {
         return false;
     }
 
-    bool startSucceeded = false;
-    try {
-        std::thread setupThread([this, &startSucceeded] { startSucceeded = startOnNumaNode(); });
-        setupThread.join();
-    } catch (const std::exception&) {
-        cancellation->store(true, std::memory_order_release);
-        return false;
-    }
+    const bool startSucceeded = executor.run([this] { return startOnNumaNode(); });
     if (!startSucceeded) {
         cancellation->store(true, std::memory_order_release);
         return false;
@@ -213,14 +192,7 @@ bool DummyGraph::changeParameters(const AlgoParams& parameters) {
         return false;
     }
 
-    bool notifySucceeded = false;
-    try {
-        std::thread notifyThread([this, &updatedSnapshot, &notifySucceeded] { notifySucceeded = notifyParametersOnNumaNode(updatedSnapshot); });
-        notifyThread.join();
-    } catch (const std::exception&) {
-        cancellation->store(true, std::memory_order_release);
-        return false;
-    }
+    const bool notifySucceeded = executor.run([this, &updatedSnapshot] { return notifyParametersOnNumaNode(updatedSnapshot); });
     if (!notifySucceeded) {
         cancellation->store(true, std::memory_order_release);
         return false;
@@ -294,14 +266,7 @@ bool DummyGraph::stop() {
         return false;
     }
 
-    bool stopSucceeded = false;
-    try {
-        std::thread teardownThread([this, &stopSucceeded] { stopSucceeded = stopOnNumaNode(); });
-        teardownThread.join();
-    } catch (const std::exception&) {
-        cancellation->store(true, std::memory_order_release);
-        return false;
-    }
+    const bool stopSucceeded = executor.run([this] { return stopOnNumaNode(); });
     if (!stopSucceeded) {
         cancellation->store(true, std::memory_order_release);
         return false;
@@ -334,9 +299,7 @@ bool DummyGraph::shutdown() {
     }
     workers.clear();
 
-    bool unloadSucceeded = false;
-    std::thread teardownThread([this, &unloadSucceeded] { unloadSucceeded = unloadOnNumaNode(); });
-    teardownThread.join();
+    const bool unloadSucceeded = executor.run([this] { return unloadOnNumaNode(); });
 
     {
         std::lock_guard<std::mutex> guard(schedulerLock);
@@ -364,13 +327,9 @@ std::size_t DummyGraph::lastMaxConcurrentExecutions() const {
 }
 
 bool DummyGraph::initializeOnNumaNode() {
-    if (!GpuContextManager::pinCurrentThreadToNumaNode(config.numaNode)) {
-        return false;
-    }
-
     std::size_t warmupCount = 0;
     std::size_t timedCount = 0;
-    if (!multiplyFrameCount(config.warmupFramesPerGpu, config.gpuIds.size(), warmupCount) || !multiplyFrameCount(config.timedFramesPerGpu, config.gpuIds.size(), timedCount)) {
+    if (!multiplyFrameCount(config.warmupFramesPerGpu, gpuIds.size(), warmupCount) || !multiplyFrameCount(config.timedFramesPerGpu, gpuIds.size(), timedCount)) {
         return false;
     }
     if (warmupCount > std::numeric_limits<std::size_t>::max() - timedCount) {
@@ -382,11 +341,11 @@ bool DummyGraph::initializeOnNumaNode() {
     }
 
     try {
-        tasks.reserve(config.taskInstancesPerGpu * config.gpuIds.size());
+        tasks.reserve(config.taskInstancesPerGpu * gpuIds.size());
         int taskId = 0;
-        for (int gpuId : config.gpuIds) {
+        for (std::size_t gpuIndex = 0; gpuIndex < gpuIds.size(); ++gpuIndex) {
             for (std::size_t instance = 0; instance < config.taskInstancesPerGpu; ++instance) {
-                std::unique_ptr<DummyTask> task = std::make_unique<DummyTask>(taskId, gpuId, config.executionModel, config.runtime);
+                std::unique_ptr<DummyTask> task = std::make_unique<DummyTask>(taskId, config.executionModel, config.runtime);
                 if (!task->registerParameters(parameterRegistry)) {
                     return false;
                 }
@@ -407,7 +366,6 @@ bool DummyGraph::initializeOnNumaNode() {
         warmupAtoms.reserve(warmupCount);
         timedAtoms.reserve(timedCount);
         StaticDataConfig staticDataConfig;
-        staticDataConfig.gpuIds = config.gpuIds;
         staticDataConfig.runtime = config.runtime;
         staticDataConfig.gpuCacheEntries = config.gpuCacheEntries;
         std::uint64_t nextId = config.firstFrameId;
@@ -431,10 +389,6 @@ bool DummyGraph::initializeOnNumaNode() {
 }
 
 bool DummyGraph::startOnNumaNode() {
-    if (!GpuContextManager::pinCurrentThreadToNumaNode(config.numaNode)) {
-        return false;
-    }
-
     std::size_t startedTaskCount = 0;
     for (const std::unique_ptr<DummyTask>& task : tasks) {
         if (!task->start()) {
@@ -449,10 +403,6 @@ bool DummyGraph::startOnNumaNode() {
 }
 
 bool DummyGraph::notifyParametersOnNumaNode(const ParameterSnapshot& parameters) {
-    if (!GpuContextManager::pinCurrentThreadToNumaNode(config.numaNode)) {
-        return false;
-    }
-
     for (const std::unique_ptr<DummyTask>& task : tasks) {
         if (!task->notifyParameters(parameters)) {
             return false;
@@ -462,10 +412,6 @@ bool DummyGraph::notifyParametersOnNumaNode(const ParameterSnapshot& parameters)
 }
 
 bool DummyGraph::stopOnNumaNode() {
-    if (!GpuContextManager::pinCurrentThreadToNumaNode(config.numaNode)) {
-        return false;
-    }
-
     bool ok = true;
     for (auto task = tasks.rbegin(); task != tasks.rend(); ++task) {
         if ((*task)->lifecycle() == TaskLifecycle::Started && !(*task)->stop()) {
@@ -479,7 +425,7 @@ bool DummyGraph::stopOnNumaNode() {
 }
 
 bool DummyGraph::unloadOnNumaNode() {
-    bool ok = GpuContextManager::pinCurrentThreadToNumaNode(config.numaNode);
+    bool ok = true;
 
     if (executionCycleStarted) {
         if (!stopOnNumaNode()) {
@@ -506,18 +452,17 @@ bool DummyGraph::unloadOnNumaNode() {
     return ok;
 }
 
-void DummyGraph::workerLoop() {
-    const bool pinned = GpuContextManager::pinCurrentThreadToNumaNode(config.numaNode);
+void DummyGraph::workerLoop(bool numaReady) {
     {
         std::lock_guard<std::mutex> guard(schedulerLock);
         ++readyWorkers;
-        if (!pinned) {
+        if (!numaReady) {
             workerStartupFailed = true;
             cancellation->store(true, std::memory_order_release);
         }
         startupCondition.notify_one();
     }
-    if (!pinned) {
+    if (!numaReady) {
         return;
     }
 

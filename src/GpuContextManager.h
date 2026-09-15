@@ -4,6 +4,7 @@
 #include <mutex>
 #include <vector>
 
+#include "GpuTopology.h"
 #include "TaskGpuResources.h"
 
 class GpuContext;
@@ -12,18 +13,13 @@ struct GpuInfraConfig {
     bool requireNuma = true;
 };
 
-struct GpuLocation {
-    int gpuId = -1;
-    int numaNode = -1;
-};
-
 class GpuContextManager {
 public:
     // Serialized cold path: discover GPUs and retain their primary contexts.
     static bool init(const GpuInfraConfig& config);
 
-    static bool pinCurrentThreadToNumaNode(int numaNode);
-    static bool validateGpuIdsForNumaNode(int numaNode, const std::vector<int>& gpuIds);
+    // Cold path, called under framework NUMA affinity. Reject zero/multiple GPUs.
+    static bool gpuIdsForCurrentNumaNode(std::vector<int>& gpuIds);
     static bool registerTask(int gpuId, TaskGpuResources& resources);
     static bool makeTaskCurrent(const TaskGpuResources& resources);
     static bool unregisterTask(TaskGpuResources& resources);

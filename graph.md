@@ -36,6 +36,35 @@ short public names with the same ordering and meaning:
 | `stop()` | `doStop()` | Leave the execution cycle after all calls to `execute()` finish. |
 | `unload()` | `doUnload()` | Release resources owned by the task instance. |
 
+### Golden rule: NUMA locality for every task callback
+
+The framework establishes CPU affinity to the graph copy's assigned NUMA node
+before invoking any callback in the table above. This guarantee applies to
+`registerParameters()`, `load()`, `notifyParameters()`, `start()`, `execute()`,
+`stop()`, and `unload()`, including their corresponding production callbacks.
+It holds for the entire duration of each callback, not just at entry.
+
+Callbacks may run on different threads or CPUs, but all of those CPUs belong
+to the same NUMA node assigned to that graph copy. In particular, the NUMA
+node observed during `load()` is guaranteed to be the graph copy's assigned
+node. A task may therefore determine its NUMA node during `load()` and use
+that node to look up GPU resources in `GpuContextManager`.
+
+Establishing this affinity is the framework's responsibility; task callbacks
+do not need to set CPU affinity themselves. The simulation and test harness
+must provide the same execution guarantee before invoking these callbacks.
+A graph copy's numeric ID alone does not identify its CPU or NUMA node.
+
+This rule does not specify how many GPUs belong to a NUMA node or select a
+CUDA device for the calling thread. GPU selection and CUDA device binding
+remain separate from the framework's CPU-affinity guarantee.
+
+GPUInfra currently requires exactly one GPU on the callback's NUMA node.
+`load()` reports an error and fails if lookup finds zero or multiple GPUs;
+it must not silently select the first GPU. This temporary GPU restriction
+is separate from the graph protocol. Task/frame/worker count calculations
+continue to use the resolved GPU-list size.
+
 The lifecycle is:
 
 ```text

@@ -1,1120 +1,252 @@
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>GPUInfra Incoming Frame 與 GPU Cache 完整說明</title>
-    <style>
-        :root {
-            color-scheme: dark;
-            --background: #07101c;
-            --panel: #101c2c;
-            --panel-2: #17263a;
-            --panel-3: #1c3049;
-            --border: #34516f;
-            --text: #eef5ff;
-            --muted: #a6b7ca;
-            --frame: #ffd166;
-            --table: #65d4a2;
-            --entry: #75b8ff;
-            --fallback: #c99cff;
-            --danger: #ff8189;
-            --success: #72e0aa;
-            --loading: #f7ad62;
-        }
-
-        * {
-            box-sizing: border-box;
-        }
-
-        html {
-            scroll-behavior: smooth;
-        }
-
-        body {
-            margin: 0;
-            min-width: 320px;
-            background:
-                radial-gradient(circle at 12% 0, rgb(53 102 149 / 28%), transparent 34rem),
-                linear-gradient(145deg, #0b1728 0, var(--background) 54rem);
-            color: var(--text);
-            font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        }
-
-        a {
-            color: #9ecfff;
-        }
-
-        code,
-        .mono {
-            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-        }
-
-        code {
-            color: #dcecff;
-        }
-
-        main {
-            width: min(1320px, calc(100% - 32px));
-            margin: 0 auto;
-            padding: 46px 0 72px;
-        }
-
-        h1,
-        h2,
-        h3,
-        p {
-            margin-top: 0;
-        }
-
-        h1 {
-            max-width: 1000px;
-            margin-bottom: 10px;
-            font-size: clamp(30px, 4.6vw, 54px);
-            line-height: 1.08;
-            letter-spacing: -0.04em;
-        }
-
-        h2 {
-            margin-bottom: 18px;
-            font-size: clamp(21px, 2.5vw, 29px);
-            letter-spacing: -0.02em;
-        }
-
-        h3 {
-            margin-bottom: 8px;
-            font-size: 17px;
-        }
-
-        .lede {
-            max-width: 920px;
-            color: var(--muted);
-            font-size: 18px;
-        }
-
-        .golden {
-            display: inline-flex;
-            gap: 9px;
-            align-items: center;
-            margin: 12px 0 26px;
-            padding: 10px 15px;
-            border: 1px solid color-mix(in srgb, var(--success), transparent 42%);
-            border-radius: 999px;
-            background: color-mix(in srgb, var(--success), transparent 90%);
-            color: var(--success);
-            font-weight: 700;
-        }
-
-        .nav {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-bottom: 28px;
-        }
-
-        .nav a {
-            padding: 7px 11px;
-            border: 1px solid var(--border);
-            border-radius: 9px;
-            background: var(--panel);
-            color: var(--muted);
-            text-decoration: none;
-        }
-
-        .nav a:hover {
-            border-color: var(--entry);
-            color: var(--text);
-        }
-
-        .panel {
-            margin-top: 22px;
-            padding: 24px;
-            border: 1px solid var(--border);
-            border-radius: 18px;
-            background: color-mix(in srgb, var(--panel), transparent 3%);
-            box-shadow: 0 18px 58px rgb(0 0 0 / 18%);
-        }
-
-        .panel > :last-child {
-            margin-bottom: 0;
-        }
-
-        .cards {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 14px;
-        }
-
-        .card,
-        .step,
-        .rule,
-        .formula,
-        .owner,
-        .state {
-            border: 1px solid var(--border);
-            border-radius: 13px;
-            background: var(--panel-2);
-        }
-
-        .card {
-            min-height: 175px;
-            padding: 17px;
-        }
-
-        .card strong.value {
-            display: block;
-            margin: 4px 0 8px;
-            font-size: 29px;
-            line-height: 1.1;
-        }
-
-        .card p,
-        .muted,
-        .note,
-        td small {
-            color: var(--muted);
-        }
-
-        .frame-accent {
-            box-shadow: inset 4px 0 var(--frame);
-        }
-
-        .table-accent {
-            box-shadow: inset 4px 0 var(--table);
-        }
-
-        .entry-accent {
-            box-shadow: inset 4px 0 var(--entry);
-        }
-
-        .fallback-accent {
-            box-shadow: inset 4px 0 var(--fallback);
-        }
-
-        .warning-accent {
-            box-shadow: inset 4px 0 var(--danger);
-        }
-
-        .key-point {
-            margin-top: 16px;
-            padding: 15px 17px;
-            border: 1px solid color-mix(in srgb, var(--frame), transparent 48%);
-            border-radius: 12px;
-            background: color-mix(in srgb, var(--frame), transparent 92%);
-        }
-
-        .key-point strong {
-            color: var(--frame);
-        }
-
-        .capacity-flow,
-        .scheduler-flow,
-        .lifetime-flow {
-            display: grid;
-            gap: 10px;
-            align-items: stretch;
-        }
-
-        .capacity-flow {
-            grid-template-columns: 1.25fr auto 1fr auto 1fr;
-        }
-
-        .scheduler-flow {
-            grid-template-columns: 1fr auto 1fr auto 1fr auto 1.25fr;
-        }
-
-        .lifetime-flow {
-            grid-template-columns: repeat(7, auto);
-        }
-
-        .flow-box {
-            display: grid;
-            place-items: center;
-            min-height: 100px;
-            padding: 14px;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            background: var(--panel-2);
-            text-align: center;
-        }
-
-        .flow-box strong,
-        .flow-box small {
-            display: block;
-        }
-
-        .flow-box small {
-            margin-top: 4px;
-            color: var(--muted);
-        }
-
-        .arrow {
-            display: grid;
-            place-items: center;
-            color: var(--muted);
-            font-size: 24px;
-        }
-
-        .formula-row {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 12px;
-            margin-top: 16px;
-        }
-
-        .formula {
-            padding: 15px;
-        }
-
-        .formula code {
-            display: block;
-            margin-bottom: 5px;
-            color: var(--text);
-            font-size: 16px;
-        }
-
-        .calculator {
-            display: grid;
-            grid-template-columns: minmax(230px, 0.8fr) minmax(0, 1.6fr);
-            gap: 18px;
-            margin-top: 20px;
-            padding: 18px;
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            background: var(--panel-2);
-        }
-
-        .inputs {
-            display: grid;
-            gap: 12px;
-        }
-
-        label {
-            display: grid;
-            gap: 5px;
-            color: var(--muted);
-            font-size: 13px;
-        }
-
-        input {
-            width: 100%;
-            padding: 10px 11px;
-            border: 1px solid var(--border);
-            border-radius: 9px;
-            outline: none;
-            background: var(--background);
-            color: var(--text);
-            font: inherit;
-        }
-
-        input:focus {
-            border-color: var(--entry);
-        }
-
-        .outputs {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 10px;
-        }
-
-        .output {
-            padding: 13px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            background: var(--panel);
-        }
-
-        .output strong,
-        .output span {
-            display: block;
-        }
-
-        .output strong {
-            margin-top: 3px;
-            font-size: 20px;
-        }
-
-        .output span {
-            color: var(--muted);
-            font-size: 12px;
-        }
-
-        .owner-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 12px;
-        }
-
-        .owner {
-            padding: 16px;
-        }
-
-        .owner h3 span {
-            color: var(--muted);
-            font-size: 12px;
-            font-weight: 500;
-        }
-
-        .owner ul,
-        .rule ul {
-            margin: 8px 0 0;
-            padding-left: 20px;
-            color: var(--muted);
-        }
-
-        .decision {
-            display: grid;
-            gap: 10px;
-        }
-
-        .decision-row {
-            display: grid;
-            grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.7fr);
-            gap: 10px;
-        }
-
-        .question,
-        .answer {
-            padding: 14px 16px;
-            border: 1px solid var(--border);
-            border-radius: 11px;
-            background: var(--panel-2);
-        }
-
-        .question {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            font-weight: 700;
-        }
-
-        .number {
-            display: inline-grid;
-            flex: 0 0 auto;
-            place-items: center;
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            background: var(--entry);
-            color: #07111c;
-            font-weight: 800;
-        }
-
-        .answer strong {
-            color: var(--success);
-        }
-
-        .answer .no {
-            color: var(--loading);
-        }
-
-        .branch-grid {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 12px;
-            margin-top: 18px;
-        }
-
-        .branch {
-            padding: 17px;
-            border: 1px solid var(--border);
-            border-radius: 13px;
-            background: var(--panel-2);
-        }
-
-        .branch .tag,
-        .state .tag {
-            display: inline-block;
-            margin-bottom: 10px;
-            padding: 3px 8px;
-            border-radius: 999px;
-            color: #07111c;
-            font-size: 12px;
-            font-weight: 800;
-        }
-
-        .hit .tag {
-            background: var(--success);
-        }
-
-        .fill .tag {
-            background: var(--loading);
-        }
-
-        .fallback .tag {
-            background: var(--fallback);
-        }
-
-        .branch ol {
-            margin: 9px 0 0;
-            padding-left: 20px;
-            color: var(--muted);
-        }
-
-        .state-grid {
-            display: grid;
-            grid-template-columns: 1fr auto 1fr auto 1fr;
-            gap: 10px;
-            align-items: center;
-        }
-
-        .state {
-            min-height: 150px;
-            padding: 17px;
-        }
-
-        .empty-state .tag {
-            background: var(--muted);
-        }
-
-        .loading-state .tag {
-            background: var(--loading);
-        }
-
-        .valid-state .tag {
-            background: var(--success);
-        }
-
-        .state p {
-            margin-bottom: 0;
-            color: var(--muted);
-        }
-
-        .state-notes {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 10px;
-            margin-top: 12px;
-        }
-
-        .state-notes div {
-            padding: 12px;
-            border: 1px dashed var(--border);
-            border-radius: 10px;
-            color: var(--muted);
-        }
-
-        .table-wrap {
-            overflow-x: auto;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            min-width: 760px;
-            background: var(--panel-2);
-        }
-
-        th,
-        td {
-            padding: 12px 14px;
-            border-bottom: 1px solid var(--border);
-            text-align: left;
-            vertical-align: top;
-        }
-
-        th {
-            background: var(--panel-3);
-            color: var(--muted);
-            font-size: 12px;
-            letter-spacing: 0.03em;
-            text-transform: uppercase;
-        }
-
-        tr:last-child td {
-            border-bottom: 0;
-        }
-
-        .lru {
-            white-space: nowrap;
-            color: #d9e8fb;
-            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-        }
-
-        .slots {
-            display: grid;
-            grid-template-columns: repeat(8, minmax(72px, 1fr));
-            gap: 7px;
-            margin: 16px 0;
-        }
-
-        .slot {
-            min-height: 82px;
-            padding: 9px;
-            border: 1px solid var(--border);
-            border-radius: 9px;
-            background: var(--panel-2);
-            text-align: center;
-        }
-
-        .slot span,
-        .slot strong,
-        .slot small {
-            display: block;
-        }
-
-        .slot span {
-            color: var(--muted);
-            font-size: 11px;
-        }
-
-        .slot strong {
-            margin-top: 5px;
-            color: var(--table);
-        }
-
-        .slot small {
-            color: var(--muted);
-        }
-
-        .slot.occupied {
-            border-color: color-mix(in srgb, var(--table), transparent 35%);
-            background: color-mix(in srgb, var(--table), transparent 91%);
-        }
-
-        .rules {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 12px;
-        }
-
-        .rule {
-            padding: 16px;
-        }
-
-        .rule strong {
-            display: block;
-            margin-bottom: 5px;
-        }
-
-        .matrix .cache-hit {
-            color: var(--success);
-        }
-
-        .matrix .cache-fill {
-            color: var(--loading);
-        }
-
-        .matrix .task-fallback {
-            color: #d6b8ff;
-        }
-
-        .matrix .invalid {
-            color: var(--danger);
-        }
-
-        .source-map {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 10px;
-        }
-
-        .source-map a {
-            display: block;
-            padding: 13px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            background: var(--panel-2);
-            text-decoration: none;
-        }
-
-        .source-map a:hover {
-            border-color: var(--entry);
-        }
-
-        .source-map strong,
-        .source-map small {
-            display: block;
-        }
-
-        .source-map small {
-            margin-top: 3px;
-            color: var(--muted);
-        }
-
-        @media (max-width: 1040px) {
-            .cards,
-            .branch-grid,
-            .formula-row,
-            .source-map {
-                grid-template-columns: 1fr 1fr;
-            }
-
-            .capacity-flow,
-            .scheduler-flow,
-            .lifetime-flow,
-            .state-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .arrow {
-                transform: rotate(90deg);
-                min-height: 22px;
-            }
-
-            .slots {
-                grid-template-columns: repeat(4, minmax(72px, 1fr));
-            }
-        }
-
-        @media (max-width: 700px) {
-            main {
-                width: calc(100% - 20px);
-                padding-top: 28px;
-            }
-
-            .panel {
-                padding: 17px;
-            }
-
-            .cards,
-            .branch-grid,
-            .formula-row,
-            .owner-grid,
-            .rules,
-            .source-map,
-            .calculator,
-            .outputs,
-            .state-notes,
-            .decision-row {
-                grid-template-columns: 1fr;
-            }
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU Cache｜從取得到釋放</title>
+<style>
+:root{color-scheme:light;--bg:#f5f6f3;--ink:#20342e;--muted:#53665e;--line:#d6dfd8;--green:#176349;--blue:#285da2;--amber:#8b530b;--purple:#704497;--red:#aa333c}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:90px}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--green);text-underline-offset:4px}button,select,input{font:inherit}button,select{cursor:pointer}button{border:1px solid var(--line);border-radius:8px;background:white;color:var(--ink);padding:9px 18px}button:hover:not(:disabled){border-color:var(--green);background:#edf5ef}button:disabled{opacity:.4;cursor:default}:focus-visible{outline:3px solid var(--blue);outline-offset:4px}code,.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;overflow-wrap:anywhere}code{color:#245542}h1,h2,h3,p{margin-top:0}h1{font-size:clamp(36px,6vw,68px);line-height:1.15;letter-spacing:-.04em;margin-bottom:22px}h2{font-size:clamp(26px,3vw,36px);line-height:1.3;letter-spacing:-.025em;margin-bottom:14px}h3{font-size:19px;line-height:1.4;margin-bottom:10px}p{margin-bottom:16px}.wrap{max-width:1160px;margin:auto;padding:0 28px}.top{background:#fbfcf9;border-bottom:1px solid var(--line)}.top .wrap{display:flex;justify-content:space-between;gap:18px;padding-top:16px;padding-bottom:16px;font-size:13px}.brand{font-weight:800;letter-spacing:.14em}.muted{color:var(--muted)}header.wrap{padding:68px 28px 42px}.eyebrow{color:var(--green);font-size:12px;letter-spacing:.16em;font-weight:800;margin-bottom:16px}.lede{max-width:770px;font-size:19px;color:var(--muted)}nav{position:sticky;top:0;z-index:2;background:#fbfcf9f5;border-block:1px solid var(--line);backdrop-filter:blur(12px)}nav .wrap{display:flex;gap:26px;overflow:auto;white-space:nowrap;padding-top:12px;padding-bottom:12px}nav a{font-size:14px;text-decoration:none;font-weight:650}section{padding:48px 0;border-bottom:1px solid var(--line)}.section-head{display:flex;gap:20px;align-items:baseline}.num{color:var(--green);font:500 14px ui-monospace,monospace}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.two{grid-template-columns:repeat(2,minmax(0,1fr))}.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:24px}.card p:last-child{margin-bottom:0}.step-label{display:block;font-size:12px;letter-spacing:.08em;color:var(--muted);margin-bottom:12px}.callout{border-left:3px solid var(--green);padding:16px 20px;background:#eaf1e9;border-radius:0 8px 8px 0;margin-top:20px}.badge{display:inline-block;border-radius:6px;padding:2px 9px;font:600 12px/1.8 ui-monospace,monospace;white-space:nowrap;background:#edf0ed;color:var(--muted)}.hit,.Valid{color:var(--green);background:#e5f2e9}.fill,.Loading{color:var(--amber);background:#fff1d9}.fallback{color:var(--purple);background:#f1e9f9}.invalid{color:var(--red);background:#fae9eb}.Empty{background:#edf0ed;color:var(--muted)}.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:white;margin:18px 0}table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}th{background:#edf1eb;color:#3a5146;font-weight:650}th,td{padding:15px 18px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}th:first-child{min-width:155px}td p{margin:0}caption{text-align:left;padding:16px 18px;font-weight:700}pre{overflow:auto;background:#21372e;color:#eff6f0;padding:24px;border-radius:12px;font-size:13px;line-height:1.85}pre code{color:inherit;overflow-wrap:normal}.branch{display:grid;grid-template-columns:190px 1fr;gap:20px;padding:17px 0;border-bottom:1px solid var(--line)}.branch:last-child{border:0}.branch p{margin:0}.branch strong{font-size:15px}.branch .badge{margin-right:8px}.sim{background:white;border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-top:24px}.sim-controls{padding:22px 26px;background:#edf1eb;display:flex;gap:14px;align-items:center;flex-wrap:wrap}.sim-controls label{font-weight:700}.sim-controls select{flex:1;min-width:0;max-width:100%;padding:10px 12px;border:1px solid #acbdb0;border-radius:8px;background:white;color:var(--ink)}.sim-body{padding:26px}.sim-summary{min-height:58px}.timeline{display:flex;gap:6px;margin:18px 0}.timeline span{height:4px;flex:1;border-radius:5px;background:var(--line)}.timeline .done{background:var(--green)}.event{background:#f5f7f3;padding:20px;border-radius:10px;margin-bottom:22px;min-height:150px}.event h3{margin:10px 0}.event p{margin:0}.entries{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.entry{border:1px solid var(--line);border-top:4px solid #acb9ad;border-radius:10px;padding:18px}.entries>.entry:only-child,.entries>.card:only-child{grid-column:1/-1}.entry.Loading{border-top-color:#bf852e;background:#fffaf0}.entry.Valid{border-top-color:var(--green);background:#f5faf6}.entry-title{display:flex;justify-content:space-between;align-items:center;gap:8px}.entry-key{font-size:23px;font-weight:700;margin:12px 0 5px}.entry small{display:block;color:var(--muted)}.ledger{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}.ledger>div{border:1px solid var(--line);padding:16px;border-radius:10px}.ledger h3{font-size:13px;color:var(--muted);margin:0 0 8px}.ledger p{margin:0;font-size:14px}.sim-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:22px}.actions{display:flex;gap:8px}.primary{background:var(--green);color:white;border-color:var(--green)}button.primary:hover:not(:disabled){background:#114d38;color:white}.legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;font-size:12px;color:var(--muted)}details{border:1px solid var(--line);background:white;border-radius:10px;margin-top:14px;padding:0 20px}summary{cursor:pointer;font-weight:650;padding:17px 0}details>div{padding:0 0 18px}details li{margin-bottom:10px}.capacity{display:flex;flex-wrap:wrap;gap:16px;align-items:end}.capacity label{font-size:14px;display:block}.capacity input{display:block;width:110px;padding:8px;border:1px solid var(--line);border-radius:6px;margin-top:4px}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px}.metrics div{background:#f1f5ee;border-radius:8px;padding:16px}.metrics strong{display:block;font-size:25px}.metrics span{font-size:12px;color:var(--muted)}footer{padding:32px 0 48px;font-size:13px}footer .links{display:flex;gap:18px;flex-wrap:wrap}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.no-js{padding:20px;background:#fff1d9}
+@media(max-width:700px){.wrap{padding-inline:18px}header.wrap{padding:42px 18px 32px}table{min-width:650px}section{padding-block:34px}.grid,.two,.ledger{grid-template-columns:1fr}.branch{grid-template-columns:1fr;gap:8px}.sim-controls,.sim-body{padding:18px}.sim-controls select{flex-basis:100%}.entries{grid-template-columns:1fr}.event{min-height:0}.metrics{gap:7px}.metrics div{padding:10px}.metrics strong{font-size:21px}.top .wrap{flex-direction:column;gap:2px}nav .wrap{gap:20px}.sim-footer{align-items:start}.actions{flex-wrap:wrap}th,td{padding:12px}.card{padding:20px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+@media print{nav,.sim-controls,.sim-footer,.timeline{display:none}.wrap{max-width:none}body{background:white;font-size:12px}header,section{padding-block:18px}.card,table,details{break-inside:avoid}.sim{display:none}a{color:inherit}}
+</style>
 </head>
 <body>
-<main>
-    <header>
-        <h1>Incoming Frame 如何使用 GPU Cache</h1>
-        <p class="lede">這份頁面完整說明 <code>K</code>、<code>GpuCacheEntry</code>、fixed open-addressing <code>GpuResidencyTable</code>、global LRU，以及每個 incoming frame 如何得到 <code>CacheHit</code>、<code>CacheFill</code> 或 <code>TaskFallback</code>。</p>
-        <div class="golden">核心不變：cache 不參與 graph scheduler 選擇</div>
-        <nav class="nav" aria-label="頁面章節">
-            <a href="#numbers">三個數字</a>
-            <a href="#capacity">容量關係</a>
-            <a href="#ownership">資料擁有者</a>
-            <a href="#incoming">Incoming flow</a>
-            <a href="#states">Entry states</a>
-            <a href="#lru">LRU 範例</a>
-            <a href="#hash">Residency table</a>
-            <a href="#lifetime">Lifetime</a>
-            <a href="#matrix">行為總表</a>
-        </nav>
-    </header>
+<div class="top"><div class="wrap"><span class="brand">GPUINFRA / FIELD GUIDE</span><span class="muted">目前實作：每個 graph copy 一顆 GPU · immutable frame input</span></div></div>
+<header class="wrap">
+<p class="eyebrow">GPU CACHE, STEP BY STEP</p>
+<h1>一份資料，<br>從取得到釋放。</h1>
+<p class="lede">Cache 的工作是讓相同影像少傳一次 H2D。從一個 frame 進來開始，看懂資料放在哪裡、何時能重用，以及每種失敗如何收尾。</p>
+<div class="grid">
+<div class="card"><span class="step-label">01 / 取得</span><h3><code>getCacheData()</code></h3><p>檢查 layout、查找 key，取得可用的 cache 或 task buffer。</p></div>
+<div class="card"><span class="step-label">02 / 使用</span><h3>需要時上傳，再運算</h3><p><code>needsUpload()</code> 決定 H2D；kernel 一律讀 <code>access.data()</code>。</p></div>
+<div class="card"><span class="step-label">03 / 收尾</span><h3><code>freeCacheData(ok)</code></h3><p>同步 stream，發布或回滾 fill，釋放這次存取權。</p></div>
+</div>
+<div class="callout"><strong>「free」結束的是這次存取。</strong> GPU buffer 會保留供重用；呼叫後 access 與其指標失效。真正釋放 cache 配置的是 <code>release()</code>。</div>
+</header>
+<nav aria-label="章節導覽"><div class="wrap"><a href="#model">資料與角色</a><a href="#walkthrough">互動演示</a><a href="#decisions">取得的所有分支</a><a href="#finish">成功與失敗</a><a href="#lifetime">重設與釋放</a><a href="#capacity">容量與索引</a></div></nav>
+<main class="wrap">
+<section id="model">
+<div class="section-head"><span class="num">01</span><h2>先分清楚：資料、索引、存取權</h2></div>
+<p class="muted">Scheduler 先選 ready frame、free task 與 NUMA-local worker，之後才查 cache。Cache residency 不會改變排程選擇。</p>
+<div class="grid">
+<article class="card"><h3>CPU 原始資料</h3><p><code>FrameCpuAtom</code> 持有影像與 metadata。Key 是 <code>(frameId, cameraId)</code>；不同 camera 的相同 frameId 是不同 key。</p><p class="muted">不必預先註冊 key。兩次 reset 之間，相同 key 必須代表相同的不可變內容。</p></article>
+<article class="card"><h3>GPU 儲存空間</h3><p><code>StaticData</code> 擁有 manager；manager 管理固定 K 個 entry，每個 entry 擁有 persistent GPU buffer。</p><p class="muted">Framework 在每個 task callback 前建立 NUMA affinity；<code>load()</code> 選擇唯一的本地 GPU，零顆或多顆都報錯。Task 另有自己的 <code>d_input</code>。Cache 不可用時，用這個 fallback buffer 上傳。</p></article>
+<article class="card"><h3>一次存取權（lease）</h3><p><code>GpuDataAccess</code> 記錄本次使用哪個 buffer、哪條 stream。它不擁有配置，也不擁有 stream。</p><p class="muted">Lease 存活時，對應 cache entry 不可被淘汰；fallback lease 也會阻止 reset / release。</p></article>
+</div>
+<div class="table-wrap"><table><caption>Entry 只有三種狀態；Valid 還要看使用人數</caption><thead><tr><th scope="col">Entry 狀態</th><th scope="col">使用人數</th><th scope="col">同 key 再來</th><th scope="col">能給其他 key 重用嗎？</th></tr></thead><tbody>
+<tr><td><span class="badge Empty">Empty</span></td><td>0</td><td>尚無 mapping；可拿來填入</td><td>可以，優先取用</td></tr>
+<tr><td><span class="badge Loading">Loading</span></td><td>1 位 fill owner</td><td>走 fallback；不等待填入者</td><td>不可以</td></tr>
+<tr><td><span class="badge Valid">Valid</span> 閒置</td><td>0</td><td>CacheHit，開始讀取</td><td>可以，依 global LRU 淘汰</td></tr>
+<tr><td><span class="badge Valid">Valid</span> 使用中</td><td>1 位以上 reader</td><td>CacheHit，可增加 reader</td><td>不可以；最後一位離開才回 LRU</td></tr>
+</tbody></table></div>
+<p class="muted">「Active」不是第四種 entry state。Loading 的數量是 fill lease；Valid 的數量是 reader leases。只有 <strong>Valid 且人數為 0</strong> 的 entry 在可淘汰 LRU 中。</p>
+</section>
+<section id="walkthrough">
+<div class="section-head"><span class="num">02</span><h2>把一個情境，走完一次</h2></div>
+<p class="muted">選情境後按「下一步」。每一步都顯示當下狀態；A、B、C 代表不同完整 key。E0、E1 是固定的 GPU buffer，換 key 時仍使用同一份配置。</p>
+<noscript><p class="no-js">互動演示需要 JavaScript。下方的分支表、收尾矩陣與生命週期說明仍涵蓋全部流程。</p></noscript>
+<div class="sim">
+<div class="sim-controls"><label for="scenario">情境</label><select id="scenario"></select></div>
+<div class="sim-body">
+<p class="sim-summary muted" id="scenario-note"></p>
+<div class="timeline" id="timeline" aria-hidden="true"></div>
+<div id="scene" aria-live="polite" aria-atomic="true"></div>
+<div class="sim-footer"><span class="muted" id="step-count"></span><div class="actions"><button id="restart" type="button">重播</button><button id="prev" type="button">上一步</button><button id="next" type="button" class="primary">下一步 →</button></div></div>
+<p class="legend">示意範圍：cache 狀態與 lease 決策；不執行 CUDA。索引列顯示邏輯 mapping，並非 hash slot 位置。</p>
+</div></div>
+</section>
+<section id="decisions">
+<div class="section-head"><span class="num">03</span><h2>取得資料：依這個順序判斷</h2></div>
+<p><code>StaticData::getCacheData(metadata, resources)</code> 先驗證固定 layout，再進入 <code>GpuCacheManager::acquire()</code>。Miss 可以填入 cache，也可以使用 fallback。</p>
+<div class="card">
+<div class="branch"><strong>① 輸入與資源有效？</strong><p>否 → <span class="badge invalid">Invalid</span>停止。是 → 查完整 key。</p></div>
+<div class="branch"><strong>② Key 已在索引？</strong><div><p>有，但 metadata 不一致 → <span class="badge invalid">Invalid</span></p><p>有，狀態是 Loading → <span class="badge fallback">TaskFallback</span></p><p>有，Valid 且本 GPU replica 可用 → <span class="badge hit">CacheHit</span></p><p>有，Valid 但本 GPU replica 不可用 → <span class="badge fallback">TaskFallback</span></p><p>沒有 → 尋找可用 entry。</p></div></div>
+<div class="branch"><strong>③ 有 Empty entry？</strong><p>有 → <span class="badge fill">CacheFill</span>建立 key mapping，標為 Loading。沒有 → 看 LRU。</p></div>
+<div class="branch"><strong>④ 有閒置 LRU entry？</strong><p>有 → 移除最舊 key，重用其 buffer → <span class="badge fill">CacheFill</span>。沒有 → <span class="badge fallback">TaskFallback</span>（K = 0，或全部使用中 / Loading）。</p></div>
+</div>
+<div class="table-wrap"><table><caption>回傳結果決定指標與 H2D</caption><thead><tr><th scope="col">Source</th><th scope="col">data() 指向</th><th scope="col">needsUpload()</th><th scope="col">writableData()</th><th scope="col">取得時的變化</th></tr></thead><tbody>
+<tr><td><span class="badge hit">CacheHit</span></td><td>Entry 的 GPU buffer</td><td>false</td><td>nullptr（唯讀）</td><td>Reader +1；第一位 reader 將 entry 移出 LRU</td></tr>
+<tr><td><span class="badge fill">CacheFill</span></td><td>Entry 的 GPU buffer</td><td>true</td><td>同一 buffer</td><td>先插入 mapping；Loading，active = 1，replica 尚無效</td></tr>
+<tr><td><span class="badge fallback">TaskFallback</span></td><td>Task 的 d_input</td><td>true</td><td>同一 buffer</td><td>Fallback lease +1；不建立 cache mapping</td></tr>
+<tr><td><span class="badge invalid">Invalid</span></td><td>nullptr</td><td>false</td><td>nullptr</td><td>不得提交 GPU 工作；以 <code>if (!access)</code> 檢查</td></tr>
+</tbody></table></div>
+<details><summary>Invalid：輸入錯誤與內部防禦分支</summary><div>
+<ul>
+<li><strong>StaticData：</strong>未初始化，或 bytes 為 0、bytes / width / height / dtype 不符合初始化時的固定 layout。</li>
+<li><strong>Manager：</strong>未初始化或正在 release；metadata bytes 不符、width / height 非正值；GPU ID 無效或不在允許清單；stream / d_input 為空；resources.inBytes 不符。即使預期 cache hit，也要提供有效 fallback 資源。</li>
+<li><strong>已有 key：</strong>entry index 越界 / entry 為空、metadata 不一致、狀態既非 Loading 也非 Valid，或 active count 與 LRU membership 不一致。</li>
+<li><strong>填入候選：</strong>GPU pointer 缺失、Empty / Valid / active / LRU 狀態不符、舊 mapping erase 失敗，或新 mapping insert 失敗 → 歸還候選並回傳 Invalid。替換時 insert 失敗會嘗試還原舊 mapping；歸還 Valid 候選會加入 MRU。取 LRU 候選時若無法移出 list，則視為沒有候選而走 fallback。</li>
+</ul><p class="muted">在正常初始化與不變條件成立時，內部一致性錯誤不應發生。它們與一般「cache 滿了」不同：正常容量不足會使用 fallback。</p>
+</div></details>
+<details><summary>本 GPU replica 不可用，和選到錯誤 GPU，有什麼差別？</summary><div><p>目前每個 manager 只接受一顆 GPU。Resources 指向其他 GPU 會在入口被拒絕，回傳 Invalid。若允許的 GPU 對應到 Valid entry，卻缺少 pointer 或有效 replica，實作有 fallback 防禦路徑；正常單 GPU 流程通常不會觸發。跨 GPU replica fill / migration 是未來擴充，尚未實作。</p></div></details>
+</section>
+<section id="finish">
+<div class="section-head"><span class="num">04</span><h2>收尾：是否成功，決定哪些資料能留下</h2></div>
+<p><code>freeCacheData(submittedSuccessfully)</code> 會先同步取得 access 時的 task stream。傳入 false 或同步失敗都視為失敗；回傳 true 還需要 lease 與內部狀態有效。</p>
+<div class="table-wrap"><table><caption>三種有效 access × 三種結束方式</caption><thead><tr><th scope="col">Access</th><th scope="col">傳入 true，且同步成功</th><th scope="col">傳入 false，或同步失敗</th><th scope="col">未呼叫便析構（RAII abort）</th></tr></thead><tbody>
+<tr><td><span class="badge fill">CacheFill</span></td><td>標記 replica 有效；Loading → Valid；active 歸零；加入 MRU</td><td>Erase 新 key；回 Empty；replica 無效；buffer 留著</td><td>先嘗試同步，再 abort；回 Empty；即使 GPU 工作成功也不發布</td></tr>
+<tr><td><span class="badge hit">CacheHit</span></td><td>Reader −1；最後一位離開時加入 MRU</td><td>同樣釋放 reader；保留原本 immutable cached payload</td><td>先嘗試同步，再釋放 reader；最後一位離開時加入 MRU</td></tr>
+<tr><td><span class="badge fallback">TaskFallback</span></td><td>Fallback lease −1；結果可使用；不發布 cache</td><td>Fallback lease −1；不改 cache</td><td>先嘗試同步，再釋放 fallback lease；不改 cache</td></tr>
+</tbody></table></div>
+<div class="grid two">
+<div class="card"><h3>淘汰後填入失敗</h3><p>一旦新 key 已取得 CacheFill，舊 key 已經被淘汰。新 fill 失敗後 entry 回 Empty，<strong>不會恢復舊 cached 資料</strong>。之後任一 key 再來都可重新填入。</p></div>
+<div class="card"><h3>同時有多位 reader</h3><p>Reader 不互相排斥，且都只能讀。任何一位成功、失敗或 abort 都只減少自己的 lease；還有人在讀時，entry 持續受到保護。</p></div>
+</div>
+<pre aria-label="典型呼叫流程示意"><code>// 示意：H2D、kernel、D2H 都使用 resources.stream
+GpuDataAccess access = staticData.getCacheData(metadata, resources);
+if (!access) return false;
 
-    <section class="panel" id="numbers">
-        <h2>先分清楚三個數字</h2>
-        <div class="cards">
-            <article class="card frame-accent">
-                <h3>N：Incoming／logical frames</h3>
-                <strong class="value">例如 N = 220</strong>
-                <p>代表一個 run 中要處理多少個 <code>FrameCpuAtom</code>。N 可以遠大於 K，不需要先建立 frame registration list，也不決定 cache GPU buffer 數量。</p>
-            </article>
-            <article class="card entry-accent">
-                <h3>K：GPU cache capacity</h3>
-                <strong class="value">K = gpuCacheEntries</strong>
-                <p>代表固定配置多少個 <code>GpuCacheEntry</code>。最多只有 K 個 key 能同時處於 resident 或 loading；目前預設 K = 4，K = 0 表示停用 cache。</p>
-            </article>
-            <article class="card table-accent">
-                <h3>S：Residency table slots</h3>
-                <strong class="value">S = nextPow2(2 × K)</strong>
-                <p>S 是 CPU-side lookup slots，不是 frame 數，也不是 GPU buffer 數。表內最多放 K 筆 mapping，因此 load factor 不超過 50%。</p>
-            </article>
-        </div>
-        <div class="key-point"><strong>重要：</strong><code>2 × K</code> 是「K 的兩倍」，不是 2K bytes，也不是固定的 2048。K = 4 時 S = 8；即使 N = 220，table 仍只有 8 slots，而且最多只有 4 slots occupied。</div>
-    </section>
-
-    <section class="panel" id="capacity">
-        <h2>N、K、S 的容量關係</h2>
-        <div class="capacity-flow">
-            <div class="flow-box frame-accent">
-                <div><strong>Incoming stream · N frames</strong><small>F0, F1, F2, … F219<br>總數不受 cache table 限制</small></div>
-            </div>
-            <div class="arrow">→</div>
-            <div class="flow-box table-accent">
-                <div><strong>Residency table · S slots</strong><small>只記錄目前 resident/loading<br><code>key → entryIndex</code></small></div>
-            </div>
-            <div class="arrow">→</div>
-            <div class="flow-box entry-accent">
-                <div><strong>GpuCacheEntry[K]</strong><small>K 個 persistent GPU buffers<br>entry 可重複綁定不同 frame</small></div>
-            </div>
-        </div>
-
-        <div class="formula-row">
-            <div class="formula"><code>K = ConfiguredGpuCacheEntries</code><span class="muted">K 與整個 run 的 frame 數 N 無關。</span></div>
-            <div class="formula"><code>S = K == 0 ? 0 : nextPow2(2 × K)</code><span class="muted">K &gt; 0 時，<code>2 × K ≤ S &lt; 4 × K</code>。</span></div>
-            <div class="formula"><code>Cache VRAM = K × FrameBytes × ReplicasPerEntry</code><span class="muted">目前一個 graph copy 只有一張 GPU，所以 replica 數為 1。</span></div>
-        </div>
-
-        <div class="calculator">
-            <div class="inputs">
-                <h3>容量計算器</h3>
-                <label>K · Cache entries
-                    <input id="k-input" type="number" min="0" max="1000000" step="1" value="4">
-                </label>
-                <label>Frame bytes
-                    <input id="bytes-input" type="number" min="1" max="1000000000000" step="1" value="1048576">
-                </label>
-                <label>Replicas per entry
-                    <input id="replicas-input" type="number" min="1" max="64" step="1" value="1">
-                </label>
-            </div>
-            <div class="outputs" aria-live="polite">
-                <div class="output"><span>GpuCacheEntry 數量</span><strong id="entry-output">4</strong><span>真正的 persistent GPU cache buffers</span></div>
-                <div class="output"><span>Residency slots</span><strong id="slot-output">8</strong><span>CPU metadata slots；最多 K 個 occupied</span></div>
-                <div class="output"><span>最大 resident/loading keys</span><strong id="resident-output">4</strong><span>不是整個 run 的 frame 上限</span></div>
-                <div class="output"><span>GPU cache allocation</span><strong id="vram-output">4.00 MiB</strong><span>不包含 task-private fallback/scratch</span></div>
-            </div>
-        </div>
-
-        <div class="key-point"><strong>Incoming frames 大於 S 仍然安全：</strong>table 不保存歷史。LRU victim 被替換時，先 erase 舊 key，再 insert 新 key；同一組 S slots 可在整個 graph lifetime 中服務任意多個先後到達的 frame。</div>
-    </section>
-
-    <section class="panel" id="ownership">
-        <h2>每一層到底保存什麼</h2>
-        <div class="owner-grid">
-            <article class="owner frame-accent">
-                <h3>FrameCpuAtom <span>每個 logical frame 一份</span></h3>
-                <ul>
-                    <li>擁有 immutable CPU input bytes。</li>
-                    <li>擁有 <code>FrameMetadata</code> 與 <code>JobResult</code>。</li>
-                    <li>cache miss 或 fallback 時可重新 H2D。</li>
-                </ul>
-            </article>
-            <article class="owner table-accent">
-                <h3>StaticData <span>每個 graph copy 一份</span></h3>
-                <ul>
-                    <li>保存固定 frame layout，並提供 graph-copy <code>resetCache()</code>。</li>
-                    <li>接受任何相符 incoming key；不保存 N-frame registry。</li>
-                    <li>擁有一個 <code>GpuCacheManager</code>。</li>
-                </ul>
-            </article>
-            <article class="owner table-accent">
-                <h3>GpuResidencyTable <span>S 個 CPU slots</span></h3>
-                <ul>
-                    <li>只保存 <code>GpuDataKey → entryIndex</code>。</li>
-                    <li>不保存 frame bytes，也不擁有 GPU allocation。</li>
-                    <li>fixed open addressing；hot path 不 grow／rehash。</li>
-                </ul>
-            </article>
-            <article class="owner entry-accent">
-                <h3>GpuCacheEntry <span>固定 K 份</span></h3>
-                <ul>
-                    <li>擁有 persistent <code>GpuReplica.d_data</code>。</li>
-                    <li>保存目前 cached metadata、state、lease count 與 LRU links。</li>
-                    <li>被 LRU 替換時重用同一個 device pointer。</li>
-                </ul>
-            </article>
-            <article class="owner fallback-accent">
-                <h3>TaskGpuResources <span>每個 task instance 一份</span></h3>
-                <ul>
-                    <li>擁有 stream、pinned staging、scratch 與 algo-private buffers。</li>
-                    <li>擁有 persistent fallback <code>d_input</code>。</li>
-                    <li>fallback 保證 cache 不可用時仍可正確執行。</li>
-                </ul>
-            </article>
-            <article class="owner warning-accent">
-                <h3>DummyGraph <span>scheduler owner</span></h3>
-                <ul>
-                    <li>管理 ready、in-flight、terminal 與 phase collections。</li>
-                    <li>依序呼叫 task register/load/start，結束後 stop/unload。</li>
-                    <li>parameter revision 真的改變時，只在 quiescent boundary 通知。</li>
-                    <li>先選 frame、task instance、NUMA-local worker，之後才查 cache。</li>
-                    <li>不根據 cache hit／miss／GPU residency 改變選擇。</li>
-                </ul>
-            </article>
-        </div>
-    </section>
-
-    <section class="panel" id="incoming">
-        <h2>一個 incoming frame 的完整決策流程</h2>
-        <div class="scheduler-flow">
-            <div class="flow-box frame-accent"><div><strong>Ready FrameCpuAtom</strong><small>graph 選擇</small></div></div>
-            <div class="arrow">+</div>
-            <div class="flow-box entry-accent"><div><strong>Free Task instance</strong><small>固定 GPU</small></div></div>
-            <div class="arrow">+</div>
-            <div class="flow-box"><div><strong>Free worker</strong><small>只綁 NUMA</small></div></div>
-            <div class="arrow">→</div>
-            <div class="flow-box table-accent"><div><strong>acquireGpuData()</strong><small>此時才做 cache 決策<br>scheduler 已經完成選擇</small></div></div>
-        </div>
-
-        <div class="decision" style="margin-top: 18px">
-            <div class="decision-row">
-                <div class="question"><span class="number">1</span>Metadata 合法嗎？</div>
-                <div class="answer"><strong>是：</strong>layout 必須符合固定的 bytes／width／height／dtype。<br><span class="no">否：回傳 Invalid，task execution 失敗；不動 cache。</span></div>
-            </div>
-            <div class="decision-row">
-                <div class="question"><span class="number">2</span>Residency table 找到 key 嗎？</div>
-                <div class="answer"><strong>找到：</strong>取得穩定的 <code>entryIndex</code>，進入 hit/loading 判斷。<br><span class="no">找不到：進入 empty/LRU candidate 選擇。</span></div>
-            </div>
-            <div class="decision-row">
-                <div class="question"><span class="number">3</span>找到的 entry 是 Valid 嗎？</div>
-                <div class="answer"><strong>Valid 且 replica 可讀：</strong><code>CacheHit</code>。Entry 從 LRU 暫時移除並增加 <code>activeAccesses</code>。<br><span class="no">Loading 或 local replica 不可讀：立即走 <code>TaskFallback</code>，不等待。</span></div>
-            </div>
-            <div class="decision-row">
-                <div class="question"><span class="number">4</span>Miss 時有 candidate 嗎？</div>
-                <div class="answer"><strong>有：</strong>優先拿 Empty，否則拿 global LRU 最舊且 inactive 的 entry，回傳 <code>CacheFill</code>。<br><span class="no">沒有：K = 0 或所有 entries 都 active/loading，走 <code>TaskFallback</code>。</span></div>
-            </div>
-            <div class="decision-row">
-                <div class="question"><span class="number">5</span>GPU work 完成了嗎？</div>
-                <div class="answer"><strong>complete(true)：</strong>同步 task stream；fill 發布為 Valid，hit 釋放 reader lease。當 access count 回到 0，entry 加到 global LRU 的 MRU 端。<br><span class="no">失敗或 RAII abort：fill mapping 被 erase，entry 回到 Empty；不發布壞資料。</span></div>
-            </div>
-        </div>
-
-        <div class="branch-grid">
-            <article class="branch hit">
-                <span class="tag">CacheHit</span>
-                <h3>已經有可讀 GPU copy</h3>
-                <ol>
-                    <li>不做 H2D。</li>
-                    <li>algorithm 讀 cache entry device pointer。</li>
-                    <li>lease 期間不可 eviction。</li>
-                    <li>完成後更新 global LRU recency。</li>
-                </ol>
-            </article>
-            <article class="branch fill">
-                <span class="tag">CacheFill</span>
-                <h3>Miss，但 cache 有可用 entry</h3>
-                <ol>
-                    <li>Empty 或 LRU victim 被保留。</li>
-                    <li>舊 mapping erase，新 mapping insert。</li>
-                    <li>CPU atom H2D 到 cache buffer。</li>
-                    <li>成功同步後才發布 Valid。</li>
-                </ol>
-            </article>
-            <article class="branch fallback">
-                <span class="tag">TaskFallback</span>
-                <h3>Cache 暫時不可使用</h3>
-                <ol>
-                    <li>使用 task-private persistent <code>d_input</code>。</li>
-                    <li>CPU atom 重新 H2D。</li>
-                    <li>照常 compute 與 D2H。</li>
-                    <li>不新增或破壞 cache residency。</li>
-                </ol>
-            </article>
-        </div>
-    </section>
-
-    <section class="panel" id="states">
-        <h2>GpuCacheEntry state 與 lease</h2>
-        <div class="state-grid">
-            <article class="state empty-state">
-                <span class="tag">Empty</span>
-                <h3>沒有 cached identity</h3>
-                <p>Entry index 位於 empty stack；replica allocation 還存在，但內容不具有效力。</p>
-            </article>
-            <div class="arrow">miss + reserve →</div>
-            <article class="state loading-state">
-                <span class="tag">Loading</span>
-                <h3>一個 fill lease</h3>
-                <p>Key 已在 residency table；H2D／compute 尚未成功同步，不可讀、不可 eviction。</p>
-            </article>
-            <div class="arrow">complete(true) →</div>
-            <article class="state valid-state">
-                <span class="tag">Valid</span>
-                <h3>可供其他 task instances hit</h3>
-                <p><code>activeAccesses = 0</code> 時位於 LRU；大於 0 時暫離 LRU，因此不會被替換。</p>
-            </article>
-        </div>
-        <div class="state-notes">
-            <div><strong>Loading → Empty</strong><br>H2D／CUDA work 失敗或 access 未完成便析構。</div>
-            <div><strong>Valid → active read</strong><br>CacheHit 增加 reader count；最後一個 reader complete 後回到 MRU。</div>
-            <div><strong>Valid → Loading</strong><br>inactive LRU victim 被新 key 替換；device allocation 不變。</div>
-        </div>
-    </section>
-
-    <section class="panel" id="lru">
-        <h2>K = 4 的 global LRU 範例</h2>
-        <p class="note">LRU order 由左到右是「最舊 → 最新」。這裡假設每次 access 都已完成，沒有 active/loading entry。</p>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Incoming request</th>
-                        <th>結果</th>
-                        <th>動作</th>
-                        <th>完成後 global LRU</th>
-                        <th>Resident keys</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr><td>F0</td><td class="cache-fill">CacheFill</td><td>拿 Empty E0</td><td class="lru">F0</td><td>F0</td></tr>
-                    <tr><td>F1</td><td class="cache-fill">CacheFill</td><td>拿 Empty E1</td><td class="lru">F0 → F1</td><td>F0, F1</td></tr>
-                    <tr><td>F2</td><td class="cache-fill">CacheFill</td><td>拿 Empty E2</td><td class="lru">F0 → F1 → F2</td><td>F0, F1, F2</td></tr>
-                    <tr><td>F3</td><td class="cache-fill">CacheFill</td><td>拿 Empty E3</td><td class="lru">F0 → F1 → F2 → F3</td><td>F0, F1, F2, F3</td></tr>
-                    <tr><td>F1</td><td class="cache-hit">CacheHit</td><td>使用期間移出；完成後放到 MRU</td><td class="lru">F0 → F2 → F3 → F1</td><td>F0, F1, F2, F3</td></tr>
-                    <tr><td>F4</td><td class="cache-fill">CacheFill</td><td>淘汰 LRU F0，重用 E0 pointer</td><td class="lru">F2 → F3 → F1 → F4</td><td>F1, F2, F3, F4</td></tr>
-                    <tr><td>F0</td><td class="cache-fill">CacheFill</td><td>F0 已不 resident；淘汰目前最舊 F2</td><td class="lru">F3 → F1 → F4 → F0</td><td>F0, F1, F3, F4</td></tr>
-                </tbody>
-            </table>
-        </div>
-        <div class="key-point"><strong>220 frames 不需要 220 entries：</strong>如果 F0 到 F219 只依序使用一次，4 個 entries 會不斷重用。Cache 的價值來自 reuse distance：例如 TaskB 在 F0 尚未被淘汰前再次取得 F0，就能 hit；若已淘汰，仍可從 immutable CPU atom 正確重傳。</div>
-    </section>
-
-    <section class="panel" id="hash">
-        <h2>Fixed open-addressing residency table</h2>
-        <p>Table key 是完整的 <code>GpuDataKey(frameId, cameraId)</code>，value 是穩定的 <code>entryIndex</code>。下圖是 K = 4、S = 8 的示意；occupied 位置由 hash 與 linear probing 決定，不代表 entry 本身存放在該 CPU slot。</p>
-        <div class="slots" aria-label="八個 residency slots 示意圖">
-            <div class="slot"><span>slot 0</span><strong>empty</strong></div>
-            <div class="slot occupied"><span>slot 1</span><strong>F3 → E3</strong><small>occupied</small></div>
-            <div class="slot"><span>slot 2</span><strong>empty</strong></div>
-            <div class="slot occupied"><span>slot 3</span><strong>F1 → E1</strong><small>occupied</small></div>
-            <div class="slot occupied"><span>slot 4</span><strong>F4 → E0</strong><small>linear probe</small></div>
-            <div class="slot"><span>slot 5</span><strong>empty</strong></div>
-            <div class="slot occupied"><span>slot 6</span><strong>F2 → E2</strong><small>occupied</small></div>
-            <div class="slot"><span>slot 7</span><strong>empty</strong></div>
-        </div>
-        <div class="rules">
-            <article class="rule table-accent"><strong>Find：平均 O(1)</strong><span class="muted"><code>hash(key) &amp; (S - 1)</code> 找 home slot；collision 時向後 linear probe，遇到 empty 即代表 miss。</span></article>
-            <article class="rule table-accent"><strong>Insert：固定 slots</strong><span class="muted">CacheFill 才 insert。最多只有 K 筆 mappings，且 S ≥ 2K，因此至少一半 slots 保持 empty。</span></article>
-            <article class="rule table-accent"><strong>Erase：backward-shift deletion</strong><span class="muted">淘汰或 fill abort 時 erase；必要時將 probe cluster 後方元素前移，不留下長期累積的 tombstones。</span></article>
-            <article class="rule table-accent"><strong>為何不用 std::unordered_map</strong><span class="muted">所有 slot 在 init 預配置；hot path insert／erase 不建立 node、不 grow，也不 rehash，CPU memory 與延遲有固定上限。</span></article>
-        </div>
-        <p class="note" style="margin-top: 14px">平均複雜度是 O(1)，理論 worst case 仍可能探查多個 slots。以最大 50% load factor 降低 collision chain，是用少量固定 CPU metadata 換取穩定 hot-path 行為。</p>
-    </section>
-
-    <section class="panel">
-        <h2>多個 frames 同時進來時</h2>
-        <div class="rules">
-            <article class="rule"><strong>Valid 且 inactive</strong><span class="muted">存在 global LRU，允許成為 victim。</span></article>
-            <article class="rule"><strong>Valid 且 activeAccesses &gt; 0</strong><span class="muted">暫時不在 LRU，reader lease 保護 device pointer，不可 eviction。</span></article>
-            <article class="rule"><strong>Loading</strong><span class="muted">正在填入的 entry 不在 LRU。另一個 task 要同一 key 時不等待，直接 fallback。</span></article>
-            <article class="rule"><strong>所有 K entries 都 active/loading</strong><span class="muted">沒有可替換 victim；新 frame 使用自己的 task fallback，不修改 cache。</span></article>
-        </div>
-        <div class="key-point"><strong>這是 best-effort cache：</strong>同時 live frames 超過 K 不會造成 correctness failure，只會增加 fallback H2D。前提是原始 payload 能從 immutable <code>FrameCpuAtom</code> 重建。</div>
-    </section>
-
-    <section class="panel" id="lifetime">
-        <h2>Allocation、run boundary 與 lifetime</h2>
-        <div class="lifetime-flow">
-            <div class="flow-box"><div><strong>StaticData::init()</strong><small>cold path</small></div></div>
-            <div class="arrow">→</div>
-            <div class="flow-box entry-accent"><div><strong>配置 K 個 entries</strong><small><code>cudaMalloc</code> persistent replicas<br>配置 S 個 CPU table slots</small></div></div>
-            <div class="arrow">→</div>
-            <div class="flow-box table-accent"><div><strong>execute() × N</strong><small>find / insert / erase / LRU<br>無 malloc、無 cudaMalloc/free</small></div></div>
-            <div class="arrow">→</div>
-            <div class="flow-box warning-accent"><div><strong>StaticData::release()</strong><small>workers 停止後<br><code>cudaFree</code></small></div></div>
-        </div>
-        <div class="rules" style="margin-top: 14px">
-            <article class="rule"><strong>resetCache()</strong><span class="muted">只允許在沒有 live cache/fallback leases 的 quiescent boundary。清除 residency、entry identity/validity、empty/LRU state；device pointers 保留。</span></article>
-            <article class="rule"><strong>Identity contract</strong><span class="muted">每個新 run 開始前必須 reset。兩次 reset 之間，相同 <code>frameId + cameraId</code> 必須永遠代表相同 immutable bytes，否則可能 stale hit。</span></article>
-        </div>
-    </section>
-
-    <section class="panel">
-        <h2>Scheduler 與 GPU cache 的邊界</h2>
-        <div class="rules">
-            <article class="rule"><strong>Worker 只綁 NUMA</strong><span class="muted">一個 task instance 可以在不同 NUMA-local workers 上依序執行。</span></article>
-            <article class="rule"><strong>Task instance 固定綁 GPU</strong><span class="muted">stream、fallback、scratch 與 algo-private buffers 仍屬於 task instance。</span></article>
-            <article class="rule"><strong>Cache 不選 task 或 GPU</strong><span class="muted">scheduler 先完成 assignment；cache 只根據已選 task 的 GPU resources 回傳 data access。</span></article>
-            <article class="rule"><strong>目前一張 GPU／NUMA</strong><span class="muted">介面保留 GPU ID 與 replica 結構；兩張 GPU／NUMA 的 P2P／replica migration 尚未實作。</span></article>
-        </div>
-    </section>
-
-    <section class="panel" id="matrix">
-        <h2>Incoming frame 行為總表</h2>
-        <div class="table-wrap matrix">
-            <table>
-                <thead>
-                    <tr>
-                        <th>條件</th>
-                        <th>GpuDataAccessSource</th>
-                        <th>H2D</th>
-                        <th>使用的 pointer owner</th>
-                        <th>Cache state 變化</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr><td>固定 layout 不符</td><td class="invalid">Invalid</td><td>否</td><td>無</td><td>完全不變</td></tr>
-                    <tr><td>Key resident、entry Valid、replica 可讀</td><td class="cache-hit">CacheHit</td><td>否</td><td><code>GpuCacheEntry</code></td><td>Reader lease；完成後移到 MRU</td></tr>
-                    <tr><td>Key miss，存在 Empty entry</td><td class="cache-fill">CacheFill</td><td>是</td><td><code>GpuCacheEntry</code></td><td>Empty → Loading → Valid／Empty</td></tr>
-                    <tr><td>Key miss，存在 inactive LRU victim</td><td class="cache-fill">CacheFill</td><td>是</td><td><code>GpuCacheEntry</code></td><td>Erase 舊 key；重用 buffer 填入新 key</td></tr>
-                    <tr><td>相同 key 正在 Loading</td><td class="task-fallback">TaskFallback</td><td>是</td><td><code>TaskGpuResources::d_input</code></td><td>不變；不等待 loading stream</td></tr>
-                    <tr><td>K = 0 或所有 entries active/loading</td><td class="task-fallback">TaskFallback</td><td>是</td><td><code>TaskGpuResources::d_input</code></td><td>不變</td></tr>
-                    <tr><td>CacheFill CUDA work 失敗／abort</td><td class="invalid">Fill 不發布</td><td>可能已提交</td><td><code>GpuCacheEntry</code></td><td>Erase key；Loading → Empty</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    <section class="panel">
-        <h2>Correctness 前提與目前限制</h2>
-        <div class="rules">
-            <article class="rule warning-accent"><strong>目前 cache 保存 immutable frame input</strong><span class="muted">Eviction 後可從 <code>FrameCpuAtom</code> 重新 H2D，因此 hit 只影響效能，不影響結果。</span></article>
-            <article class="rule warning-accent"><strong>Mutable GPU-only intermediate 不可直接套用</strong><span class="muted">若資料無法從 CPU 重建，必須增加 authoritative frame-owned storage、spill/recompute contract，或保證足夠容量。</span></article>
-            <article class="rule warning-accent"><strong>一個 task 目前只有一個 fallback input</strong><span class="muted">若同一次 execute 必須同時持有 master/reference 且兩者都 fallback，需要兩個獨立 fallback slots 或 caller-provided buffers。</span></article>
-            <article class="rule warning-accent"><strong>K 應由量測決定</strong><span class="muted">觀察 hit、fill、fallback、eviction 與 reuse distance。增加 K 只應改善效能並增加 VRAM，不應改變 correctness。</span></article>
-        </div>
-    </section>
-
-    <section class="panel">
-        <h2>對應 source code</h2>
-        <div class="source-map">
-            <a href="src/StaticData.cpp"><strong>StaticData.cpp</strong><small>固定 layout、init/resetCache/release</small></a>
-            <a href="src/DataCache/GpuCacheManager.cpp"><strong>GpuCacheManager.cpp</strong><small>incoming acquire、global LRU、fill/hit/fallback</small></a>
-            <a href="src/DataCache/GpuResidencyTable.cpp"><strong>GpuResidencyTable.cpp</strong><small>fixed open addressing、linear probing、backward-shift erase</small></a>
-            <a href="src/DataCache/GpuCacheEntry.cpp"><strong>GpuCacheEntry.cpp</strong><small>persistent GPU replica allocation 與 validity</small></a>
-            <a href="src/DataCache/GpuDataAccess.cpp"><strong>GpuDataAccess.cpp</strong><small>RAII lease、stream completion、publish/abort</small></a>
-            <a href="graph.md"><strong>graph.md</strong><small>與真實 framework 對齊的 authoritative scheduler 與 task lifecycle</small></a>
-        </div>
-    </section>
+bool ok = true;
+if (access.needsUpload()) {
+    ok = enqueueH2D(access.writableData(), resources.stream);
+}
+if (ok) {
+    ok = enqueueComputeAndD2H(access.data(), resources.stream);
+}
+// 提交失敗也要呼叫，讓已提交的工作同步並結束 lease。
+if (!access.freeCacheData(ok)) return false;
+// 這裡才能收集 D2H 結果；access 的指標已不可使用。</code></pre>
+<details><summary>重複呼叫、發布失敗，以及同步的邊界</summary><div><p>正常路徑只呼叫一次。Default Invalid access 或已完成的 access 呼叫 <code>freeCacheData()</code> 會回傳 false；已 reset 的 access 析構不再同步。Access 不可複製或移動。</p><p>Fill 若無法標記 replica 有效，或無法加入 LRU，會回滾至 Empty 並回傳 false。Manager 會檢查 owner、key、pointer、bytes、狀態與 lease 計數；內部驗證失敗不視為成功發布，也不能假設受損的計數已修復。</p><p>正常收尾會檢查 CUDA 同步結果；析構是錯誤路徑的保護網，會嘗試同步並記錄 CUDA 錯誤後 abort，無法回傳成功結果。它不會把未完成的 fill 發布成 Valid。Cache mutex 保護管理狀態；CUDA 工作在各 task stream 執行，收尾時的同步發生在 manager 的狀態鎖之外。</p></div></details>
+<div class="callout"><strong>呼叫端的責任：</strong>成功 flag 代表所需 H2D、compute、D2H 已正確提交；cache 不檢查影像內容。相同 key 的內容若改變，需使用新 identity 或先在安全邊界 reset。每個 task 只有一個 fallback input，同時處理兩份資料時不可讓兩個 live fallback 覆寫彼此；目前 graph 以 task exclusive checkout 防止跨 worker 重用同一 task。</div>
+</section>
+<section id="lifetime">
+<div class="section-head"><span class="num">05</span><h2>從初始化到關閉，什麼會被清掉？</h2></div>
+<div class="table-wrap"><table><thead><tr><th scope="col">操作</th><th scope="col">允許時機</th><th scope="col">Mapping / 狀態</th><th scope="col">GPU 配置</th></tr></thead><tbody>
+<tr><td>initialize / init</td><td>尚未初始化；一顆合法 GPU；有效 layout / bytes；配置成功</td><td>建立固定索引與 K 個 Empty entries</td><td>預配置 K 個 cache buffers；task 資源另行配置</td></tr>
+<tr><td>freeCacheData(ok)</td><td>持有有效 access</td><td>依上表發布、釋放 reader 或回滾</td><td>保留</td></tr>
+<tr><td>resetCache()</td><td>已初始化、未 release，且沒有 cache / fallback leases、沒有 Loading</td><td>清除 mapping、metadata、replica validity、LRU；全部回 Empty</td><td>保留原 pointer；下次存取需要重新上傳</td></tr>
+<tr><td>release()</td><td>沒有任何 live lease，也沒有 Loading</td><td>釋放成功後清空索引及管理資料，變成未初始化</td><td>釋放 entry 的 GPU 配置；task d_input 由 task 資源生命週期釋放</td></tr>
+</tbody></table></div>
+<p><strong>有 live fallback 也不能 reset / release，包含 K = 0。</strong> 正常在 phase / run 的 quiescent boundary 重設，先完成所有 access，再關閉 owner 與 task resources。</p>
+<details><summary>生命週期的失敗與重試</summary><div><p>初始化會拒絕重複初始化、多顆 GPU、無效 GPU ID / bytes、容量計算溢位或配置失敗；StaticData 從 framework 提供的目前 NUMA 環境查詢 GPU，零顆或多顆都拒絕，並檢查固定 layout 的 bytes 與可用 GPU memory。K = 0 是合法設定。</p><p>Reset 的前置條件不成立就回傳 false，不清除 cache。Manager release 遇到 live lease 或正在 release 也回傳 false。完全釋放後重複 release 回傳 true。</p><p>實際釋放配置時若 CUDA release 失敗，會回傳 false；仍未釋放的 entry 保留供重試，manager 停止提供新存取。<code>StaticData::release()</code> 在呼叫 manager 前就先把自己的 initialized 設為 false，因此即使因 live lease 被拒絕，也不能再透過 StaticData 取得新 access；先結束現有 lease，再重試 release。Owner 必須活得比所有 access 久。</p></div></details>
+</section>
+<section id="capacity">
+<div class="section-head"><span class="num">06</span><h2>容量固定，到達的 frame 數可以一直增加</h2></div>
+<div class="grid two">
+<div class="card"><h3>N、K、S 是不同的數量</h3><p><strong>N</strong> 是先後到達的 frame 數；<strong>K</strong> 是 GPU cache entry 數；<strong>S</strong> 是 CPU residency table 的 slot 數。</p><p><code>S = K == 0 ? 0 : nextPow2(2 × K)</code></p><p>索引只保存現在 Loading / Valid 的 key，最多 K 筆。淘汰時 erase 舊 key、insert 新 key，所以 N 大於 K 或 S 仍可持續運作。預設 K = 4。</p></div>
+<div class="card"><h3>試算 cache 配置</h3><div class="capacity"><label for="k">Entries（K）<input id="k" type="number" min="0" max="1000000" step="1" value="4"></label><label for="mb">每個 frame（MiB）<input id="mb" type="number" min="1" max="1000000" step="1" value="16"></label></div><div class="metrics" aria-live="polite"><div><strong id="slots">8</strong><span>CPU slots（S）</span></div><div><strong id="resident">4</strong><span>最多 resident keys</span></div><div><strong id="memory">64 MiB</strong><span>Cache GPU bytes</span></div></div><p class="muted" id="capacity-note" style="margin-top:14px;font-size:13px">只算 cache；task fallback、staging 與算法配置另計。</p></div>
+</div>
+<details><summary>Hash collision、刪除與 LRU 的完整規則</summary><div><p>Residency table 保存 <code>key → entryIndex</code>。Hash 到相同 slot 時，以 linear probing 找完整 key 或空位；遇到空位表示 miss。Collision 不會讓不同 camera / frame 共用資料。Erase 使用 backward shift 維持 probe chain，讓後面的 key 仍能找到。</p><p>K &gt; 0 時 S ≥ 2K，最多一半 slots occupied；Loading 也占一筆 mapping。Slots 在初始化配置，hot path 不 grow / rehash。查找平均 O(1)，最壞可達 O(S)；平均值不是固定延遲保證。</p><p>Empty pool 優先於 LRU。Global LRU 是這個 manager 共用的一條 list，與 hash slot 排列無關；由左至右可理解為 LRU → MRU。首次 hit 移出 entry，最後一位 reader 結束後才放到 MRU；fill 成功也放到 MRU。所以可淘汰順序取決於 lease 結束時間，並非單純的 request 到達順序。</p><p>淘汰、失敗回 Empty、reset 都不重新配置 GPU buffer。Hot path 沒有 <code>cudaMalloc()</code> / <code>cudaFree()</code>；真正的配置與釋放在生命週期邊界。</p></div></details>
+</section>
 </main>
-
+<footer class="wrap"><p>對照目前單 GPU 實作整理。互動演示涵蓋正常狀態轉移；防禦性錯誤與呼叫契約列於各節的展開說明。</p><div class="links"><a href="src/StaticData.cpp">StaticData</a><a href="src/DataCache/GpuCacheManager.cpp">GpuCacheManager</a><a href="src/DataCache/GpuDataAccess.cpp">GpuDataAccess</a><a href="src/DataCache/GpuResidencyTable.cpp">Residency table</a><a href="tests/gpuinfra_tests.cpp">對應測試</a><a href="architecture.md">架構文件</a></div></footer>
 <script>
-    const kInput = document.getElementById("k-input");
-    const bytesInput = document.getElementById("bytes-input");
-    const replicasInput = document.getElementById("replicas-input");
-    const entryOutput = document.getElementById("entry-output");
-    const slotOutput = document.getElementById("slot-output");
-    const residentOutput = document.getElementById("resident-output");
-    const vramOutput = document.getElementById("vram-output");
-
-    function normalizedInteger(input, minimum, maximum) {
-        const value = Number(input.value);
-        if (!Number.isFinite(value)) {
-            return minimum;
-        }
-        return Math.min(maximum, Math.max(minimum, Math.floor(value)));
-    }
-
-    function residencySlotCount(k) {
-        if (k === 0) {
-            return 0;
-        }
-        const required = k * 2;
-        let slots = 1;
-        while (slots < required) {
-            slots *= 2;
-        }
-        return slots;
-    }
-
-    function formatBytes(bytes) {
-        const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-        let value = bytes;
-        let unit = 0;
-        while (value >= 1024 && unit < units.length - 1) {
-            value /= 1024;
-            ++unit;
-        }
-        return `${value.toLocaleString(undefined, {maximumFractionDigits: 2})} ${units[unit]}`;
-    }
-
-    function updateCalculator() {
-        const k = normalizedInteger(kInput, 0, 1000000);
-        const bytes = normalizedInteger(bytesInput, 1, 1000000000000);
-        const replicas = normalizedInteger(replicasInput, 1, 64);
-        entryOutput.textContent = k.toLocaleString();
-        slotOutput.textContent = residencySlotCount(k).toLocaleString();
-        residentOutput.textContent = k.toLocaleString();
-        vramOutput.textContent = formatBytes(k * bytes * replicas);
-    }
-
-    kInput.addEventListener("input", updateCalculator);
-    bytesInput.addEventListener("input", updateCalculator);
-    replicasInput.addEventListener("input", updateCalculator);
-    updateCalculator();
+'use strict';
+// A deterministic teaching model: each scenario is replayed from an empty cache.
+// It models lease/state transitions, not CUDA execution or physical hash slots.
+const get = (key, id, extra = {}) => ({op:'get', key, id, ...extra});
+const end = (id, outcome = 'ok') => ({op:'end', id, outcome});
+const scenarios = [
+ {name:'01 · 第一次填入 → 再次命中', k:2, note:'先把 A 填入 E0，結束後才成為 Valid。第二次取得 A 直接讀同一 buffer，省下 H2D。', steps:[get('A','a1'),end('a1'),get('A','a2'),end('a2')]},
+ {name:'02 · Cache 已滿 → 淘汰 LRU → 原 key 再來', k:2, note:'填滿 A、B，再讀一次 A。A 結束後變 MRU，因此 C 會淘汰 B；B 再來需要重新填入。', steps:[get('A','a'),end('a'),get('B','b'),end('b'),get('A','r'),end('r'),get('C','c'),end('c'),get('B','b2'),end('b2')]},
+ {name:'03 · 相同 key 還在 Loading', k:2, note:'即使 E1 是 Empty，相同 key 的第二個 request 仍使用自己的 task fallback；不建立第二份 cache fill，也不等待。', steps:[get('A','fill'),get('A','other'),end('other'),end('fill'),get('A','hit'),end('hit')]},
+ {name:'04 · 多位 reader → 最後一位才回 LRU', k:1, note:'R1、R2 共讀 A。只有一位離開時仍不可淘汰；新 key B 使用 fallback。最後一位離開後，B 才有機會填入。', steps:[get('A','fill'),end('fill'),get('A','R1'),get('A','R2'),end('R1'),get('B','b1'),end('b1'),end('R2'),get('B','b2'),end('b2')]},
+ {name:'05 · 所有 entries 都在 Loading', k:2, note:'A、B 各自占用一個 fill。C 沒有可用 entry，走 task fallback；fallback 成功也不會加入 cache。', steps:[get('A','a'),get('B','b'),get('C','c'),end('c'),end('a'),end('b')]},
+ {name:'06 · K = 0：停用 cache', k:0, note:'每次有效請求都使用 task d_input 並上傳；lease 仍受追蹤，存活期間不能 reset / release。', steps:[get('A','a'),{op:'reset'},{op:'release'},end('a'),get('A','a2'),end('a2'),{op:'reset'},{op:'release'}]},
+ {name:'07 · 淘汰後 fill 提交失敗 → 重試', k:1, note:'B 已替換 A 的 mapping 後，freeCacheData(false) 使 E0 回 Empty。舊 A 不會復原；GPU 配置仍可重用。', steps:[get('A','a'),end('a'),get('B','b'),end('b','fail'),get('B','retry'),end('retry')]},
+ {name:'08 · Fill 同步失敗', k:1, note:'即使傳入 true，cudaStreamSynchronize 失敗仍然不發布資料。下一次請求重新 H2D。', steps:[get('A','a'),end('a','sync'),get('A','retry'),end('retry')]},
+ {name:'09 · Fill 提早離開 → RAII abort', k:1, note:'沒有呼叫 freeCacheData 就析構：先嘗試同步，再取消 fill。即使工作已成功，也不會變成 Valid。', steps:[get('A','a'),end('a','abort'),get('A','retry'),end('retry')]},
+ {name:'10 · Reader 失敗或 abort：保留 cached payload', k:1, note:'A 是不可變資料。R1 失敗只釋放自己的 reader；R2 abort 後回 MRU，之後仍能命中 A。', steps:[get('A','a'),end('a'),get('A','R1'),get('A','R2'),end('R1','fail'),end('R2','abort'),get('A','R3'),end('R3')]},
+ {name:'11 · Fallback 提交失敗、同步失敗、abort', k:0, note:'三種失敗都結束 fallback lease。它們不建立、發布或破壞 cache mapping。', steps:[get('A','a'),end('a','fail'),get('B','b'),end('b','sync'),get('C','c'),end('c','abort')]},
+ {name:'12 · 無效 layout / 資源 / 同 key metadata', k:2, note:'Invalid 要停止提交，不是改用 fallback。Metadata 衝突是 manager 的防禦分支；正常 StaticData 固定 layout 檢查通常會更早拒絕。', steps:[get('A','bad-layout',{invalid:'layout 不符'}),get('A','bad-gpu',{invalid:'GPU 不在允許清單'}),get('A','bad-stream',{invalid:'stream 為空'}),get('A','good'),end('good'),get('A','conflict',{invalid:'同 key 的 metadata 不一致'})]},
+ {name:'13 · 相同 frameId，不同 camera', k:2, note:'A = (47, camera 3)，B = (47, camera 4)。完整 key 不同，各自建立 mapping；A 再來只會命中 A。', steps:[get('A','cam3'),end('cam3'),get('B','cam4'),end('cam4'),get('A','cam3-again'),end('cam3-again')]},
+ {name:'14 · Reset 被拒絕 → 安全重設 → 重新上傳', k:1, note:'Loading、reader 或 fallback lease 存活都不能 reset。安全重設清掉 identity 與 validity，但 E0 的配置保留。', steps:[get('A','a'),{op:'reset'},end('a'),get('A','r'),get('B','f'),{op:'reset'},end('r'),{op:'reset'},end('f'),{op:'reset'},get('A','again'),end('again')]},
+ {name:'15 · Manager release 與重複收尾', k:1, note:'此處演示 GpuCacheManager::release。Live lease 會阻止釋放；成功後不接受新 access。StaticData wrapper 的差異見生命週期章節。', steps:[get('A','a'),{op:'release'},end('a'),end('a'),{op:'release'},get('A','after'),{op:'release'}]},
+ {name:'16 · Valid entry 的本地 replica 不可用', k:1, note:'防禦路徑示意：允許的 GPU 缺少有效 replica 時重傳到 task fallback。正常單 GPU 流程不會刻意產生這個狀態；錯誤 GPU ID 則是 Invalid。', steps:[get('A','a'),end('a'),{op:'replica'},get('A','f'),end('f'),{op:'reset'}]}
+];
+function initial(k){return {entries:Array.from({length:k},()=>({state:'Empty',key:null,count:0,replica:false})),empty:Array.from({length:k},(_,i)=>i),lru:[],leases:{},released:false,event:{kind:'Empty',title:'準備好了，尚未取得資料',text:`K = ${k}。所有 entries 為 Empty，尚無 key mapping 或 live lease。`}};}
+function apply(s, action){
+ const event=(kind,title,text)=>{s.event={kind,title,text};};
+ if(action.op==='get'){
+  const {key,id}=action;
+  if(s.released||action.invalid){event('invalid','Invalid · '+id,s.released?'Manager 已釋放，不接受新存取。':action.invalid+'；不取得 lease，也不提交 GPU 工作。');return;}
+  let index=s.entries.findIndex(e=>e.key===key);
+  let source;
+  if(index>=0){
+   const e=s.entries[index];
+   if(e.state==='Loading'||!e.replica){source='TaskFallback';}
+   else{source='CacheHit';s.lru=s.lru.filter(i=>i!==index);e.count++;}
+  }else{
+   index=s.empty.length?s.empty.shift():(s.lru.length?s.lru.shift():-1);
+   if(index<0){source='TaskFallback';}
+   else{source='CacheFill';const old=s.entries[index].key;s.entries[index]={state:'Loading',key,count:1,replica:false};action={...action,evicted:old};}
+  }
+  s.leases[id]={source,index:source==='TaskFallback'?-1:index,key};
+  if(source==='CacheHit')event('hit',`${id} 取得 ${key} → CacheHit`,`讀 E${index}，不需 H2D。Reader +1；使用中 entry 不在可淘汰 LRU。`);
+  if(source==='CacheFill')event('fill',`${id} 取得 ${key} → CacheFill`,`${action.evicted?'淘汰 '+action.evicted+'，重用':'取用 Empty'} E${index}。索引已放入 ${key}，但仍為 Loading；需要 H2D，成功收尾後才可命中。`);
+  if(source==='TaskFallback'){
+   const resident=s.entries.find(e=>e.key===key);
+   const reason=resident?(resident.state==='Loading'?'相同 key 還在 Loading':'本 GPU replica 不可用'):(s.entries.length?'所有 entries 都在使用中或 Loading':'K = 0');
+   event('fallback',`${id} 取得 ${key} → TaskFallback`,`${reason}。上傳到本次 task 的 d_input；cache mapping 不變，不等待 cache entry。`);
+  }
+  return;
+ }
+ if(action.op==='end'){
+  const lease=s.leases[action.id];
+  if(!lease){event('invalid','freeCacheData() → false','這個 access 已經結束或無效；不重複同步，也不再改計數。');return;}
+  const ok=action.outcome==='ok', abort=action.outcome==='abort';
+  const how=abort?'析構 → 同步嘗試 → abort':action.outcome==='sync'?'freeCacheData(true)，但同步失敗':`freeCacheData(${ok?'true':'false'})`;
+  let text;
+  if(lease.source==='CacheFill'){
+   const e=s.entries[lease.index];e.count=0;
+   if(ok){e.state='Valid';e.replica=true;s.lru.push(lease.index);text=`${lease.key} 發布為 Valid；E${lease.index} 加入 MRU。`;}
+   else{e.state='Empty';e.key=null;e.replica=false;s.empty.unshift(lease.index);text=`移除 ${lease.key} mapping；E${lease.index} 回 Empty，GPU buffer 保留。`;}
+  }else if(lease.source==='CacheHit'){
+   const e=s.entries[lease.index];e.count--;
+   if(!e.count)s.lru.push(lease.index);
+   text=`${lease.key} 的 reader −1，cached payload 保留。`+(e.count?'仍有 reader，不可淘汰。':`最後一位 reader 已離開，E${lease.index} 加入 MRU。`);
+  }else{text='Fallback lease −1；task buffer 保留，cache mapping 不變。';}
+  delete s.leases[action.id];
+  event(ok?'hit':abort?'Empty':'invalid',`${action.id} · ${how}`,text+(abort?' 析構無回傳值。':` 回傳 ${ok?'true':'false'}。`));return;
+ }
+ if(action.op==='replica'){s.entries[0].replica=false;event('fallback','假設 E0 的本地 replica 無效','僅為展示防禦分支而注入的狀態，並非正常單 GPU 流程的操作。');return;}
+ const busy=Object.keys(s.leases).length>0;
+ if(action.op==='reset'){
+  if(busy||s.released){event('invalid','resetCache() → false',busy?'還有 live cache / fallback lease，保持現有狀態。':'Manager 尚未初始化或已釋放。');}
+  else{const k=s.entries.length;Object.assign(s,initial(k));event('Empty','resetCache() → true','清除所有 mapping 與 LRU，entry 回 Empty。GPU 配置與 pointer 保留。');}
+ }
+ if(action.op==='release'){
+  if(busy){event('invalid','Manager release() → false','還有 live lease，無法釋放配置。先結束存取再重試。');}
+  else{const wasReleased=s.released;s.entries=[];s.empty=[];s.lru=[];s.released=true;event('Empty','Manager release() → true',wasReleased?'已完全釋放，重複呼叫無副作用。':'釋放 cache GPU buffers 與 CPU 索引；task fallback 由 task 另行釋放。');}
+ }
+}
+const select=document.getElementById('scenario');
+scenarios.forEach((s,i)=>{const o=document.createElement('option');o.value=i;o.textContent=s.name;select.append(o);});
+let position=0;
+const escapeHtml=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function render(){
+ const scenario=scenarios[Number(select.value)];const state=initial(scenario.k);
+ for(let i=0;i<position;i++)apply(state,scenario.steps[i]);
+ document.getElementById('scenario-note').textContent=scenario.note;
+ document.getElementById('timeline').innerHTML=Array.from({length:scenario.steps.length},(_,i)=>`<span class="${i<position?'done':''}"></span>`).join('');
+ const entries=state.entries.map((e,i)=>`<div class="entry ${e.state}"><div class="entry-title"><strong class="mono">E${i}</strong><span class="badge ${e.state}">${e.state}</span></div><div class="entry-key">${e.key?escapeHtml(e.key):'—'}</div><small>${e.state==='Loading'?'Fill lease':'Reader'}：${e.count} · ${e.state==='Empty'?'等待填入':e.state==='Loading'?'尚不可讀':e.replica?'Replica 有效':'Replica 無效'}</small><small>GPU buffer：E${i} 固定配置</small></div>`).join('');
+ const mapping=state.entries.flatMap((e,i)=>e.key?[`${e.key} → E${i} (${e.state})`]:[]);
+ const leases=Object.entries(state.leases).map(([id,l])=>`${id}: ${l.source} / ${l.key}`);
+ const fallback=Object.values(state.leases).filter(l=>l.source==='TaskFallback').length;
+ document.getElementById('scene').innerHTML=`<div class="event"><span class="badge ${state.event.kind}">${position?'步驟 '+position:'初始狀態'}</span><h3>${escapeHtml(state.event.title)}</h3><p>${escapeHtml(state.event.text)}</p></div><div class="entries">${entries||`<div class="card"><strong>${state.released?'Cache 配置已釋放':'K = 0，沒有 cache buffer'}</strong><p class="muted">${state.released?'新請求回傳 Invalid。':'有效請求使用 task 的 d_input。'}</p></div>`}</div><div class="ledger"><div><h3>CPU 索引 · KEY → ENTRY</h3><p class="mono">${mapping.map(escapeHtml).join('<br>')||'空'}</p></div><div><h3>可淘汰順序 · LRU → MRU</h3><p class="mono">${state.lru.map(i=>`E${i} (${escapeHtml(state.entries[i].key)})`).join(' → ')||'無可淘汰 entry'}</p></div><div><h3>目前持有的 ACCESS</h3><p class="mono">${leases.map(escapeHtml).join('<br>')||'無'}</p></div><div><h3>FALLBACK LEASES</h3><p>${fallback} 個 · ${fallback?'阻止 reset / release':'目前無 fallback 使用中'}</p></div></div>`;
+ document.getElementById('step-count').textContent=`${position} / ${scenario.steps.length} 步${position===scenario.steps.length?' · 情境結束':''}`;
+ document.getElementById('prev').disabled=position===0;
+ document.getElementById('next').disabled=position===scenario.steps.length;
+ document.getElementById('restart').disabled=position===0;
+}
+select.addEventListener('change',()=>{position=0;render();});
+document.getElementById('next').addEventListener('click',()=>{if(position<scenarios[Number(select.value)].steps.length){position++;render();}});
+document.getElementById('prev').addEventListener('click',()=>{if(position>0){position--;render();}});
+document.getElementById('restart').addEventListener('click',()=>{position=0;render();});
+function capacity(){
+ const kInput=document.getElementById('k'),mbInput=document.getElementById('mb');
+ const k=kInput.valueAsNumber,mb=mbInput.valueAsNumber;
+ const valid=kInput.value!==''&&mbInput.value!==''&&kInput.checkValidity()&&mbInput.checkValidity();
+ if(!valid){for(const id of ['slots','resident','memory'])document.getElementById(id).textContent='—';document.getElementById('capacity-note').textContent='請輸入範圍內整數：K 為 0–1,000,000，frame MiB 為 1–1,000,000。';return;}
+ let slots=0;if(k>0){slots=1;while(slots<2*k)slots*=2;}
+ document.getElementById('slots').textContent=slots.toLocaleString();document.getElementById('resident').textContent=k.toLocaleString();
+ document.getElementById('memory').textContent=(k*mb).toLocaleString()+' MiB';
+ document.getElementById('capacity-note').textContent=k?'只算 cache；task fallback、staging 與算法配置另計。此為公式試算，不代表 GPU 可實際配置此容量。':'停用 cache；task fallback buffer 仍需配置。';
+}
+for(const id of ['k','mb'])document.getElementById(id).addEventListener('input',capacity);
+render();capacity();
 </script>
 </body>
 </html>

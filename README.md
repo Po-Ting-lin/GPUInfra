@@ -133,31 +133,44 @@ one D2H, and three compute repetitions.
 
 `GpuContextManager::init()` discovers Runtime API devices, maps their PCI NUMA
 nodes, primes primary contexts, and retains one Driver API primary-context
-reference per GPU. `main.cpp` groups devices by NUMA node and creates one graph
-copy per node. A graph copy with zero or more than one GPU is rejected in the
-temporary scope.
+reference per GPU. The simulation in `main.cpp` creates a `NumaExecutor` and a
+graph copy for each GPU-bearing NUMA node. NUMA placement belongs to this
+framework execution environment; `GraphConfig` has no `numaNode` or `gpuIds`.
 
-Setup, teardown, and workers run on threads pinned to the graph copy's NUMA
-node. A `DummyTask` remains bound to one GPU because its stream and allocations
-belong to that device, but it has no permanent host-thread binding.
+The framework establishes NUMA CPU affinity before every task callback,
+including registration, load, parameter notification, start, execute, stop,
+and unload. `Grape/NumaExecutor` implements that guarantee for the simulation
+and tests. Individual callbacks and `GpuContextManager` do not set affinity.
 
-`GpuContext` is the authoritative GPU-to-NUMA mapping. Each `DummyGraph`
-validates its complete GPU list against that mapping once before creating
-resources. NUMA identity is not copied into `DummyTask`, `TaskGpuResources`,
-`StaticData`, or private algorithms.
+`GpuContext` is the authoritative GPU-to-NUMA mapping. During `load()`, a task
+observes its current NUMA node and asks `GpuContextManager` for the local GPU.
+Zero or multiple GPUs on that node are errors; no arbitrary first GPU is
+selected. The selected GPU is stored in `TaskGpuResources`, not supplied to
+the task constructor. `StaticData::init()` uses the same NUMA lookup policy.
+`DummyGraph` resolves its GPU list inside the execution environment before
+allocating tasks and retains `taskInstancesPerGpu * gpuIds.size()` and the
+existing frame/worker count calculations.
+
+Tasks remain GPU-bound for the lifetime of their loaded resources, but may
+execute on different threads within the same NUMA node. `makeTaskCurrent()`
+is still required: CPU affinity does not select a CUDA device for a host
+thread. Tasks, task resources, `StaticData`, and private algorithms do not
+retain duplicate NUMA identity.
 
 ## Cold initialization
 
 ```text
-validate graph GPU IDs belong to the graph NUMA node
+framework NUMA executor resolves exactly one local GPU
   -> construct each DummyTask and immediately register its parameter schema
   -> define initial parameter values and seal the shared schema
   -> load all tasks
+       -> resolve the current NUMA node and register the unique local GPU
        -> stream + h_in + d_input fallback + scratch + algo-private buffers
        -> apply initial parameter values inside load
   -> create separate warmup/timed FrameCpuAtom collections
        -> preallocate each atom's input and CEL/SDD/MI result buffers
   -> StaticData::init()
+       -> resolve the same local GPU through the NUMA lookup
        -> store the fixed frame layout
        -> create exactly K persistent GpuCacheEntry cache entries
        -> allocate a fixed open-addressing table plus empty/LRU structures
@@ -207,7 +220,7 @@ StaticData
             └─ GpuReplica[gpuId] -> persistent d_data + validity
 ```
 
-`StaticData::acquireGpuData()` accepts any incoming `GpuDataKey` whose metadata
+`StaticData::getCacheData()` accepts any incoming `GpuDataKey` whose metadata
 matches the fixed frame layout. `GpuDataKey` contains `frameId` and `cameraId`,
 so the same frame ID from different cameras cannot alias. `StaticData` stores
 no per-frame registry,
@@ -255,13 +268,13 @@ data can be returned.
 ```text
 FrameCpuAtom metadata/layout/result validation
   -> make task GPU current
-  -> StaticData::acquireGpuData()
+  -> StaticData::getCacheData()
        -> validate fixed layout
        -> acquire CacheHit / CacheFill / TaskFallback
   -> when needsUpload(): atom.data -> task h_in -> selected device buffer
   -> CEL / SDD / MI read access.data()
   -> algorithm D2H staging
-  -> GpuDataAccess::complete()
+  -> GpuDataAccess::freeCacheData()
        -> one cudaStreamSynchronize()
        -> publish/release cache state
   -> copy results into FrameCpuAtom.result
@@ -334,9 +347,11 @@ through two entries and covers fixed-table collisions/backward-shift deletion,
 capacity zero, layout rejection, reset-boundary lease rejection, reset without
 device reallocation, fill/hit/fallback, loading and busy
 fallback, RAII abort, failed fill, LRU eviction, stable device pointers,
-cross-task reuse, pure-fallback correctness, both execution models, one-time
-GPU/NUMA topology rejection, graph-level task exclusivity, cancellation, and
-cleanup.
+cross-task reuse, pure-fallback correctness, both execution models, load-time GPU discovery,
+framework affinity rejection, graph-level task exclusivity, cancellation, and
+cleanup. Synthetic topology tests also reject zero/multiple local GPUs and
+verify selection when GPU IDs differ from NUMA IDs; multi-NUMA execution is
+checked when the hardware supports it.
 
 ## Source layout
 
@@ -354,13 +369,15 @@ src/
   Grape/
     README.md             immutable graph-simulation boundary rules
     DummyGraph.*          NUMA graph copy and unchanged scheduler selection
+    NumaExecutor.*        framework CPU-affinity and callback dispatch boundary
     FrameCpuAtom.*        CPU bytes, metadata, and preallocated result
     GraphTypes.h          simulated graph-owned execution types
   DummyTask.*             task lifecycle and CEL/SDD/MI execution
   ParameterRegistry.*     sealed schema, mutable values, and revisions
   StaticData.*            graph-copy layout/reset/cache owner
   TaskGpuResources.h      task CUDA lane including fallback d_input
-  GpuContextManager.*     GPU discovery, NUMA affinity, task registration
+  GpuContextManager.*     GPU discovery, NUMA lookup, task registration
+  GpuTopology.*           current NUMA detection and unique local GPU selection
   WorkloadSizing.h        independent H2D/D2H/compute compile-time controls
 tests/
   gpuinfra_tests.cpp      protocol and CUDA integration tests

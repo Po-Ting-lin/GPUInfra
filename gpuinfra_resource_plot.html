@@ -371,7 +371,7 @@
             <div class="plus">+</div>
             <div class="box" style="border-color: var(--thread)"><strong>Free graph thread</strong><br>NUMA-local host call</div>
         </div>
-        <div class="execute"><strong>StaticData::execute() → DummyTask::execute(FrameCpuAtom&amp;, StaticData&amp;)</strong><br>One acquireGpuData() call validates the fixed layout and resolves cache/fallback access for any incoming key; scheduler selection is unchanged.</div>
+        <div class="execute"><strong>StaticData::execute() → DummyTask::execute(FrameCpuAtom&amp;, StaticData&amp;)</strong><br>One getCacheData() call validates the fixed layout and resolves cache/fallback access for any incoming key; scheduler selection is unchanged.</div>
     </section>
 
     <section class="panel">
@@ -384,7 +384,7 @@
             <div class="flow-step"><div><strong>Upload + H2D</strong><small>full input × H2D macro</small></div></div>
             <div class="flow-step"><div><strong>CEL → SDD → MI</strong><small>compute × Compute macro</small></div></div>
             <div class="flow-step"><div><strong>D2H staging</strong><small>each output × D2H macro</small></div></div>
-            <div class="flow-step"><div><strong>RAII complete()</strong><small>sync task stream</small></div></div>
+            <div class="flow-step"><div><strong>RAII freeCacheData()</strong><small>sync task stream</small></div></div>
             <div class="flow-step"><div><strong>Publish + results</strong><small>fill becomes Valid; fallback changes no cache</small></div></div>
         </div>
         <p class="flow-note">An empty or inactive LRU entry yields <code>CacheFill</code>. Capacity zero, a matching entry still loading, or all active entries yields <code>TaskFallback</code> immediately. <code>GPUINFRA_H2D_SIZE_MULTIPLIER</code>, <code>GPUINFRA_D2H_SIZE_MULTIPLIER</code>, and <code>GPUINFRA_COMPUTE_SIZE_MULTIPLIER</code> independently scale submitted work without changing buffer sizes or APIs. Both buffers already exist, so the hot path performs no <code>cudaMalloc()</code> or <code>cudaFree()</code>.</p>
@@ -405,11 +405,11 @@
     <section class="panel">
         <h2>Cache hit across task instances or future stages</h2>
         <div class="flow reuse-flow">
-            <div class="flow-step"><div><strong>Same logical frame</strong><small>acquireGpuData validates layout</small></div></div>
+            <div class="flow-step"><div><strong>Same logical frame</strong><small>getCacheData validates layout</small></div></div>
             <div class="flow-step"><div><strong>Different task instance</strong><small>same graph GPU</small></div></div>
             <div class="flow-step"><div><strong>CacheHit access</strong><small>same immutable device pointer</small></div></div>
             <div class="flow-step"><div><strong>CUDA work</strong><small>no repeated H2D</small></div></div>
-            <div class="flow-step"><div><strong>RAII complete()</strong><small>sync and release reader lease</small></div></div>
+            <div class="flow-step"><div><strong>RAII freeCacheData()</strong><small>sync and release reader lease</small></div></div>
         </div>
         <p class="flow-note">The checked-in graph currently has one <code>DummyTask</code> stage. A future TaskA → TaskB → TaskC integration passes the same graph-copy <code>StaticData</code>; a hit avoids H2D, while eviction remains correct by re-uploading the immutable CPU atom.</p>
     </section>

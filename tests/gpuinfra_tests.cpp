@@ -23,6 +23,7 @@
 #include "FrameCpuAtom.h"
 #include "GpuContextManager.h"
 #include "ImageSizing.h"
+#include "NumaExecutor.h"
 #include "ParameterRegistry.h"
 #include "StaticData.h"
 #include "TaskGpuResources.h"
@@ -68,78 +69,41 @@ FrameMetadata makeFrameMetadata(std::uint64_t frameId, const AlgoRuntimeInfo& ru
 }
 
 bool loadTask(DummyTask& task, const GpuLocation& location) {
-    bool loaded = false;
-    std::thread setup([&task, &location, &loaded] {
-        loaded = GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode) && task.load();
-    });
-    setup.join();
-    return loaded;
+    return NumaExecutor(location.numaNode).run([&task] { return task.load(); });
 }
 
+// Test bodies run inside NumaExecutor, including registration and error cases.
 bool configureTaskParameters(DummyTask& task, ParameterRegistry& registry) {
     return task.registerParameters(registry) && registry.setString(DummyTask::NAME_PARAMETER, "test") && registry.setBytes(DummyTask::BLOB_PARAMETER, {1, 2, 3}) && registry.seal();
 }
 
 bool startTask(DummyTask& task, const GpuLocation& location) {
-    bool started = false;
-    std::thread setup([&task, &location, &started] {
-        started = GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode) && task.start();
-    });
-    setup.join();
-    return started;
+    return NumaExecutor(location.numaNode).run([&task] { return task.start(); });
 }
 
 bool stopTask(DummyTask& task, const GpuLocation& location) {
-    bool stopped = false;
-    std::thread teardown([&task, &location, &stopped] {
-        stopped = GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode) && task.stop();
-    });
-    teardown.join();
-    return stopped;
+    return NumaExecutor(location.numaNode).run([&task] { return task.stop(); });
 }
 
 bool notifyTask(DummyTask& task, const ParameterSnapshot& parameters, const GpuLocation& location) {
-    bool notified = false;
-    std::thread notifier([&task, &parameters, &location, &notified] {
-        notified = GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode) && task.notifyParameters(parameters);
-    });
-    notifier.join();
-    return notified;
+    return NumaExecutor(location.numaNode).run([&task, &parameters] { return task.notifyParameters(parameters); });
 }
 
 bool unloadTask(DummyTask& task, const GpuLocation& location) {
-    bool unloaded = false;
-    std::thread teardown([&task, &location, &unloaded] {
-        unloaded = GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode) && task.unload();
-    });
-    teardown.join();
-    return unloaded;
+    return NumaExecutor(location.numaNode).run([&task] { return task.unload(); });
 }
 
 bool initializeStaticData(StaticData& staticData, const GpuLocation& location, const AlgoRuntimeInfo& runtime, std::size_t gpuCacheEntries = 4) {
-    bool initialized = false;
-    std::thread setup([&staticData, &location, &runtime, gpuCacheEntries, &initialized] {
-        if (GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode)) {
-            StaticDataConfig config;
-            config.gpuIds = {location.gpuId};
-            config.runtime = runtime;
-            config.gpuCacheEntries = gpuCacheEntries;
-            initialized = staticData.init(config);
-        }
+    return NumaExecutor(location.numaNode).run([&staticData, &runtime, gpuCacheEntries] {
+        StaticDataConfig config;
+        config.runtime = runtime;
+        config.gpuCacheEntries = gpuCacheEntries;
+        return staticData.init(config);
     });
-    setup.join();
-    return initialized;
 }
 
 bool releaseStaticData(StaticData& staticData, const GpuLocation& location) {
-    bool released = false;
-    std::thread teardown([&staticData, &location, &released] {
-        if (GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode)) {
-            released = staticData.release();
-        }
-    });
-    teardown.join();
-    return released;
+    return NumaExecutor(location.numaNode).run([&staticData] { return staticData.release(); });
 }
 
 bool initializeAccessResources(TaskGpuResources& resources, const GpuLocation& location, std::size_t bytes) {
@@ -174,14 +138,7 @@ bool releaseAccessResources(TaskGpuResources& resources) {
 }
 
 bool executeTask(DummyTask& task, FrameCpuAtom& atom, StaticData& staticData, const GpuLocation& location) {
-    bool succeeded = false;
-    std::thread worker([&task, &atom, &staticData, &location, &succeeded] {
-        if (GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode)) {
-            succeeded = staticData.execute() && task.execute(atom, staticData);
-        }
-    });
-    worker.join();
-    return succeeded;
+    return NumaExecutor(location.numaNode).run([&task, &atom, &staticData] { return staticData.execute() && task.execute(atom, staticData); });
 }
 
 std::uint32_t referenceValue(const FrameCpuAtom& atom, int dimension, int x, int y, int inputStride) {
@@ -305,10 +262,10 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
         test.expect(static_cast<bool>(loadingFallback) && loadingFallback.source() == GpuDataAccessSource::TaskFallback && loadingFallback.needsUpload(), "same frame loading uses task fallback without waiting");
         test.expect(loadingFallback.writableData() == resources.d_input, "loading fallback uses the task-private input buffer");
         const bool fallbackMemset = cudaMemsetAsync(loadingFallback.writableData(), 0x19, loadingFallback.bytes(), resources.stream) == cudaSuccess;
-        test.expect(loadingFallback.complete(fallbackMemset), "complete loading fallback without publishing cache state");
+        test.expect(loadingFallback.freeCacheData(fallbackMemset), "complete loading fallback without publishing cache state");
 
         const bool fillMemset = cudaMemsetAsync(firstFill.writableData(), 0x2a, firstFill.bytes(), resources.stream) == cudaSuccess;
-        test.expect(firstFill.complete(fillMemset), "publish cache fill after stream synchronization");
+        test.expect(firstFill.freeCacheData(fillMemset), "publish cache fill after stream synchronization");
     }
 
     FrameMetadata mismatchedMetadata = firstMetadata;
@@ -317,21 +274,21 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
     test.expect(!mismatchedAccess, "reject the same frame ID with different metadata");
 
     GpuDataAccess failedHit = cache.acquire(firstMetadata, resources);
-    test.expect(static_cast<bool>(failedHit) && failedHit.source() == GpuDataAccessSource::CacheHit && !failedHit.complete(false), "failed cache reader releases its lease without publishing state");
+    test.expect(static_cast<bool>(failedHit) && failedHit.source() == GpuDataAccessSource::CacheHit && !failedHit.freeCacheData(false), "failed cache reader releases its lease without publishing state");
     GpuDataAccess hitAfterFailure = cache.acquire(firstMetadata, resources);
-    test.expect(static_cast<bool>(hitAfterFailure) && hitAfterFailure.source() == GpuDataAccessSource::CacheHit && hitAfterFailure.complete(true), "failed cache reader preserves the immutable cached payload");
+    test.expect(static_cast<bool>(hitAfterFailure) && hitAfterFailure.source() == GpuDataAccessSource::CacheHit && hitAfterFailure.freeCacheData(true), "failed cache reader preserves the immutable cached payload");
 
     GpuDataAccess activeHit = cache.acquire(firstMetadata, resources);
     test.expect(static_cast<bool>(activeHit) && activeHit.source() == GpuDataAccessSource::CacheHit && !activeHit.needsUpload(), "valid matching entry returns a cache hit");
     test.expect(activeHit.data() == cacheDeviceData && activeHit.writableData() == nullptr, "cache hit is immutable and reuses the cached pointer");
     GpuDataAccess secondReader = cache.acquire(firstMetadata, resources);
-    test.expect(static_cast<bool>(secondReader) && secondReader.source() == GpuDataAccessSource::CacheHit && secondReader.complete(true), "matching immutable cache readers may coexist");
+    test.expect(static_cast<bool>(secondReader) && secondReader.source() == GpuDataAccessSource::CacheHit && secondReader.freeCacheData(true), "matching immutable cache readers may coexist");
 
     GpuDataAccess busyFallback = cache.acquire(secondMetadata, resources);
     test.expect(static_cast<bool>(busyFallback) && busyFallback.source() == GpuDataAccessSource::TaskFallback, "all active cache entries force task fallback");
-    test.expect(busyFallback.complete(true), "complete busy-cache fallback");
+    test.expect(busyFallback.freeCacheData(true), "complete busy-cache fallback");
     test.expect(!cache.release(), "cache release rejects an active reader");
-    test.expect(activeHit.complete(true), "release active cache reader");
+    test.expect(activeHit.freeCacheData(true), "release active cache reader");
 
     {
         GpuDataAccess abandonedFill = cache.acquire(secondMetadata, resources);
@@ -339,13 +296,13 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
     }
     GpuDataAccess retryAfterAbort = cache.acquire(secondMetadata, resources);
     test.expect(static_cast<bool>(retryAfterAbort) && retryAfterAbort.source() == GpuDataAccessSource::CacheFill && retryAfterAbort.writableData() == cacheDeviceData, "aborted fill returns the same allocation to the cache");
-    test.expect(!retryAfterAbort.complete(false), "failed fill is not published");
+    test.expect(!retryAfterAbort.freeCacheData(false), "failed fill is not published");
 
     GpuDataAccess successfulRetry = cache.acquire(secondMetadata, resources);
     test.expect(static_cast<bool>(successfulRetry) && successfulRetry.source() == GpuDataAccessSource::CacheFill, "failed fill leaves an empty reusable entry");
     if (successfulRetry) {
         const bool memsetSucceeded = cudaMemsetAsync(successfulRetry.writableData(), 0x17, successfulRetry.bytes(), resources.stream) == cudaSuccess;
-        test.expect(successfulRetry.complete(memsetSucceeded), "successful retry publishes the new frame");
+        test.expect(successfulRetry.freeCacheData(memsetSucceeded), "successful retry publishes the new frame");
     }
 
     TaskGpuResources wrongGpuResources = resources;
@@ -363,7 +320,7 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
     test.expect(static_cast<bool>(zeroCapacityAccess) && zeroCapacityAccess.source() == GpuDataAccessSource::TaskFallback && zeroCapacityAccess.writableData() == resources.d_input, "zero cache capacity always uses task fallback");
     test.expect(!zeroCapacityCache.resetCache(), "cache reset rejects an active fallback lease");
     test.expect(!zeroCapacityCache.release(), "cache release rejects an active fallback lease");
-    test.expect(zeroCapacityAccess.complete(true), "complete zero-capacity fallback");
+    test.expect(zeroCapacityAccess.freeCacheData(true), "complete zero-capacity fallback");
     {
         GpuDataAccess abandonedFallback = zeroCapacityCache.acquire(firstMetadata, resources);
         test.expect(static_cast<bool>(abandonedFallback) && abandonedFallback.source() == GpuDataAccessSource::TaskFallback, "acquire fallback used for RAII abort");
@@ -394,45 +351,45 @@ void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location)
 
     void* persistentDeviceData = nullptr;
     {
-        GpuDataAccess firstFill = staticData.acquireGpuData(firstCamera, resources);
+        GpuDataAccess firstFill = staticData.getCacheData(firstCamera, resources);
         test.expect(static_cast<bool>(firstFill) && firstFill.source() == GpuDataAccessSource::CacheFill, "first composite key reserves the cache entry");
         persistentDeviceData = firstFill.writableData();
         const bool submitted = persistentDeviceData != nullptr && cudaMemsetAsync(persistentDeviceData, 0x2f, firstFill.bytes(), resources.stream) == cudaSuccess;
-        test.expect(firstFill.complete(submitted), "publish the first composite-key fill");
+        test.expect(firstFill.freeCacheData(submitted), "publish the first composite-key fill");
     }
 
     {
-        GpuDataAccess activeHit = staticData.acquireGpuData(firstCamera, resources);
+        GpuDataAccess activeHit = staticData.getCacheData(firstCamera, resources);
         test.expect(static_cast<bool>(activeHit) && activeHit.source() == GpuDataAccessSource::CacheHit, "reacquire the first composite key as a hit");
         if (activeHit) {
             test.expect(!staticData.resetCache(), "reject cache reset while a lease is active");
-            test.expect(activeHit.complete(true), "release the active reset-boundary lease");
+            test.expect(activeHit.freeCacheData(true), "release the active reset-boundary lease");
         }
     }
 
     {
-        GpuDataAccess secondCameraFill = staticData.acquireGpuData(secondCamera, resources);
+        GpuDataAccess secondCameraFill = staticData.getCacheData(secondCamera, resources);
         test.expect(static_cast<bool>(secondCameraFill) && secondCameraFill.source() == GpuDataAccessSource::CacheFill, "camera ID participates in the cache key");
         test.expect(secondCameraFill.writableData() == persistentDeviceData, "composite-key eviction reuses the persistent cache allocation");
         const bool submitted = secondCameraFill.writableData() != nullptr && cudaMemsetAsync(secondCameraFill.writableData(), 0x30, secondCameraFill.bytes(), resources.stream) == cudaSuccess;
-        test.expect(secondCameraFill.complete(submitted), "publish the second camera fill");
+        test.expect(secondCameraFill.freeCacheData(submitted), "publish the second camera fill");
     }
 
     test.expect(staticData.resetCache(), "reset residency at a safe run boundary");
     {
-        GpuDataAccess fillAfterReset = staticData.acquireGpuData(secondCamera, resources);
+        GpuDataAccess fillAfterReset = staticData.getCacheData(secondCamera, resources);
         test.expect(static_cast<bool>(fillAfterReset) && fillAfterReset.source() == GpuDataAccessSource::CacheFill, "the same frame identity requires a new upload after reset");
         test.expect(fillAfterReset.writableData() == persistentDeviceData, "reset retains the device allocation");
         const bool submitted = fillAfterReset.writableData() != nullptr && cudaMemsetAsync(fillAfterReset.writableData(), 0x31, fillAfterReset.bytes(), resources.stream) == cudaSuccess;
-        test.expect(fillAfterReset.complete(submitted), "publish the post-reset fill");
+        test.expect(fillAfterReset.freeCacheData(submitted), "publish the post-reset fill");
     }
 
     {
-        GpuDataAccess unseenFill = staticData.acquireGpuData(arbitraryIncoming, resources);
+        GpuDataAccess unseenFill = staticData.getCacheData(arbitraryIncoming, resources);
         test.expect(static_cast<bool>(unseenFill) && unseenFill.source() == GpuDataAccessSource::CacheFill, "cache an unregistered frame arriving after the reset boundary");
         test.expect(unseenFill.writableData() == persistentDeviceData, "unregistered-frame eviction reuses the persistent device allocation");
         const bool submitted = unseenFill.writableData() != nullptr && cudaMemsetAsync(unseenFill.writableData(), 0x33, unseenFill.bytes(), resources.stream) == cudaSuccess;
-        test.expect(unseenFill.complete(submitted), "publish the unregistered incoming frame");
+        test.expect(unseenFill.freeCacheData(submitted), "publish the unregistered incoming frame");
     }
 
     test.expect(releaseStaticData(staticData, location), "release run-boundary StaticData");
@@ -441,8 +398,8 @@ void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location)
 
 void testFrameDataAcrossTaskInstances(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
-    DummyTask firstTask(90, location.gpuId, ExecutionModel::Batched, runtime);
-    DummyTask secondTask(91, location.gpuId, ExecutionModel::Batched, runtime);
+    DummyTask firstTask(90, ExecutionModel::Batched, runtime);
+    DummyTask secondTask(91, ExecutionModel::Batched, runtime);
     ParameterRegistry parameters;
     const bool parametersReady = firstTask.registerParameters(parameters) && secondTask.registerParameters(parameters) && parameters.setString(DummyTask::NAME_PARAMETER, "test") && parameters.setBytes(DummyTask::BLOB_PARAMETER, {1, 2, 3}) && parameters.seal();
     const bool tasksReady = parametersReady && loadTask(firstTask, location) && loadTask(secondTask, location) && startTask(firstTask, location) && startTask(secondTask, location);
@@ -506,17 +463,17 @@ void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location) {
             return false;
         }
         const bool submitted = cudaMemsetAsync(access.writableData(), static_cast<int>(metadata.key.frameId), access.bytes(), resources.stream) == cudaSuccess;
-        return access.complete(submitted);
+        return access.freeCacheData(submitted);
     };
 
     test.expect(fillFrame(firstMetadata) && fillFrame(secondMetadata), "fill both cache entries");
     GpuDataAccess firstHit = cache.acquire(firstMetadata, resources);
-    test.expect(static_cast<bool>(firstHit) && firstHit.source() == GpuDataAccessSource::CacheHit && firstHit.complete(true), "touch first frame so second frame becomes LRU");
+    test.expect(static_cast<bool>(firstHit) && firstHit.source() == GpuDataAccessSource::CacheHit && firstHit.freeCacheData(true), "touch first frame so second frame becomes LRU");
     test.expect(fillFrame(thirdMetadata), "third frame evicts one inactive cache entry");
     GpuDataAccess secondAgain = cache.acquire(secondMetadata, resources);
     test.expect(static_cast<bool>(secondAgain) && secondAgain.source() == GpuDataAccessSource::CacheFill, "least-recently-used second frame was evicted");
     if (secondAgain) {
-        test.expect(secondAgain.complete(true), "complete refill after LRU eviction");
+        test.expect(secondAgain.freeCacheData(true), "complete refill after LRU eviction");
     }
 
     bool churnSucceeded = true;
@@ -529,7 +486,7 @@ void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location) {
             break;
         }
         const bool submitted = cudaMemsetAsync(incomingFill.writableData(), static_cast<int>(frameId & 0xffU), incomingFill.bytes(), resources.stream) == cudaSuccess;
-        if (!incomingFill.complete(submitted)) {
+        if (!incomingFill.freeCacheData(submitted)) {
             churnSucceeded = false;
             break;
         }
@@ -537,7 +494,7 @@ void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location) {
     test.expect(churnSucceeded, "cache more than 220 unregistered incoming frames through two fixed entries");
     if (churnSucceeded) {
         GpuDataAccess lastIncomingHit = cache.acquire(lastIncomingMetadata, resources);
-        test.expect(static_cast<bool>(lastIncomingHit) && lastIncomingHit.source() == GpuDataAccessSource::CacheHit && lastIncomingHit.complete(true), "fixed residency table preserves the newest incoming frame after churn");
+        test.expect(static_cast<bool>(lastIncomingHit) && lastIncomingHit.source() == GpuDataAccessSource::CacheHit && lastIncomingHit.freeCacheData(true), "fixed residency table preserves the newest incoming frame after churn");
     }
 
     test.expect(cache.release(), "release LRU test cache");
@@ -546,7 +503,7 @@ void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location) {
 
 void testTaskFallbackExecution(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
-    DummyTask task(92, location.gpuId, ExecutionModel::Batched, runtime);
+    DummyTask task(92, ExecutionModel::Batched, runtime);
     ParameterRegistry parameters;
     const bool taskReady = configureTaskParameters(task, parameters) && loadTask(task, location) && startTask(task, location);
     test.expect(taskReady, "prepare task for zero-capacity fallback execution");
@@ -573,7 +530,7 @@ void testTaskFallbackExecution(TestContext& test, const GpuLocation& location) {
 
 void testLifecycleAndResults(TestContext& test, const GpuLocation& location, ExecutionModel model, int taskId) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
-    DummyTask task(taskId, location.gpuId, model, runtime);
+    DummyTask task(taskId, model, runtime);
     ParameterRegistry parameters;
     ParameterSnapshot parameterSnapshot;
     const FrameMetadata prematureMetadata = makeFrameMetadata(1, runtime);
@@ -592,7 +549,9 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
     test.expect(!task.registerParameters(parameters), "reject repeated parameter registration");
     test.expect(!loadTask(task, location), "reject load before initial parameters are complete");
     test.expect(parameters.setString(DummyTask::NAME_PARAMETER, "test") && parameters.setBytes(DummyTask::BLOB_PARAMETER, {1, 2, 3}) && parameters.seal() && parameters.snapshot(parameterSnapshot), "define initial parameters before load");
+    test.expect(task.gpuId() == -1, "task has no GPU binding before load");
     test.expect(loadTask(task, location), "load task resources");
+    test.expect(task.gpuId() == location.gpuId, "load derives GPU binding from the framework NUMA environment");
     test.expect(task.lifecycle() == TaskLifecycle::Loaded, "load applies initial parameters without a notify callback");
 
     StaticData staticData;
@@ -624,9 +583,9 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
     std::mutex sequenceLock;
     std::condition_variable sequenceCondition;
     int turn = 0;
-    std::thread firstWorker([&] {
+    std::thread firstWorker = NumaExecutor(location.numaNode).start([&](bool numaReady) {
         firstThreadId = std::this_thread::get_id();
-        if (GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode)) {
+        if (numaReady) {
             firstSucceeded = staticData.execute() && task.execute(firstAtom, staticData);
         }
         {
@@ -635,14 +594,13 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
         }
         sequenceCondition.notify_one();
     });
-    std::thread secondWorker([&] {
+    std::thread secondWorker = NumaExecutor(location.numaNode).start([&](bool numaReady) {
         secondThreadId = std::this_thread::get_id();
-        const bool pinned = GpuContextManager::pinCurrentThreadToNumaNode(location.numaNode);
         {
             std::unique_lock<std::mutex> guard(sequenceLock);
             sequenceCondition.wait(guard, [&turn] { return turn == 1; });
         }
-        if (pinned) {
+        if (numaReady) {
             secondSucceeded = staticData.execute() && task.execute(secondAtom, staticData);
         }
     });
@@ -681,7 +639,7 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
     test.expect(releaseStaticData(staticData, location), "release task StaticData pool");
     test.expect(unloadTask(task, location), "unload task resources");
     test.expect(task.unload(), "repeated unload is harmless");
-    test.expect(task.lifecycle() == TaskLifecycle::Unloaded, "task reaches unloaded lifecycle state");
+    test.expect(task.lifecycle() == TaskLifecycle::Unloaded && task.gpuId() == -1, "unload clears the task GPU binding");
 }
 
 bool runGraphPhase(DummyGraph& graph, FramePhase phase) {
@@ -694,10 +652,8 @@ bool runGraphPhase(DummyGraph& graph, FramePhase phase) {
     return graph.waitForPhase();
 }
 
-GraphConfig makeGraphConfig(const GpuLocation& location, std::size_t tasks, std::size_t workers, ExecutionModel model) {
+GraphConfig makeGraphConfig(std::size_t tasks, std::size_t workers, ExecutionModel model) {
     GraphConfig config;
-    config.numaNode = location.numaNode;
-    config.gpuIds = {location.gpuId};
     config.taskInstancesPerGpu = tasks;
     config.graphThreads = workers;
     config.warmupFramesPerGpu = 0;
@@ -708,30 +664,47 @@ GraphConfig makeGraphConfig(const GpuLocation& location, std::size_t tasks, std:
     return config;
 }
 
-void testTemporaryTopologyGuard(TestContext& test, const GpuLocation& location) {
+void testGpuTopologySelection(TestContext& test) {
+    const std::vector<GpuLocation> locations = {{7, 2}, {3, 0}, {8, 2}, {5, 1}};
+    std::vector<int> gpuIds = {99};
+    test.expect(!GpuTopology::resolveGpuIds(3, locations, gpuIds) && gpuIds.empty(), "reject a NUMA node with zero GPUs and clear stale results");
+    test.expect(!GpuTopology::resolveGpuIds(2, locations, gpuIds) && gpuIds.empty(), "reject multiple GPUs instead of selecting the first");
+    test.expect(GpuTopology::resolveGpuIds(1, locations, gpuIds) && gpuIds == std::vector<int>{5}, "resolve the sole local GPU without equating GPU and NUMA IDs");
+    test.expect(GpuTopology::resolveGpuIds(0, locations, gpuIds) && gpuIds == std::vector<int>{3}, "ignore GPUs belonging to other NUMA nodes");
+    test.expect(!GpuTopology::resolveGpuIds(-1, locations, gpuIds) && gpuIds.empty(), "reject failed NUMA detection");
+    test.expect(!GpuTopology::resolveGpuIds(0, {}, gpuIds) && gpuIds.empty(), "reject an empty GPU topology");
+    test.expect(!GpuContextManager::gpuIdsForCurrentNumaNode(gpuIds) && gpuIds.empty(), "reject lookup before infrastructure initialization");
+}
+
+void testNumaExecutionBoundary(TestContext& test, const GpuLocation& location) {
+    const NumaExecutor executor(location.numaNode);
+    test.expect(executor.run([&location] {
+        std::vector<int> gpuIds;
+        return GpuTopology::currentNumaNode() == location.numaNode && GpuContextManager::gpuIdsForCurrentNumaNode(gpuIds) && gpuIds == std::vector<int>{location.gpuId};
+    }), "framework affinity establishes the NUMA identity used for GPU lookup");
+
+    bool callbackCalled = false;
+    test.expect(!NumaExecutor(-1).run([&callbackCalled] { callbackCalled = true; return true; }) && !callbackCalled, "failed framework affinity never invokes a task callback");
     GraphSink sink;
     std::atomic<bool> cancellation{false};
-    GraphConfig config = makeGraphConfig(location, 1, 1, ExecutionModel::Batched);
-    config.gpuIds = {location.gpuId, location.gpuId};
-    DummyGraph graph(config, sink, cancellation);
-    test.expect(!graph.initialize(), "reject more than one GPU per NUMA graph copy in temporary scope");
-    test.expect(!cancellation.load(std::memory_order_acquire) && sink.count() == 0, "topology rejection occurs before graph execution");
-    test.expect(graph.shutdown(), "unsupported topology has no resources to clean up");
+    GraphConfig config = makeGraphConfig(1, 1, ExecutionModel::Batched);
+    DummyGraph graph(NumaExecutor(-1), config, sink, cancellation);
+    test.expect(!graph.initialize(), "reject a graph without a valid NUMA execution environment");
+    test.expect(graph.taskCount() == 0 && !cancellation.load(std::memory_order_acquire) && sink.count() == 0 && graph.shutdown(), "NUMA rejection occurs before task allocation or global cancellation");
 
-    GraphConfig wrongNumaConfig = makeGraphConfig(location, 1, 1, ExecutionModel::Batched);
-    wrongNumaConfig.numaNode = location.numaNode + 1;
-    DummyGraph wrongNumaGraph(wrongNumaConfig, sink, cancellation);
-    test.expect(!wrongNumaGraph.initialize(), "reject a graph GPU outside the configured NUMA node");
-    test.expect(!cancellation.load(std::memory_order_acquire) && wrongNumaGraph.shutdown(), "GPU/NUMA mismatch fails before graph resources are created");
+    GraphConfig defaultWorkers = makeGraphConfig(3, 0, ExecutionModel::Batched);
+    DummyGraph sizedGraph(executor, defaultWorkers, sink, cancellation);
+    test.expect(sizedGraph.initialize() && sizedGraph.taskCount() == 3 && sizedGraph.workerCount() == 3, "derive task and default worker counts from resolved GPU count");
+    test.expect(sizedGraph.shutdown(), "release graph with derived task and worker counts");
 }
 
 void testIndependentPools(TestContext& test, const GpuLocation& location) {
     {
         GraphSink sink;
         std::atomic<bool> cancellation{false};
-        GraphConfig config = makeGraphConfig(location, 1, 2, ExecutionModel::Batched);
+        GraphConfig config = makeGraphConfig(1, 2, ExecutionModel::Batched);
         config.warmupFramesPerGpu = 1;
-        DummyGraph graph(config, sink, cancellation);
+        DummyGraph graph(NumaExecutor(location.numaNode), config, sink, cancellation);
         test.expect(graph.initialize(), "initialize one-task two-worker graph");
         PhaseGate beforeStartGate;
         test.expect(!graph.startPhase(FramePhase::Warmup, beforeStartGate), "reject frame submission before graph start");
@@ -771,7 +744,7 @@ void testIndependentPools(TestContext& test, const GpuLocation& location) {
     {
         GraphSink sink;
         std::atomic<bool> cancellation{false};
-        DummyGraph graph(makeGraphConfig(location, 2, 1, ExecutionModel::Interleaved), sink, cancellation);
+        DummyGraph graph(NumaExecutor(location.numaNode), makeGraphConfig(2, 1, ExecutionModel::Interleaved), sink, cancellation);
         test.expect(graph.initialize(), "initialize two-task one-worker graph");
         test.expect(graph.start(), "start two-task one-worker graph");
         test.expect(runGraphPhase(graph, FramePhase::Timed), "run two-task one-worker graph");
@@ -803,14 +776,12 @@ void testConditionalNumaGraphs(TestContext& test, const std::vector<GpuLocation>
     std::vector<std::unique_ptr<DummyGraph>> graphs;
     for (const auto& entry : grouped) {
         GraphConfig config;
-        config.numaNode = entry.first;
-        config.gpuIds = entry.second;
         config.taskInstancesPerGpu = 1;
         config.graphThreads = entry.second.size();
         config.timedFramesPerGpu = 1;
         config.runtime = makeRuntime(ImageSizing::MIN_FACTOR);
         config.parameters.name = "numa-test";
-        graphs.push_back(std::make_unique<DummyGraph>(config, sink, cancellation));
+        graphs.push_back(std::make_unique<DummyGraph>(NumaExecutor(entry.first), config, sink, cancellation));
     }
     bool ok = true;
     for (const std::unique_ptr<DummyGraph>& graph : graphs) {
@@ -839,10 +810,10 @@ void testConditionalNumaGraphs(TestContext& test, const std::vector<GpuLocation>
 void testGraphCancellation(TestContext& test, const GpuLocation& location) {
     GraphSink sink;
     std::atomic<bool> cancellation{false};
-    GraphConfig config = makeGraphConfig(location, 1, 2, static_cast<ExecutionModel>(99));
+    GraphConfig config = makeGraphConfig(1, 2, static_cast<ExecutionModel>(99));
     config.warmupFramesPerGpu = 2;
     config.timedFramesPerGpu = 4;
-    DummyGraph graph(config, sink, cancellation);
+    DummyGraph graph(NumaExecutor(location.numaNode), config, sink, cancellation);
     test.expect(graph.initialize(), "initialize graph used for failure propagation");
     test.expect(graph.start(), "start graph used for failure propagation");
     test.expect(!runGraphPhase(graph, FramePhase::Warmup), "execution failure fails graph phase");
@@ -859,6 +830,7 @@ int main() {
     TestContext test;
     testParameterRegistry(test);
     testGpuResidencyTable(test);
+    testGpuTopologySelection(test);
 
     GpuInfraConfig config;
     config.requireNuma = true;
@@ -873,15 +845,19 @@ int main() {
         return 1;
     }
 
-    testLifecycleAndResults(test, locations.front(), ExecutionModel::Batched, 1);
-    testLifecycleAndResults(test, locations.front(), ExecutionModel::Interleaved, 2);
-    testStaticDataValidation(test, locations.front());
-    testGpuDataAccessState(test, locations.front());
-    testGpuCacheResetBoundaries(test, locations.front());
-    testGpuCacheManagerLru(test, locations.front());
-    testFrameDataAcrossTaskInstances(test, locations.front());
-    testTaskFallbackExecution(test, locations.front());
-    testTemporaryTopologyGuard(test, locations.front());
+    const bool callbacksRan = NumaExecutor(locations.front().numaNode).run([&test, &locations] {
+        testLifecycleAndResults(test, locations.front(), ExecutionModel::Batched, 1);
+        testLifecycleAndResults(test, locations.front(), ExecutionModel::Interleaved, 2);
+        testStaticDataValidation(test, locations.front());
+        testGpuDataAccessState(test, locations.front());
+        testGpuCacheResetBoundaries(test, locations.front());
+        testGpuCacheManagerLru(test, locations.front());
+        testFrameDataAcrossTaskInstances(test, locations.front());
+        testTaskFallbackExecution(test, locations.front());
+        return true;
+    });
+    test.expect(callbacksRan, "all direct task callbacks execute inside the graph NUMA environment");
+    testNumaExecutionBoundary(test, locations.front());
     testIndependentPools(test, locations.front());
     testConditionalNumaGraphs(test, locations);
     testGraphCancellation(test, locations.front());

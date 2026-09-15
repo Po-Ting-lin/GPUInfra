@@ -20,7 +20,7 @@ process
   |     +-- GpuContext(gpu=0, numa=0)
   |     `-- GpuContext(gpu=1, numa=1)
   |
-  +-- DummyGraph(numa=0)
+  +-- DummyGraph(executor=NumaExecutor(0))
   |     +-- NUMA-local worker pool
   |     +-- GPU-bound DummyTask pool for GPU 0
   |     +-- FrameCpuAtom collections
@@ -28,7 +28,7 @@ process
   |           +-- fixed layout + resetCache() boundary
   |           `-- GpuCacheManager -> fixed residency table + GpuCacheEntry[K]
   |
-  `-- DummyGraph(numa=1)
+  `-- DummyGraph(executor=NumaExecutor(1))
         +-- NUMA-local worker pool
         +-- GPU-bound DummyTask pool for GPU 1
         +-- FrameCpuAtom collections
@@ -41,10 +41,20 @@ process
 cache capacity; the default is 4. `StaticData` does not copy or register the N
 frame keys.
 
-`GpuContext::numaNode` is the authoritative GPU-to-NUMA mapping. A graph copy
-checks all configured GPU IDs against that mapping once during initialization.
-Below the graph boundary, tasks, task resources, `StaticData`, and algorithms
-use GPU/context identity and do not retain duplicate NUMA state.
+`GpuContext::numaNode` is the authoritative GPU-to-NUMA mapping. The framework
+establishes CPU affinity before every task callback, including cold-path
+registration and load. `Grape/NumaExecutor` supplies this environment in the
+simulation; topology fields are no longer application-facing `GraphConfig`
+inputs. A graph resolves its local GPU list inside this environment before
+creating resources. Task/frame counts still use the resolved `gpuIds.size()`.
+
+`DummyTask::load()` observes its current NUMA node and resolves exactly one
+local GPU through `GpuContextManager`; zero or multiple local GPUs are errors.
+`StaticData::init()` uses the same lookup. `GpuTopology` provides stateless NUMA
+detection and selection, with no second stored topology map. The task's GPU
+binding lives in `TaskGpuResources`. Callbacks do not pin threads, and they do
+not store NUMA identity. `makeTaskCurrent()` still selects the CUDA device on
+each calling host thread; framework CPU affinity does not replace this.
 
 ## 2. Scheduler boundary
 
@@ -67,6 +77,8 @@ The worker remains NUMA-bound; the selected task remains GPU-bound.
 | Component | Ownership and lifetime |
 | --- | --- |
 | `GpuContextManager` | Process-wide discovery, NUMA mapping, task registry, primary-context lifetime |
+| `NumaExecutor` | Simulation framework affinity and callback/worker dispatch |
+| `GpuTopology` | Stateless current-node detection and unique local GPU selection |
 | `GpuContext` | One GPU's identity, NUMA node, retained context, active task table |
 | `DummyGraph` | One NUMA graph copy, workers, task pool, warmup/timed CPU-atom collections, queues, `StaticData`, parameters |
 | `ParameterRegistry` | Graph-owned sealed schema, updateable typed values, and monotonic change revision |
@@ -97,15 +109,17 @@ host execution                  -> temporarily selected graph worker
 `DummyGraph::initialize()` runs setup on a NUMA-pinned thread:
 
 ```text
-validate every graph GPU belongs to the graph NUMA node
+framework NUMA executor resolves exactly one local GPU
   -> construct each DummyTask
        -> immediately register its parameter schema exactly once
   -> define initial parameter values and seal the shared schema
   -> load every DummyTask
+       -> resolve current NUMA and register its unique GPU
        -> allocate stream, h_in, d_input, scratch, algo-private resources
        -> apply the initial parameter snapshot inside load
   -> create all FrameCpuAtoms and preallocate their result buffers
   -> StaticData::init()
+       -> resolve the local GPU using the same policy
        -> store fixed frame layout
        -> create exactly K GpuCacheEntries
        -> allocate one replica per entry on the graph GPU
@@ -150,7 +164,7 @@ resets, one `frameId + cameraId` must always identify the same immutable bytes.
 boundary:
 
 ```text
-StaticData::acquireGpuData(metadata, resources)
+StaticData::getCacheData(metadata, resources)
   -> fixed layout validation
   -> GpuCacheManager::acquire(metadata, resources)
        -> fixed open-addressing GpuDataKey -> resident entry index lookup
@@ -192,7 +206,7 @@ FrameCpuAtom + StaticData layout validation
      CacheFill/TaskFallback: atom.data -> h_in -> H2D to writableData()
   -> CEL / SDD / MI kernels read data()
   -> CEL / SDD / MI D2H
-  -> GpuDataAccess::complete()
+  -> GpuDataAccess::freeCacheData()
        -> cudaStreamSynchronize(task stream)
        -> publish fill or release lease
   -> collect into FrameCpuAtom.result

@@ -124,7 +124,7 @@ The initial multi-GPU version retains synchronous task execution:
 enqueue migration/H2D on selected task stream
   -> enqueue algorithms on that stream
   -> enqueue D2H
-  -> GpuDataAccess::complete()
+  -> GpuDataAccess::freeCacheData()
   -> cudaStreamSynchronize()
   -> publish replica/cache state
 ```
