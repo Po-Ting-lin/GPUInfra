@@ -189,12 +189,17 @@ Each `GpuCacheEntry` is in one state:
 
 - `CacheHit`: matching valid entry; immutable reader count increases;
 - `CacheFill`: empty or inactive-LRU entry reserved for caller-produced data;
-- `TaskFallback`: no cache entry can be used immediately, or capacity is zero;
+- `TaskFallback`: Loading/full-cache waiting expires, or capacity is zero;
 - `Invalid`: metadata/resource/GPU contract failed.
 
 Multiple hit readers may coexist. An entry with active readers is not evicted.
-If the same frame is loading or all entries are active, the request immediately
-uses task fallback instead of waiting.
+If the same frame is loading or all entries are active, the request waits with
+the mutex released, using one deadline for both conditions. The manager timeout
+is configured at initialization (default 50 ms; zero disables waiting). Wakeups
+repeat lookup without extending the deadline. A failed or abandoned fill wakes
+contenders to retry CacheFill; successful fill and last-reader release also wake
+waiters. Zero capacity bypasses waiting. A still-blocked request falls back at
+the deadline; scheduling and mutex reacquisition may add wall-clock delay.
 
 `GpuCacheRequest` carries the caller GPU, borrowed stream, fallback pointer,
 and fallback capacity. `getStream()` exposes that same stream. The cache no
@@ -206,7 +211,7 @@ The current demo supplies its task input buffer for the frame cache only.
 The caller performs uploads or result computation for CacheFill/TaskFallback.
 No early publication occurs: `freeCacheData()` synchronizes all queued work
 on the access stream and then publishes or rolls back its fill. A concurrent
-request for Loading uses fallback instead of waiting. No access object may be
+request for Loading waits until availability or its deadline. No access object may be
 shared for concurrent mutation; each caller acquires its own lease.
 
 ## 7. CUDA hot path
@@ -300,7 +305,7 @@ DummyTask::stop() execution-cycle hook
   -> GpuContextManager::shutdown() retained contexts
 ```
 
-`GpuCacheManager::release()` rejects live cache or fallback leases. Normal graph
+`GpuCacheManager::release()` rejects live cache or fallback leases and waiting requests. Normal graph
 teardown reaches it only after workers have joined.
 
 ## 11. Current and future topology

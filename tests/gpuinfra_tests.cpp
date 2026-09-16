@@ -1,11 +1,13 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -505,6 +507,185 @@ void testConcurrentCacheRequests(TestContext& test, const GpuLocation& location)
     for (TaskGpuResources& taskResources : resources) {
         test.expect(releaseAccessResources(taskResources), "release concurrent caller stream and fallback");
     }
+}
+
+void testCacheWaitWakeup(TestContext& test, const GpuLocation& location, int scenario) {
+    constexpr std::size_t PAYLOAD_BYTES = 64;
+    GpuCacheManager cache;
+    std::array<TaskGpuResources, 2> resources;
+    bool initialized = cache.initialize({location.gpuId}, PAYLOAD_BYTES, 1, std::chrono::milliseconds(1000));
+    for (TaskGpuResources& taskResources : resources) {
+        initialized = initializeAccessResources(taskResources, location, PAYLOAD_BYTES) && initialized;
+    }
+    test.expect(initialized, "initialize cache wait wakeup scenario");
+    if (!initialized) {
+        cache.release();
+        for (TaskGpuResources& taskResources : resources) {
+            releaseAccessResources(taskResources);
+        }
+        return;
+    }
+
+    FrameMetadata metadata;
+    metadata.key = {81, 3};
+    metadata.width = 8;
+    metadata.height = 8;
+    metadata.dtype = 1;
+    metadata.bytes = PAYLOAD_BYTES;
+    FrameMetadata requestedMetadata = metadata;
+    if (scenario == 3) {
+        ++requestedMetadata.key.frameId;
+    }
+    std::promise<void> startedPromise;
+    std::future<void> started = startedPromise.get_future();
+    std::promise<CacheStatus> resultPromise;
+    std::future<CacheStatus> result = resultPromise.get_future();
+    std::thread waiter;
+    {
+        GpuDataAccess producer = cache.getCacheData(metadata, makeCacheRequest(resources[0]));
+        test.expect(producer.status() == CacheStatus::CacheFill, "reserve original fill before waiter");
+        const bool submitted = cudaMemsetAsync(producer.writableData(), 0x5a, PAYLOAD_BYTES, producer.getStream()) == cudaSuccess;
+        if (scenario == 3) {
+            test.expect(producer.freeCacheData(submitted), "publish before holding a reader in full-cache scenario");
+        }
+        GpuDataAccess reader = scenario == 3 ? cache.getCacheData(metadata, makeCacheRequest(resources[0])) : GpuDataAccess();
+        waiter = NumaExecutor(location.numaNode).start([&](bool numaReady) {
+            const bool ready = numaReady && cudaSetDevice(location.gpuId) == cudaSuccess;
+            startedPromise.set_value();
+            GpuDataAccess access = ready ? cache.getCacheData(requestedMetadata, makeCacheRequest(resources[1])) : GpuDataAccess();
+            const CacheStatus status = access.status();
+            bool succeeded = status == (scenario == 0 ? CacheStatus::CacheHit : CacheStatus::CacheFill);
+            if (status == CacheStatus::CacheHit) {
+                std::array<unsigned char, PAYLOAD_BYTES> h_output{};
+                succeeded = cudaMemcpyAsync(h_output.data(), access.data(), PAYLOAD_BYTES, cudaMemcpyDeviceToHost, access.getStream()) == cudaSuccess && succeeded;
+                succeeded = access.freeCacheData(succeeded) && succeeded;
+                succeeded = std::all_of(h_output.begin(), h_output.end(), [](unsigned char value) { return value == 0x5a; }) && succeeded;
+            }
+            else {
+                succeeded = access.freeCacheData(succeeded) && succeeded;
+            }
+            resultPromise.set_value(succeeded ? status : CacheStatus::Invalid);
+        });
+        started.wait();
+        test.expect(result.wait_for(std::chrono::milliseconds(20)) == std::future_status::timeout, "request waits while matching fill or full-cache reader is active");
+        test.expect(!cache.resetCache() && !cache.release(), "live producer and waiting request block reset and release");
+        if (scenario == 0) {
+            test.expect(producer.freeCacheData(submitted), "successful fill wakes same-key waiter");
+        }
+        else if (scenario == 1) {
+            test.expect(!producer.freeCacheData(false), "failed fill wakes a waiter to retry CacheFill");
+        }
+        else if (scenario == 3) {
+            test.expect(reader.freeCacheData(true), "last reader release wakes a full-cache waiter");
+        }
+        // Scenario 2 deliberately leaves the fill for RAII rollback.
+    }
+    test.expect(result.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready, "state change wakes the request before its one-second deadline");
+    const CacheStatus status = result.get();
+    waiter.join();
+    test.expect(status == (scenario == 0 ? CacheStatus::CacheHit : CacheStatus::CacheFill), "waiter receives the correct cache lease after wakeup");
+    test.expect(cache.resetCache() && cache.release(), "reset and release succeed after waiters and leases finish");
+    for (TaskGpuResources& taskResources : resources) {
+        test.expect(releaseAccessResources(taskResources), "release waiter resources");
+    }
+}
+
+void testCacheWaitSharedDeadline(TestContext& test, const GpuLocation& location) {
+    constexpr std::size_t PAYLOAD_BYTES = 64;
+    GpuCacheManager cache;
+    std::array<TaskGpuResources, 2> resources;
+    bool initialized = cache.initialize({location.gpuId}, PAYLOAD_BYTES, 2, std::chrono::milliseconds(80));
+    for (TaskGpuResources& taskResources : resources) {
+        initialized = initializeAccessResources(taskResources, location, PAYLOAD_BYTES) && initialized;
+    }
+    test.expect(initialized, "initialize deadline test with an unrelated entry");
+    if (!initialized) {
+        cache.release();
+        for (TaskGpuResources& taskResources : resources) {
+            releaseAccessResources(taskResources);
+        }
+        return;
+    }
+    FrameMetadata metadata;
+    metadata.key = {99, 3};
+    metadata.width = 8;
+    metadata.height = 8;
+    metadata.dtype = 1;
+    metadata.bytes = PAYLOAD_BYTES;
+    FrameMetadata unrelatedMetadata = metadata;
+    ++unrelatedMetadata.key.frameId;
+    {
+        GpuDataAccess unrelated = cache.getCacheData(unrelatedMetadata, makeCacheRequest(resources[1]));
+        test.expect(unrelated.freeCacheData(true), "publish unrelated entry for repeated notifications");
+    }
+    {
+        GpuDataAccess producer = cache.getCacheData(metadata, makeCacheRequest(resources[0]));
+        std::promise<void> startedPromise;
+        std::future<void> started = startedPromise.get_future();
+        bool notifierSucceeded = true;
+        std::thread notifier = NumaExecutor(location.numaNode).start([&](bool numaReady) {
+            notifierSucceeded = numaReady && cudaSetDevice(location.gpuId) == cudaSuccess;
+            startedPromise.set_value();
+            const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+            while (notifierSucceeded && std::chrono::steady_clock::now() < end) {
+                GpuDataAccess unrelated = cache.getCacheData(unrelatedMetadata, makeCacheRequest(resources[1]));
+                notifierSucceeded = unrelated.status() == CacheStatus::CacheHit && unrelated.freeCacheData(true);
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        });
+        started.wait();
+        const std::chrono::steady_clock::time_point startedWaiting = std::chrono::steady_clock::now();
+        GpuDataAccess waiting = cache.getCacheData(metadata, makeCacheRequest(resources[0]));
+        const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - startedWaiting;
+        test.expect(waiting.status() == CacheStatus::TaskFallback && elapsed >= std::chrono::milliseconds(80) && elapsed < std::chrono::milliseconds(250), "unrelated wakeups do not restart the request deadline");
+        test.expect(waiting.freeCacheData(true) && producer.freeCacheData(true), "finish deadline test accesses");
+        notifier.join();
+        test.expect(notifierSucceeded, "unrelated entry repeatedly becomes evictable during wait");
+    }
+    test.expect(cache.release(), "release shared deadline cache");
+    for (TaskGpuResources& taskResources : resources) {
+        test.expect(releaseAccessResources(taskResources), "release shared deadline resources");
+    }
+}
+
+void testCacheWaitTimeout(TestContext& test, const GpuLocation& location) {
+    constexpr std::size_t PAYLOAD_BYTES = 64;
+    TaskGpuResources resources;
+    test.expect(initializeAccessResources(resources, location, PAYLOAD_BYTES), "initialize timeout resources");
+    FrameMetadata metadata;
+    metadata.key = {91, 3};
+    metadata.width = 8;
+    metadata.height = 8;
+    metadata.dtype = 1;
+    metadata.bytes = PAYLOAD_BYTES;
+    GpuCacheManager invalidCache;
+    test.expect(!invalidCache.initialize({location.gpuId}, PAYLOAD_BYTES, 1, std::chrono::milliseconds(-1)), "reject a negative wait timeout");
+    for (int scenario = 0; scenario < 4; ++scenario) {
+        GpuCacheManager cache;
+        const bool initialized = scenario == 0 || scenario == 1 ? cache.initialize({location.gpuId}, PAYLOAD_BYTES, 1) : cache.initialize({location.gpuId}, PAYLOAD_BYTES, scenario == 2 ? 1 : 0, std::chrono::milliseconds(scenario == 2 ? 0 : 1000));
+        test.expect(initialized, "initialize default, disabled or zero-capacity wait");
+        {
+            GpuDataAccess producer = cache.getCacheData(metadata, makeCacheRequest(resources));
+            FrameMetadata requestedMetadata = metadata;
+            if (scenario == 1) {
+                ++requestedMetadata.key.frameId;
+            }
+            const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+            GpuDataAccess blocked = cache.getCacheData(requestedMetadata, makeCacheRequest(resources));
+            const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+            test.expect(blocked.status() == CacheStatus::TaskFallback, "unavailable entry falls back at the deadline");
+            if (scenario < 2) {
+                test.expect(elapsed >= std::chrono::milliseconds(50) && elapsed < std::chrono::milliseconds(500), "default Loading and full-cache requests wait for 50 ms");
+            }
+            else {
+                test.expect(elapsed < std::chrono::milliseconds(250), "zero timeout or zero capacity bypasses waiting");
+            }
+            test.expect(blocked.freeCacheData(true), "finish timeout fallback");
+            test.expect(producer.freeCacheData(true), "finish original access after timeout");
+        }
+        test.expect(cache.release(), "release cache after timeout");
+    }
+    test.expect(releaseAccessResources(resources), "release timeout resources");
 }
 
 void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location) {
@@ -1031,6 +1212,11 @@ int main() {
         testIndependentPayloadCaches(test, locations.front(), 0);
         testIndependentPayloadCaches(test, locations.front(), 1);
         testConcurrentCacheRequests(test, locations.front());
+        for (int scenario = 0; scenario < 4; ++scenario) {
+            testCacheWaitWakeup(test, locations.front(), scenario);
+        }
+        testCacheWaitTimeout(test, locations.front());
+        testCacheWaitSharedDeadline(test, locations.front());
         testGpuCacheResetBoundaries(test, locations.front());
         testGpuCacheManagerLru(test, locations.front());
         testFrameDataAcrossTaskInstances(test, locations.front());

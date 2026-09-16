@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -20,8 +22,10 @@ public:
     GpuCacheManager() = default;
     ~GpuCacheManager();
 
-    bool initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount);
+    bool initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount, std::chrono::milliseconds waitTimeout = std::chrono::milliseconds(50));
     bool resetCache();
+    // One shared deadline for Loading and full-cache waits; zero disables waiting.
+    // The caller must keep this manager and request resources alive until return.
     GpuDataAccess getCacheData(const FrameMetadata& metadata, const GpuCacheRequest& request);
     bool release();
 
@@ -37,6 +41,7 @@ private:
 
     inline static constexpr std::size_t NO_ENTRY = std::numeric_limits<std::size_t>::max();
 
+    bool waitForCacheChange(std::unique_lock<std::mutex>& guard, std::chrono::steady_clock::time_point deadline);
     bool canResetLocked() const;
     void resetEntriesLocked();
     std::size_t takeCandidate(bool& wasEmpty);
@@ -49,6 +54,9 @@ private:
     void resetFillEntry(GpuCacheEntry& entry, std::size_t index);
 
     mutable std::mutex lock;
+    std::condition_variable cacheChanged;
+    std::chrono::milliseconds waitTimeout{50};
+    std::size_t waitingAccesses = 0;
     std::vector<std::unique_ptr<GpuCacheEntry>> entries;
     std::vector<int> eligibleGpuIds;
     GpuResidencyTable residencyTable;

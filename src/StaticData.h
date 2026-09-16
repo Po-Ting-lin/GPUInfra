@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 
 #include "Algo/IAlgo.h"
@@ -9,6 +10,7 @@
 struct StaticDataConfig {
     AlgoRuntimeInfo runtime;
     std::size_t gpuCacheEntries = 0;
+    std::chrono::milliseconds gpuCacheWaitTimeout{50};
 };
 
 // Graph-copy-scoped owner of fixed frame-layout validation and a bounded GPU

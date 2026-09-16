@@ -27,6 +27,7 @@
 </header>
 <nav aria-label="章節導覽"><div class="wrap"><a href="#model">資料與角色</a><a href="#walkthrough">互動演示</a><a href="#decisions">取得的所有分支</a><a href="#finish">成功與失敗</a><a href="#lifetime">重設與釋放</a><a href="#capacity">容量與索引</a></div></nav>
 <main class="wrap">
+<p class="callout"><strong>等待策略更新：</strong>目前 manager 預設等待上限為 50 ms；同 key Loading 與滿載共用每次呼叫的截止時間，逾時才 fallback。0 ms 關閉等待，零容量直接 fallback。以下互動情境示範 <code>waitTimeout = 0 ms</code>；有等待者時 reset／release 也會失敗。</p>
 <section id="model">
 <div class="section-head"><span class="num">01</span><h2>先分清楚：資料、索引、存取權</h2></div>
 <p class="muted">Scheduler 先選 ready frame、free task 與 NUMA-local worker，之後才查 cache。Cache residency 不會改變排程選擇。</p>

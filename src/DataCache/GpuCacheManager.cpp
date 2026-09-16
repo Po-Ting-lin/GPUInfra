@@ -9,10 +9,10 @@ GpuCacheManager::~GpuCacheManager() {
     release();
 }
 
-bool GpuCacheManager::initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount) {
+bool GpuCacheManager::initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount, std::chrono::milliseconds configuredWaitTimeout) {
     {
         std::lock_guard<std::mutex> guard(lock);
-        if (initialized || releasing || !entries.empty() || !eligibleGpuIds.empty() || residencyTable.isInitialized() || !emptyEntries.empty() || leastRecentlyUsed != NO_ENTRY || mostRecentlyUsed != NO_ENTRY || gpuIds.size() != 1 || gpuIds.front() < 0 || bytes == 0) {
+        if (initialized || releasing || !entries.empty() || !eligibleGpuIds.empty() || residencyTable.isInitialized() || !emptyEntries.empty() || leastRecentlyUsed != NO_ENTRY || mostRecentlyUsed != NO_ENTRY || gpuIds.size() != 1 || gpuIds.front() < 0 || bytes == 0 || configuredWaitTimeout.count() < 0) {
             return false;
         }
     }
@@ -55,6 +55,7 @@ bool GpuCacheManager::initialize(const std::vector<int>& gpuIds, std::size_t byt
     residencyTable.swap(newResidencyTable);
     emptyEntries = std::move(newEmptyEntries);
     dataBytes = bytes;
+    waitTimeout = configuredWaitTimeout;
     activeFallbackAccesses = 0;
     initialized = true;
     return true;
@@ -70,83 +71,95 @@ bool GpuCacheManager::resetCache() {
 }
 
 GpuDataAccess GpuCacheManager::getCacheData(const FrameMetadata& metadata, const GpuCacheRequest& request) {
-    std::lock_guard<std::mutex> guard(lock);
+    const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> guard(lock);
     if (!initialized || releasing || metadata.bytes != dataBytes || metadata.width <= 0 || metadata.height <= 0 || request.gpuId < 0 || request.stream == nullptr || request.d_fallback == nullptr || request.fallbackBytes < dataBytes || std::find(eligibleGpuIds.begin(), eligibleGpuIds.end(), request.gpuId) == eligibleGpuIds.end()) {
         return GpuDataAccess();
     }
 
-    std::size_t residentIndex = NO_ENTRY;
-    if (residencyTable.find(metadata.key, residentIndex)) {
-        const std::size_t index = residentIndex;
-        if (index >= entries.size() || entries[index] == nullptr) {
-            return GpuDataAccess();
+    // Include mutex acquisition in the budget; never restart it after a wakeup.
+    const std::chrono::milliseconds maximumWait = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::time_point::max() - started);
+    const std::chrono::steady_clock::time_point deadline = started + std::min(waitTimeout, maximumWait);
+    while (true) {
+        std::size_t residentIndex = NO_ENTRY;
+        if (residencyTable.find(metadata.key, residentIndex)) {
+            const std::size_t index = residentIndex;
+            if (index >= entries.size() || entries[index] == nullptr) {
+                return GpuDataAccess();
+            }
+
+            GpuCacheEntry& entry = *entries[index];
+            if (!(entry.metadata == metadata)) {
+                return GpuDataAccess();
+            }
+            if (entry.cacheState == GpuCacheState::Loading) {
+                if (waitForCacheChange(guard, deadline)) {
+                    continue;
+                }
+                return makeFallbackAccess(metadata, request);
+            }
+            if (entry.cacheState != GpuCacheState::Valid) {
+                return GpuDataAccess();
+            }
+
+            void* deviceData = entry.dataForGpu(request.gpuId);
+            if (deviceData == nullptr || !entry.replicaValid(request.gpuId)) {
+                // A future multi-GPU implementation can reserve a local replica
+                // fill here. In the current one-GPU scope, the caller handles fallback.
+                return makeFallbackAccess(metadata, request);
+            }
+            if ((entry.activeAccesses == 0 && !removeEvictableEntry(index)) || (entry.activeAccesses != 0 && entry.inEvictableList)) {
+                return GpuDataAccess();
+            }
+            ++entry.activeAccesses;
+            return GpuDataAccess(this, deviceData, dataBytes, index, metadata.key, request.stream, request.gpuId, CacheStatus::CacheHit);
         }
 
-        GpuCacheEntry& entry = *entries[index];
-        if (!(entry.metadata == metadata)) {
-            return GpuDataAccess();
-        }
-        if (entry.cacheState == GpuCacheState::Loading) {
+        bool wasEmpty = false;
+        const std::size_t candidateIndex = takeCandidate(wasEmpty);
+        if (candidateIndex == NO_ENTRY) {
+            if (waitForCacheChange(guard, deadline)) {
+                continue;
+            }
             return makeFallbackAccess(metadata, request);
         }
-        if (entry.cacheState != GpuCacheState::Valid) {
+
+        GpuCacheEntry& candidate = *entries[candidateIndex];
+        void* deviceData = candidate.dataForGpu(request.gpuId);
+        if (deviceData == nullptr) {
+            restoreCandidate(candidateIndex, wasEmpty);
+            return GpuDataAccess();
+        }
+        if (wasEmpty) {
+            if (candidate.cacheState != GpuCacheState::Empty || candidate.activeAccesses != 0 || candidate.inEvictableList) {
+                restoreCandidate(candidateIndex, true);
+                return GpuDataAccess();
+            }
+        }
+        else {
+            if (candidate.cacheState != GpuCacheState::Valid || candidate.activeAccesses != 0 || candidate.inEvictableList) {
+                restoreCandidate(candidateIndex, false);
+                return GpuDataAccess();
+            }
+            if (!residencyTable.erase(candidate.metadata.key, candidateIndex)) {
+                restoreCandidate(candidateIndex, false);
+                return GpuDataAccess();
+            }
+        }
+        if (!residencyTable.insert(metadata.key, candidateIndex)) {
+            if (!wasEmpty) {
+                residencyTable.insert(candidate.metadata.key, candidateIndex);
+            }
+            restoreCandidate(candidateIndex, wasEmpty);
             return GpuDataAccess();
         }
 
-        void* deviceData = entry.dataForGpu(request.gpuId);
-        if (deviceData == nullptr || !entry.replicaValid(request.gpuId)) {
-            // A future multi-GPU implementation can reserve a local replica
-            // fill here. In the current one-GPU scope, the caller handles fallback.
-            return makeFallbackAccess(metadata, request);
-        }
-        if ((entry.activeAccesses == 0 && !removeEvictableEntry(index)) || (entry.activeAccesses != 0 && entry.inEvictableList)) {
-            return GpuDataAccess();
-        }
-        ++entry.activeAccesses;
-        return GpuDataAccess(this, deviceData, dataBytes, index, metadata.key, request.stream, request.gpuId, CacheStatus::CacheHit);
+        candidate.metadata = metadata;
+        candidate.invalidateReplicas();
+        candidate.cacheState = GpuCacheState::Loading;
+        candidate.activeAccesses = 1;
+        return GpuDataAccess(this, deviceData, dataBytes, candidateIndex, metadata.key, request.stream, request.gpuId, CacheStatus::CacheFill);
     }
-
-    bool wasEmpty = false;
-    const std::size_t candidateIndex = takeCandidate(wasEmpty);
-    if (candidateIndex == NO_ENTRY) {
-        return makeFallbackAccess(metadata, request);
-    }
-
-    GpuCacheEntry& candidate = *entries[candidateIndex];
-    void* deviceData = candidate.dataForGpu(request.gpuId);
-    if (deviceData == nullptr) {
-        restoreCandidate(candidateIndex, wasEmpty);
-        return GpuDataAccess();
-    }
-    if (wasEmpty) {
-        if (candidate.cacheState != GpuCacheState::Empty || candidate.activeAccesses != 0 || candidate.inEvictableList) {
-            restoreCandidate(candidateIndex, true);
-            return GpuDataAccess();
-        }
-    }
-    else {
-        if (candidate.cacheState != GpuCacheState::Valid || candidate.activeAccesses != 0 || candidate.inEvictableList) {
-            restoreCandidate(candidateIndex, false);
-            return GpuDataAccess();
-        }
-        if (!residencyTable.erase(candidate.metadata.key, candidateIndex)) {
-            restoreCandidate(candidateIndex, false);
-            return GpuDataAccess();
-        }
-    }
-    if (!residencyTable.insert(metadata.key, candidateIndex)) {
-        if (!wasEmpty) {
-            residencyTable.insert(candidate.metadata.key, candidateIndex);
-        }
-        restoreCandidate(candidateIndex, wasEmpty);
-        return GpuDataAccess();
-    }
-
-    candidate.metadata = metadata;
-    candidate.invalidateReplicas();
-    candidate.cacheState = GpuCacheState::Loading;
-    candidate.activeAccesses = 1;
-    return GpuDataAccess(this, deviceData, dataBytes, candidateIndex, metadata.key, request.stream, request.gpuId, CacheStatus::CacheFill);
 }
 
 bool GpuCacheManager::release() {
@@ -207,8 +220,26 @@ std::size_t GpuCacheManager::bytes() const {
     return dataBytes;
 }
 
+bool GpuCacheManager::waitForCacheChange(std::unique_lock<std::mutex>& guard, std::chrono::steady_clock::time_point deadline) {
+    if (entries.empty() || waitTimeout.count() == 0 || std::chrono::steady_clock::now() >= deadline) {
+        return false;
+    }
+
+    // Count sleepers while the mutex is released so reset/release cannot pass.
+    ++waitingAccesses;
+    try {
+        cacheChanged.wait_until(guard, deadline);
+    } catch (...) {
+        --waitingAccesses;
+        throw;
+    }
+    --waitingAccesses;
+    // Always recheck residency, including on timeout and spurious wakeups.
+    return true;
+}
+
 bool GpuCacheManager::canResetLocked() const {
-    if (activeFallbackAccesses != 0) {
+    if (activeFallbackAccesses != 0 || waitingAccesses != 0) {
         return false;
     }
     for (const std::unique_ptr<GpuCacheEntry>& entry : entries) {
@@ -284,6 +315,7 @@ bool GpuCacheManager::addEvictableEntry(std::size_t index) {
         leastRecentlyUsed = index;
     }
     mostRecentlyUsed = index;
+    cacheChanged.notify_all();
     return true;
 }
 
@@ -420,4 +452,5 @@ void GpuCacheManager::resetFillEntry(GpuCacheEntry& entry, std::size_t index) {
     entry.nextEvictable = NO_ENTRY;
     entry.inEvictableList = false;
     emptyEntries.push_back(index);
+    cacheChanged.notify_all();
 }

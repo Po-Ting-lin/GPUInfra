@@ -240,7 +240,7 @@ borrowed task stream supplied in `GpuCacheRequest`:
 | --- | --- |
 | `CacheHit` | Matching `Valid` entry; use its immutable device pointer without H2D |
 | `CacheFill` | Reserve an empty/inactive-LRU entry; caller uploads or computes its payload |
-| `TaskFallback` | Caller fills its supplied fallback buffer when capacity is zero, the matching entry is loading, or all entries are active |
+| `TaskFallback` | Caller fills its supplied fallback buffer when capacity is zero, or a Loading/full-cache wait expires |
 | `Invalid` | Metadata, GPU, stream, or fallback request is invalid; do not submit work |
 
 Lookup and resident-key insertion/erasure are average `O(1)`. The table is
@@ -289,7 +289,7 @@ readers of the same key on different task streams.
 
 Fill publication occurs only in `freeCacheData()` after successful stream
 synchronization, not as soon as H2D completes. A second request for a Loading
-key gets fallback, so its caller may repeat the upload or computation. With
+key waits within its request deadline, then uses fallback if still unavailable. With
 all work on the returned stream, no extra H2D event is required. Each access
 finishes independently; finishing two accesses on one stream currently causes
 two synchronization calls and is not an atomic multi-cache publication.
@@ -300,11 +300,46 @@ or reset at parameter changes and be able to recreate evicted data. The
 existing frame-shaped metadata and immutable, best-effort eviction contract
 remain in place.
 
+## Bounded cache waiting
+
+Configure each manager at initialization; the default is **50 ms**:
+
+```cpp
+const std::chrono::milliseconds waitTimeout(50);
+const bool initialized = cache.initialize(gpuIds, payloadBytes, cacheEntries, waitTimeout);
+```
+
+For the frame-cache wrapper, set `StaticDataConfig::gpuCacheWaitTimeout`.
+There is no per-request override. Zero disables waiting; negative values are
+rejected. A zero-capacity cache always returns fallback immediately.
+
+A matching Loading entry or a full cache with no evictable entry waits on a
+condition variable, releasing the mutex. Each call has one steady-clock
+deadline, measured from entry to `getCacheData()`; notifications and transitions
+between lookup branches never restart it. On wakeup, lookup runs again. A
+successful fill permits a hit; failed/abandoned fill permits one contender to
+claim CacheFill. The last reader releasing an entry also wakes contenders.
+Loading entries and active readers never enter the evictable LRU.
+
+At the deadline, lookup checks availability once more and falls back if still
+blocked. This is a wait budget, not a hard wall-clock latency guarantee: thread
+scheduling and mutex reacquisition can add delay. Waiters have no FIFO priority
+or reserved entry. Holding another access while waiting can consume the entire
+budget, so callers should avoid circular dependencies.
+
+Reset/release return false while any request sleeps, even if a producer has
+just finished. The manager and borrowed request resources must outlive all
+calls and access objects. There is no early publication and no extra CUDA event.
+
+The interactive HTML guides demonstrate the immediate-fallback configuration
+(`waitTimeout = 0 ms`); their state transitions also describe the fallback path
+after a bounded wait expires.
+
 ## Run boundaries and cache reset
 
 `StaticData::resetCache()` is the single cold-path run-boundary operation. It
 clears the fixed residency table, entry identities/validity, empty stack, and
-global LRU state. It rejects active cache/fallback leases or an in-progress
+global LRU state. It rejects active cache/fallback leases, waiting requests, or an in-progress
 fill.
 
 Reset does not call `cudaFree()` or `cudaMalloc()`: every

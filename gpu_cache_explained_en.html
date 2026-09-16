@@ -27,6 +27,7 @@
 </header>
 <nav aria-label="Section navigation"><div class="wrap"><a href="#model">Data &amp; ownership</a><a href="#walkthrough">Walkthrough</a><a href="#decisions">Access decisions</a><a href="#finish">Success &amp; failure</a><a href="#lifetime">Reset &amp; release</a><a href="#capacity">Capacity &amp; index</a></div></nav>
 <main class="wrap">
+<p class="callout"><strong>Waiting policy update:</strong> Managers now default to 50 ms. Same-key Loading and full-cache waits share one deadline per call; fallback follows timeout. Zero disables waiting; zero capacity falls back immediately. The interactive scenarios below demonstrate <code>waitTimeout = 0 ms</code>. Waiting requests also block reset/release.</p>
 <section id="model">
 <div class="section-head"><span class="num">01</span><h2>Separate the data, the index, and the lease</h2></div>
 <p class="muted">The scheduler selects a ready frame, a free task, and a NUMA-local worker before checking the cache. Cache residency does not change scheduling decisions.</p>
