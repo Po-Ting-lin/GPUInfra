@@ -1,0 +1,4 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+40.7,8193885,220,37244.9,36912.0,34912,63936,3039.9,"<unnamed>::miMatrixMultiplicationKernel(const unsigned char *, unsigned int *, int, int)"
+39.9,8028032,220,36491.1,35552.0,35200,69568,4526.5,"<unnamed>::sddMatrixMultiplicationKernel(const unsigned char *, unsigned int *, int, int)"
+19.4,3909711,220,17771.4,11520.0,10656,65408,9235.1,"<unnamed>::celMatrixMultiplicationKernel(const unsigned char *, unsigned int *, int, int)"

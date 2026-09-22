@@ -1,3 +1,5 @@
+#include "Nvtx.h"
+
 #include "DataCache/GpuDataAccess.h"
 
 #include "CudaCheck.h"
@@ -18,6 +20,8 @@ GpuDataAccess::~GpuDataAccess() {
         return;
     }
 
+    GPUINFRA_NVTX_SCOPE("Cache.RAII_abort_sync");
+    const GpuDiagnosticScope diagnosticScope(deviceId, stream, dataKey, "Cache.RAII_abort");
     // Already-submitted CUDA work must not outlive the access on an early exit.
     CUDA_CHECK(cudaStreamSynchronize(stream), );
     owner->abortAccess(*this);
@@ -52,12 +56,17 @@ cudaStream_t GpuDataAccess::getStream() const {
 }
 
 bool GpuDataAccess::freeCacheData(bool submittedSuccessfully) {
+    GPUINFRA_NVTX_SCOPE("Cache.freeCacheData");
+    const GpuDiagnosticScope diagnosticScope(deviceId, stream, dataKey, "Cache.freeCacheData");
     if (owner == nullptr || stream == nullptr) {
         return false;
     }
 
     bool succeeded = submittedSuccessfully;
-    CUDA_CHECK(cudaStreamSynchronize(stream), succeeded = false);
+    {
+        GPUINFRA_NVTX_SCOPE("Cache.stream_sync");
+        CUDA_CHECK(cudaStreamSynchronize(stream), succeeded = false);
+    }
     return owner->completeAccess(*this, succeeded);
 }
 

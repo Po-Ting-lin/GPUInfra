@@ -8,7 +8,8 @@
 #include <mutex>
 #include <vector>
 
-#include "FrameMetadata.h"
+#include "Types/FrameMetadata.h"
+#include "DataCache/CacheStatistics.h"
 #include "DataCache/GpuCacheEntry.h"
 #include "DataCache/GpuDataAccess.h"
 #include "DataCache/GpuCacheRequest.h"
@@ -23,7 +24,10 @@ public:
     ~GpuCacheManager();
 
     bool initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount, std::chrono::milliseconds waitTimeout = std::chrono::milliseconds(50));
-    bool resetCache();
+    // Successful reset returns the previous interval and clears it atomically.
+    // Failure leaves both statistics and the output argument unchanged.
+    bool resetCache(CacheStatistics* completedStatistics = nullptr);
+    CacheStatistics statisticsSnapshot() const;
     // One shared deadline for Loading and full-cache waits; zero disables waiting.
     // The caller must keep this manager and request resources alive until return.
     GpuDataAccess getCacheData(const FrameMetadata& metadata, const GpuCacheRequest& request);
@@ -41,7 +45,7 @@ private:
 
     inline static constexpr std::size_t NO_ENTRY = std::numeric_limits<std::size_t>::max();
 
-    bool waitForCacheChange(std::unique_lock<std::mutex>& guard, std::chrono::steady_clock::time_point deadline);
+    bool waitForCacheChange(std::unique_lock<std::mutex>& guard, std::chrono::steady_clock::time_point deadline, bool& waited, std::chrono::nanoseconds& requestWait);
     bool canResetLocked() const;
     void resetEntriesLocked();
     std::size_t takeCandidate(bool& wasEmpty);
@@ -50,9 +54,10 @@ private:
     bool removeEvictableEntry(std::size_t index);
     bool completeAccess(GpuDataAccess& access, bool succeeded);
     void abortAccess(GpuDataAccess& access);
-    GpuDataAccess makeFallbackAccess(const FrameMetadata& metadata, const GpuCacheRequest& request);
+    GpuDataAccess makeFallbackAccess(const FrameMetadata& metadata, const GpuCacheRequest& request, CacheFallbackReason reason);
     void resetFillEntry(GpuCacheEntry& entry, std::size_t index);
 
+    CacheStatistics statistics;
     mutable std::mutex lock;
     std::condition_variable cacheChanged;
     std::chrono::milliseconds waitTimeout{50};

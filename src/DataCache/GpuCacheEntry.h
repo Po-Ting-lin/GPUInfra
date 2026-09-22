@@ -4,7 +4,7 @@
 #include <limits>
 #include <vector>
 
-#include "FrameMetadata.h"
+#include "Types/FrameMetadata.h"
 
 struct GpuReplica {
     int gpuId = -1;

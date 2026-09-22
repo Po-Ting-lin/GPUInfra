@@ -1,0 +1,23 @@
+[GPUInfra] discovered gpu=0 name=NVIDIA GeForce RTX 3080 numa=0 compute=8.6 async_engines=2
+[GPUInfra] registered task gpu=0 numa=0 resource=0
+[GPUInfra] registered task gpu=0 numa=0 resource=1
+[GPUInfra] registered task gpu=0 numa=0 resource=2
+[GPUInfra] registered task gpu=0 numa=0 resource=3
+[GPUInfra] StaticData GPU cache plan gpu=0 cache_entries=4 bytes_per_entry=262144 allocated_bytes=1048576
+[GPUInfra] unregistered task gpu=0 resource=0
+[GPUInfra] unregistered task gpu=0 resource=1
+[GPUInfra] unregistered task gpu=0 resource=2
+[GPUInfra] unregistered task gpu=0 resource=3
+[GPUInfra] shutdown complete
+[CacheStatistics] run=1789871789375994 graph=0 gpu=0 cache=frame interval=warmup+timed entries=4 wait_timeout_ms=50 warmup_frames_per_gpu=20 timed_frames_per_gpu=200 frame_bytes=262144 tasks=4 workers=4 execution_model=batched hit=0 fill=220 fallback=0 invalid=0 fill_succeeded=220 fill_failed=0 eviction=216 first_blocked_loading=0 first_blocked_full=0 capacity_zero=0 loading_timeout=0 full_timeout=0 loading_no_wait=0 full_no_wait=0 replica_unavailable=0 waited_requests=0 total_wait_ns=0 max_wait_ns=0 average_wait_ms=0 hit_ratio=0 fallback_ratio=0
+execution_model=batched
+size_factor=64 input=512x512 cel=128x128 sdd=192x192 mi=192x192
+workload_multipliers h2d=1 d2h=1 compute=3
+warmup 20 frames/GPU, timed 200 frames/GPU (200 total) in 19.097 ms
+throughput=10472.982 frames/s, average=0.095 ms/frame
+delivered 220 frames across 1 CUDA GPU(s), failures=0
+Collecting data...
+Generating '/tmp/nsys-report-760a.qdstrm'
+[1/1] [0%                          ] batched.nsys-rep[1/1] [0%                          ] batched.nsys-rep[1/1] [============55%             ] batched.nsys-rep[1/1] [===============67%          ] batched.nsys-rep[1/1] [=================73%        ] batched.nsys-rep[1/1] [===================80%      ] batched.nsys-rep[1/1] [========================100%] batched.nsys-rep[1/1] [========================100%] batched.nsys-rep
+Generated:
+	/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched.nsys-rep

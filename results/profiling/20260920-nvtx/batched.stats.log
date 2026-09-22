@@ -1,0 +1,13 @@
+Generating SQLite file /home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched.sqlite from /home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched.nsys-rep
+Processing [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/nvtx_sum.py] to [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched_nvtx_sum.csv]... PROCESSED
+
+Processing [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/nvtx_pushpop_trace.py] to [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched_nvtx_pushpop_trace.csv]... PROCESSED
+
+Processing [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_api_sum.py] to [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched_cuda_api_sum.csv]... PROCESSED
+
+Processing [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_gpu_kern_sum.py] to [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched_cuda_gpu_kern_sum.csv]... PROCESSED
+
+Processing [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_gpu_mem_time_sum.py] to [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched_cuda_gpu_mem_time_sum.csv]... PROCESSED
+
+Processing [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_gpu_mem_size_sum.py] to [/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched_cuda_gpu_mem_size_sum.csv]... PROCESSED
+

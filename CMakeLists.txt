@@ -28,34 +28,37 @@ foreach(workload_multiplier
     endif()
 endforeach()
 
+option(GPUINFRA_ENABLE_NVTX "Compile NVTX profiling annotations" OFF)
+
 find_package(Threads REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 
 add_library(gpuinfra
-    src/Algo/Cel.cu
-    src/Algo/Mi.cu
-    src/Algo/Sdd.cu
-    src/DummyTask.cpp
-    src/Grape/DummyGraph.cpp
-    src/Grape/NumaExecutor.cpp
-    src/Grape/FrameCpuAtom.cpp
     src/DataCache/GpuCacheEntry.cpp
     src/DataCache/GpuCacheManager.cpp
     src/DataCache/GpuDataAccess.cpp
     src/DataCache/GpuResidencyTable.cpp
-    src/GpuContextManager.cpp
-    src/GpuTopology.cpp
-    src/ParameterRegistry.cpp
-    src/StaticData.cpp
+    src/GpuDiagnostics.cpp
+    src/Context/GpuContextManager.cpp
+    src/Context/GpuTopology.cpp
+    src/StaticData/StaticGpuData.cpp
+    src/StaticData/StaticData.cpp
 )
+target_include_directories(gpuinfra PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-target_include_directories(gpuinfra
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/Grape
+add_library(gpuinfra_demo_support
+    demo/Algo/Cel.cu
+    demo/Algo/Mi.cu
+    demo/Algo/Sdd.cu
+    demo/DummyTask.cpp
+    demo/Grape/DummyGraph.cpp
+    demo/Grape/NumaExecutor.cpp
+    demo/Grape/FrameCpuAtom.cpp
+    demo/ParameterRegistry.cpp
 )
-
-target_compile_definitions(gpuinfra
+target_include_directories(gpuinfra_demo_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/demo)
+target_link_libraries(gpuinfra_demo_support PUBLIC gpuinfra)
+target_compile_definitions(gpuinfra_demo_support
     PUBLIC
         GPUINFRA_H2D_SIZE_MULTIPLIER=${GPUINFRA_H2D_SIZE_MULTIPLIER}
         GPUINFRA_D2H_SIZE_MULTIPLIER=${GPUINFRA_D2H_SIZE_MULTIPLIER}
@@ -67,28 +70,46 @@ target_link_libraries(gpuinfra
         Threads::Threads
         CUDA::cudart
         CUDA::cuda_driver
+        CUDA::cufft
 )
 
-if(MSVC)
-    target_compile_options(gpuinfra PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(gpuinfra PRIVATE
-        $<$<COMPILE_LANGUAGE:CXX>:
-            -Wall
-            -Wextra
-            -Wpedantic
-            -Wconversion
-        >
-    )
+if(GPUINFRA_ENABLE_NVTX)
+    find_path(GPUINFRA_NVTX_INCLUDE_DIR nvtx3/nvtx3.hpp HINTS ${CUDAToolkit_INCLUDE_DIRS} REQUIRED)
+    target_include_directories(gpuinfra SYSTEM PUBLIC ${GPUINFRA_NVTX_INCLUDE_DIR})
+    target_compile_definitions(gpuinfra PUBLIC GPUINFRA_ENABLE_NVTX=1)
+    target_link_libraries(gpuinfra PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
-add_executable(gpuinfra_demo src/main.cpp)
-target_link_libraries(gpuinfra_demo PRIVATE gpuinfra)
+foreach(project_target gpuinfra gpuinfra_demo_support)
+    if(MSVC)
+        target_compile_options(${project_target} PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(${project_target} PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:
+                -Wall
+                -Wextra
+                -Wpedantic
+                -Wconversion
+            >
+        )
+    endif()
+
+endforeach()
+
+add_executable(gpuinfra_demo demo/main.cpp)
+target_link_libraries(gpuinfra_demo PRIVATE gpuinfra_demo_support)
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(gpuinfra_tests tests/gpuinfra_tests.cpp)
-    target_link_libraries(gpuinfra_tests PRIVATE gpuinfra)
+    add_executable(gpuinfra_tests
+        tests/gpuinfra_tests.cpp
+        tests/test_support.cpp
+        tests/cache_tests.cpp
+        tests/static_data_tests.cpp
+        tests/diagnostics_tests.cpp
+        tests/graph_tests.cpp
+    )
+    target_link_libraries(gpuinfra_tests PRIVATE gpuinfra_demo_support)
 
     add_test(NAME gpuinfra_protocol_tests COMMAND gpuinfra_tests)
     add_test(NAME gpuinfra_demo_runs COMMAND gpuinfra_demo)

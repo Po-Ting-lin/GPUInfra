@@ -1,2 +1,10 @@
 /build/
 /cmake-build-*/
+
+# New raw captures are local; preserve the recorded reference capture.
+/results/profiling/**/*.nsys-rep
+/results/profiling/**/*.sqlite
+!/results/profiling/20260920-nvtx/*.nsys-rep
+!/results/profiling/20260920-nvtx/*.sqlite
+__pycache__/
+*.nsys-rep

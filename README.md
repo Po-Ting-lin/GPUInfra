@@ -1,7 +1,7 @@
 # GPUInfra CUDA graph demo
 
 This repository is a runnable CUDA model of the golden protocol in
-[`graph.md`](graph.md):
+[`graph.md`](docs/graph.md):
 
 ```text
 start -> DummyTask -> end
@@ -36,24 +36,24 @@ a hit. Because the current input is immutable, a miss re-uploads from
 
 ## Design references
 
-- [`graph.md`](graph.md) is the authoritative scheduler/lifecycle reference,
+- [`graph.md`](docs/graph.md) is the authoritative scheduler/lifecycle reference,
   corrected to match the reviewed real-framework callbacks.
-- [`architecture.md`](architecture.md) documents the implemented model.
-- [`frame_gpu_data_plan_tmp.md`](frame_gpu_data_plan_tmp.md) specifies the
+- [`architecture.md`](docs/architecture.md) documents the implemented model.
+- [`frame_gpu_data_plan_tmp.md`](docs/archive/frame_gpu_data_plan_tmp.md) specifies the
   implemented one-GPU cache.
-- [`frame_gpu_data_plan.md`](frame_gpu_data_plan.md) specifies the future
+- [`frame_gpu_data_plan.md`](docs/archive/frame_gpu_data_plan.md) specifies the future
   multi-GPU replica extension.
-- [`num_of_gpu_cache_entry_issue.md`](num_of_gpu_cache_entry_issue.md) explains
+- [`num_of_gpu_cache_entry_issue.md`](docs/design/num_of_gpu_cache_entry_issue.md) explains
   why logical frame count and GPU cache capacity are independent.
-- [`unordered_map_vs_fixed_open_addressing.md`](unordered_map_vs_fixed_open_addressing.md)
+- [`unordered_map_vs_fixed_open_addressing.md`](docs/design/unordered_map_vs_fixed_open_addressing.md)
   compares the two resident-key index implementations for N=1024, S=300, and
   K=150.
-- [`open_issues.md`](open_issues.md) records real-framework integration and
+- [`open_issues.md`](docs/open_issues.md) records real-framework integration and
   future payload constraints.
-- [`gpuinfra_class_diagram.html`](gpuinfra_class_diagram.html) and
-  [`gpuinfra_resource_plot.html`](gpuinfra_resource_plot.html) visualize
+- [`gpuinfra_class_diagram.html`](docs/guides/gpuinfra_class_diagram.html) and
+  [`gpuinfra_resource_plot.html`](docs/guides/gpuinfra_resource_plot.html) visualize
   UML ownership, multiplicity, resources, and hit/fallback flow.
-- [`gpu_cache_explained.html`](gpu_cache_explained.html) gives the complete
+- [`gpu_cache_explained.html`](docs/guides/gpu_cache_explained.html) gives the complete
   incoming-frame walkthrough for K, residency slots, global LRU, cache
   hit/fill/fallback, and allocation lifetime.
 
@@ -281,10 +281,11 @@ bool succeeded = access.freeCacheData(submittedSuccessfully);
 
 Independent `GpuCacheManager` instances may cache different fixed payload
 sizes with separate capacities, indexes, and LRU lists. A frame cache and a
-result cache may use the same key without sharing entries. Each live payload
-needs fallback storage that will not be overwritten by another live request;
-using the same task input buffer for simultaneous frame and result fallback
-is unsafe. Each request receives its own `GpuDataAccess`, including concurrent
+result cache may use the same key without sharing entries. Payloads whose GPU usage overlaps need non-overlapping fallback storage.
+A caller may reuse one fallback allocation across outstanding leases only
+when every read of the previous contents is ordered before the next overwrite
+on the same stream. The old payload must not be read after that overwrite;
+this exception never permits overwriting cache-owned data. Each request receives its own `GpuDataAccess`, including concurrent
 readers of the same key on different task streams.
 
 Fill publication occurs only in `freeCacheData()` after successful stream
@@ -294,11 +295,101 @@ all work on the returned stream, no extra H2D event is required. Each access
 finishes independently; finishing two accesses on one stream currently causes
 two synchronization calls and is not an atomic multi-cache publication.
 
+For GpuI2I integration, the caller should preallocate one master and one
+reference fallback buffer in load(), and release them in unload(). Keep the
+master while comparisons need it; reuse the reference buffer between ordered
+runRef() operations under the rule above. Special paths that retain older
+references must be checked before assuming two buffers suffice. Buffer roles
+stay in the caller. See [the integration contract](docs/integration/old_vs_new.md#53-caller-owned-masterreference-fallback-buffers).
+This is a production integration plan; the demo still has one input buffer.
+
+Batch completion is a [future profiling-driven improvement](docs/open_issues.md#batch-completion-backlog),
+not an integration requirement. Keep per-access completion until measurements
+show that repeated synchronization calls materially limit throughput.
+
 The demo still uses one frame cache in `StaticData`; it does not automatically
 cache CEL/SDD/MI outputs. A result-cache caller must define versioned identity
 or reset at parameter changes and be able to recreate evicted data. The
 existing frame-shaped metadata and immutable, best-effort eviction contract
 remain in place.
+
+## Shared static GPU data
+
+`StaticData` owns `StaticGpuData`: separate detection-zone and distortion-table
+allocations, each configured in bytes. They are ordinary device buffers, not
+CUDA `__constant__` memory. They do not participate in LRU or frame-cache reset,
+and work with `gpuCacheEntries = 0`.
+
+The graph-copy owner prepares them once on the cold path:
+
+```cpp
+StaticDataConfig config;
+config.runtime = runtime;
+config.detectionZoneBytes = detectionZoneBytes;
+config.distortionBytes = distortionBytes;
+bool succeeded = staticData.init(config);
+if (succeeded) {
+    succeeded = staticData.uploadStaticData(StaticGpuDataType::DetectionZones, h_zones, detectionZoneBytes, 0);
+}
+if (succeeded) {
+    succeeded = staticData.uploadStaticData(StaticGpuDataType::DistortionTables, h_tables, distortionBytes, 0);
+}
+if (succeeded) {
+    succeeded = staticData.finalizeStaticData();
+}
+if (!succeeded) {
+    staticData.release();
+    return false;
+}
+const void* d_zones = staticData.staticGpuData(StaticGpuDataType::DetectionZones);
+```
+
+This example enables both regions. A zero-byte region is disabled: no allocation,
+a null data pointer, and uploads to it are rejected. If both regions are disabled,
+`init()` finalizes automatically, preserving the existing frame-only lifecycle;
+otherwise call `finalizeStaticData()` explicitly. `isInitialized()` means resources
+were initialized, while `execute()` also requires static data to be Ready.
+
+Initialization enqueues zeroing on a private nonblocking upload stream. Each
+`uploadStaticData(type, source, bytes, offset)` accepts a nonzero in-bounds segment
+and synchronizes before returning, so pinned staging storage may immediately be
+reused or freed. The caller computes alignment, table indexes, formats and offsets;
+the owner checks byte bounds without overflowing. Unwritten gaps remain zero.
+The caller must verify that all algorithm-required data has been supplied; the
+owner does not track coverage or interpret zero bytes as missing data.
+
+`finalizeStaticData()` waits for remaining preparation and publishes read-only
+pointers. Before finalization, pointers are hidden and execution/cache requests
+are rejected. Any invalid or failed upload during preparation makes the attempt
+Failed: further uploads and finalization fail until release/reinitialization.
+After Ready, uploads are rejected without modifying the published state.
+Allocation failures abort initialization with no automatic fallback.
+
+The framework must serialize initialization/uploads/finalization and ensure no
+execute or outstanding GPU reads overlap release/reinitialization. There are no
+static reader leases or runtime reader tracking. Multiple task streams may read
+Ready buffers after the cold-path handoff. A frame-cache reset preserves their
+addresses and contents. Changing static data requires releasing and reinitializing
+the owner at a quiescent boundary; no in-place Ready updates are supported.
+Normal `StaticData::release()` releases these buffers and their upload stream
+after cache users finish and before GPU contexts are torn down.
+
+The demo leaves both capacities zero; production GpuI2I must supply the real
+payloads and cold-path calls. Protocol tests exercise enabled regions.
+
+## Cache statistics
+
+Each manager provides `statisticsSnapshot()` and
+`resetCache(CacheStatistics* completedStatistics = nullptr)`.
+StaticData forwards them as `cacheStatisticsSnapshot()` and `resetCache()`.
+A successful reset returns and clears the previous interval; a rejected reset
+preserves both counters and the output argument.
+
+Counters cover final hit/fill/fallback/invalid, fill success/failure, eviction,
+first obstruction, fallback reasons, and actual condition-variable wait time.
+The demo caller prints a labeled warmup+timed report after execution. See
+[statistics definitions and legacy A/B mapping](docs/cache_statistics.md) before
+comparing legacy skip counts with final fallback outcomes.
 
 ## Bounded cache waiting
 
@@ -400,7 +491,7 @@ fallback input VRAM = task instances × frame bytes
 
 CPU atoms, logical results, task scratch, and algorithm-private resources keep
 their own lifetimes. See
-[`gpu_mem_consumption.md`](gpu_mem_consumption.md) for the three summary
+[`gpu_mem_consumption.md`](docs/design/gpu_mem_consumption.md) for the three summary
 formulas.
 
 The current cache is correct only for immutable input reproducible from the CPU
@@ -444,30 +535,54 @@ checked when the hardware supports it.
 ## Source layout
 
 ```text
-src/
-  Algo/
-    IAlgo.h               algorithm contract and shared result types
-    Cel.*, Sdd.*, Mi.*    synthetic CUDA algorithms
-  DataCache/
-    GpuDataKey.h          frame/camera cache identity
-    GpuCacheManager.*     bounded cache lookup, LRU, leases, fallback choice
-    GpuCacheEntry.*       reusable entry with persistent per-GPU replicas
-    GpuDataAccess.*       explicit status, borrowed stream, scoped lease completion
-    GpuCacheRequest.h     caller GPU, stream, fallback pointer and capacity
-    GpuResidencyTable.*   fixed open-addressing resident-key index
-  Grape/
-    README.md             immutable graph-simulation boundary rules
-    DummyGraph.*          NUMA graph copy and unchanged scheduler selection
-    NumaExecutor.*        framework CPU-affinity and callback dispatch boundary
-    FrameCpuAtom.*        CPU bytes, metadata, and preallocated result
-    GraphTypes.h          simulated graph-owned execution types
-  DummyTask.*             task lifecycle and CEL/SDD/MI execution
-  ParameterRegistry.*     sealed schema, mutable values, and revisions
-  StaticData.*            graph-copy layout/reset/cache owner
-  TaskGpuResources.h      task CUDA lane including fallback d_input
-  GpuContextManager.*     GPU discovery, NUMA lookup, task registration
-  GpuTopology.*           current NUMA detection and unique local GPU selection
-  WorkloadSizing.h        independent H2D/D2H/compute compile-time controls
-tests/
-  gpuinfra_tests.cpp      protocol and CUDA integration tests
+src/                       reusable gpuinfra library
+  Context/                 discovery, primary contexts and NUMA lookup
+  DataCache/               cache entries, leases, statistics and residency index
+  StaticData/              graph-copy cache owner and read-only GPU regions
+  Types/                   runtime layout, frame metadata and task GPU resources
+  CudaCheck.h              public Runtime/Driver/cuFFT diagnostics API
+  GpuDiagnostics.cpp       diagnostic implementation
+  Nvtx.h                   optional profiling macros
+demo/                      gpuinfra_demo_support library and demo executable
+  Algo/                    IAlgo and synthetic CEL/SDD/MI algorithms
+  Grape/                   simulated framework, scheduler and NUMA executor
+  DummyTask.*              example caller lifecycle
+  ParameterRegistry.*      simulated parameter delivery
+  ImageSizing.h            synthetic image dimensions
+  WorkloadSizing.h         demo-only workload multipliers
+  main.cpp                 simulation entry point
+tests/                     one test runner, split by responsibility
+  gpuinfra_tests.cpp        test invocation and infrastructure lifetime
+  cache_tests.cpp          leases, waits, fallback, LRU and statistics
+  static_data_tests.cpp    layout validation and read-only GPU data
+  diagnostics_tests.cpp    logger and cuFFT integration
+  graph_tests.cpp          task/framework lifecycle and NUMA boundaries
+  test_support.*           shared fixtures and declarations
+docs/                      documentation index and current contracts
+  integration/             legacy behavior and migration comparison
+  design/                  design rationale and capacity analysis
+  guides/                  standalone visual HTML guides
+  archive/                 historical plans (not current API contracts)
+tools/                     benchmark and NVTX collection/summary scripts
+results/                   retained benchmark and profiling artifacts
 ```
+
+Link production callers to `gpuinfra`; its public include root is `src/`.
+For example, include `CudaCheck.h`, `Context/GpuContextManager.h`, or
+`DataCache/GpuCacheManager.h`. The core does not include demo headers.
+`gpuinfra_demo_support` links the core and adds the `demo/` include root and
+synthetic workload definitions. Tests and `gpuinfra_demo` link this support target.
+See the [documentation index](docs/README.md) for reading order.
+
+## Optional NVTX profiling
+
+Build with `-DGPUINFRA_ENABLE_NVTX=ON` to enable fixed-name RAII ranges.
+The default OFF build excludes NVTX and does not evaluate annotation arguments.
+See [profiling instructions and recorded traces](docs/profiling.md) for
+CUDA + NVTX collection, phase-separated summaries and interpretation limits.
+
+## GPU error diagnostics
+
+Include `CudaCheck.h` for CUDA Runtime/Driver/cuFFT checks and diagnostic scopes.
+See [CUDA logger usage and output examples](docs/cuda_logging.md) for the unified
+logger, explicit caller information, error handling and field definitions.
