@@ -1,5 +1,8 @@
 #include "test_support.h"
 
+#include <type_traits>
+#include <utility>
+
 namespace gpuinfra_tests {
 
 void testGpuResidencyTable(TestContext& test) {
@@ -124,6 +127,86 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
     }
     test.expect(zeroCapacityCache.release(), "release zero-capacity cache");
     test.expect(releaseAccessResources(resources), "release frame cache test resources");
+}
+
+void testGpuDataAccessMoves(TestContext& test, const GpuLocation& location) {
+    static_assert(!std::is_copy_constructible<GpuDataAccess>::value, "leases must not be copied");
+    static_assert(!std::is_copy_assignable<GpuDataAccess>::value, "leases must not be copy assigned");
+    static_assert(std::is_nothrow_move_constructible<GpuDataAccess>::value, "lease transfer must not throw");
+    static_assert(std::is_nothrow_move_assignable<GpuDataAccess>::value, "lease assignment must not throw");
+    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    const FrameMetadata metadata = makeFrameMetadata(70, runtime);
+    const FrameMetadata otherMetadata = makeFrameMetadata(71, runtime);
+    TaskGpuResources resources;
+    GpuCacheManager cache;
+    GpuCacheManager fallbackCache;
+    const bool initialized = initializeAccessResources(resources, location, runtime.inBytes) && cache.initialize({location.gpuId}, runtime.inBytes, 1, std::chrono::milliseconds(0)) && fallbackCache.initialize({location.gpuId}, runtime.inBytes, 0);
+    test.expect(initialized, "initialize move test resources");
+    if (!initialized) {
+        cache.release();
+        fallbackCache.release();
+        releaseAccessResources(resources);
+        return;
+    }
+    const GpuCacheRequest request = makeCacheRequest(resources);
+    std::array<GpuDataAccess, 2> saved;
+    const void* originalData = nullptr;
+    {
+        GpuDataAccess source = cache.getCacheData(metadata, request);
+        originalData = source.data();
+        const bool submitted = cudaMemsetAsync(source.writableData(), 0x35, source.bytes(), source.getStream()) == cudaSuccess;
+        test.expect(submitted, "enqueue fill before moving lease");
+        GpuDataAccess transferred(std::move(source));
+        test.expect(!source && source.status() == CacheStatus::Invalid && source.data() == nullptr && source.writableData() == nullptr && source.getStream() == nullptr && source.bytes() == 0 && source.gpuId() == -1, "move construction fully invalidates source");
+        test.expect(!source.freeCacheData(true), "moved-from lease cannot complete transferred fill");
+        saved[0] = std::move(transferred);
+        test.expect(!transferred && saved[0].status() == CacheStatus::CacheFill && saved[0].data() == originalData && saved[0].getStream() == request.stream && saved[0].bytes() == runtime.inBytes && saved[0].gpuId() == location.gpuId, "store transferred fill in a preallocated member slot");
+    }
+    test.expect(!cache.resetCache() && !cache.release(), "source destructors do not release the saved lease");
+    {
+        GpuDataAccess sameKey = cache.getCacheData(metadata, request);
+        GpuDataAccess otherKey = cache.getCacheData(otherMetadata, request);
+        test.expect(sameKey.status() == CacheStatus::TaskFallback && otherKey.status() == CacheStatus::TaskFallback, "move neither publishes nor makes the fill evictable");
+        test.expect(sameKey.freeCacheData(true) && otherKey.freeCacheData(true), "finish move test fallback requests");
+    }
+    GpuDataAccess& self = saved[0];
+    saved[0] = std::move(self);
+    test.expect(saved[0].data() == originalData && saved[0].status() == CacheStatus::CacheFill, "self-move preserves the live lease");
+    test.expect(saved[0].freeCacheData(true), "saved fill publishes exactly once");
+    test.expect(!saved[0].freeCacheData(true), "completed moved lease rejects duplicate completion");
+    saved[0] = cache.getCacheData(metadata, request);
+    saved[1] = std::move(saved[0]);
+    test.expect(saved[1].status() == CacheStatus::CacheHit && saved[1].data() == originalData && saved[1].writableData() == nullptr, "moved hit remains read-only");
+    test.expect(!cache.resetCache(), "moved hit keeps reader protection");
+    unsigned char value = 0;
+    test.expect(cudaMemcpyAsync(&value, saved[1].data(), 1, cudaMemcpyDeviceToHost, saved[1].getStream()) == cudaSuccess && saved[1].freeCacheData(true) && value == 0x35, "moved hit retains filled payload");
+
+    saved[0] = cache.getCacheData(otherMetadata, request);
+    test.expect(saved[0].status() == CacheStatus::CacheFill, "acquire destination fill to be replaced");
+    test.expect(cudaMemsetAsync(saved[0].writableData(), 0x46, saved[0].bytes(), saved[0].getStream()) == cudaSuccess, "submit work on replaced destination");
+    saved[0] = fallbackCache.getCacheData(metadata, request);
+    test.expect(saved[0].status() == CacheStatus::TaskFallback && saved[0].data() == resources.d_input, "assignment transfers fallback from another manager");
+    test.expect(cache.statisticsSnapshot().fillFailed == 1, "overwriting a live destination aborts instead of publishing its fill");
+    {
+        GpuDataAccess retry = cache.getCacheData(otherMetadata, request);
+        test.expect(retry.status() == CacheStatus::CacheFill, "overwritten fill can be retried");
+    }
+    test.expect(cache.release(), "old manager has no orphaned lease after cross-manager assignment");
+    saved[1] = fallbackCache.getCacheData(otherMetadata, request);
+    saved[1] = std::move(saved[0]);
+    test.expect(!saved[0] && !fallbackCache.resetCache() && !fallbackCache.release(), "replacing a fallback decrements only the old lease");
+    saved[1] = GpuDataAccess();
+    test.expect(fallbackCache.resetCache(), "assignment from Invalid aborts the final fallback lease");
+    {
+        GpuDataAccess abandoned;
+        {
+            GpuDataAccess source = fallbackCache.getCacheData(metadata, request);
+            abandoned = std::move(source);
+        }
+        test.expect(!fallbackCache.release(), "moved fallback remains active beyond source scope");
+    }
+    test.expect(fallbackCache.release(), "moved destination destructor releases fallback once");
+    test.expect(releaseAccessResources(resources), "release move test resources");
 }
 
 void testIndependentPayloadCaches(TestContext& test, const GpuLocation& location, std::size_t capacity) {

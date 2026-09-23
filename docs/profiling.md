@@ -43,6 +43,12 @@ lexically enclose worker ranges on other threads.
 ## Reproduce collection
 
 Use a new output directory for each capture; the script refuses to overwrite it.
+The collector passes an explicit environment allowlist to Nsight and its child;
+ambient access tokens are not passed through that child environment. Nsight can
+still capture environment information from other processes: the allowlist does
+not sanitize a report. New captures use owner-only permissions. Raw artifacts
+remain local-only. Enable the repository commit/push hooks as described in
+[recorded results](../results/README.md).
 
 ```sh
 python3 tools/collect_nvtx.py --output results/profiling/my-capture
@@ -64,9 +70,9 @@ CacheStatistics log intervals cover warmup+timed, independently of phase summari
 
 ## Recorded capture
 
-[2026-09-20 summary](../results/profiling/20260920-nvtx/SUMMARY.md), with
-[batched trace](../results/profiling/20260920-nvtx/batched.nsys-rep) and
-[interleaved trace](../results/profiling/20260920-nvtx/interleaved.nsys-rep).
+[2026-09-20 summary](../results/profiling/20260920-nvtx/SUMMARY.md).
+Raw batched/interleaved traces and SQLite exports are local-only because they
+can contain credentials from the captured environment.
 
 - RTX 3080; driver 595.84; Nsight Systems 2025.5.2.
 - RelWithDebInfo, CUDA architecture 86, NVTX ON.

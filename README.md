@@ -57,6 +57,12 @@ a hit. Because the current input is immutable, a miss re-uploads from
   incoming-frame walkthrough for K, residency slots, global LRU, cache
   hit/fill/fallback, and allocation lifetime.
 
+## Local commit and push protection
+
+Run `git config core.hooksPath .githooks` once in each clone. The hooks reject raw
+profiler files and recognizable credentials in staged content and outgoing
+history. See [artifact handling](results/README.md). Raw captures stay local.
+
 ## Requirements
 
 - Linux NUMA topology under `/sys/devices/system/node`
@@ -128,6 +134,11 @@ These multipliers change transfer traffic and compute work without changing
 function APIs, allocation sizes, image dimensions, or result contents. H2D is
 still skipped on a cache hit. The defaults reproduce the previous one H2D,
 one D2H, and three compute repetitions.
+
+For AOI integration, `-DGPUINFRA_BUILD_DEMO=OFF` builds only the C++17 host
+core, without enabling CUDA-language compilation or building demo tests.
+See [toolchain compatibility](docs/toolchain_compatibility.md) for toolkit
+selection, optional cuFFT enum detection and the remaining production matrix.
 
 ## Runtime topology
 
@@ -229,6 +240,38 @@ collections own execution state and the owning `FrameCpuAtom` carries its data
 and result.
 `GpuCacheEntry` is only a reusable best-effort GPU cache entry. It may represent
 different logical frames over time while retaining the same device allocation.
+
+### Keeping an access across caller methods
+
+`GpuDataAccess` is movable and non-copyable. A caller can preallocate member
+slots such as `GpuDataAccess masterAccess;` and
+`std::array<GpuDataAccess, 64> referenceAccesses;` during object construction.
+No GPU data is copied or allocated by a move.
+
+```cpp
+// loadMaster(): save the lease into an initially Invalid member.
+masterAccess = frameCache.getCacheData(metadata, request);
+// Handle Invalid / CacheHit / CacheFill / TaskFallback, including caller fill.
+
+// runRef(): use masterAccess.data() on masterAccess.getStream().
+// Keep the member alive while any queued work may read the pointer.
+
+// getDefects(): after submitting all consumers, finish and check the result.
+bool succeeded = masterAccess.freeCacheData(submittedSuccessfully);
+```
+
+Moving invalidates the source and transfers its existing reservation. It does
+not publish a fill or change the number of active leases. Destruction of a
+moved-from object does nothing. The manager, stream and fallback storage must
+outlive the destination, and moving is not a thread-synchronization mechanism.
+
+Move assignment to an already active member synchronizes and aborts the old
+lease using the same safety path as destruction, then takes the new lease.
+An unfinished old fill is rolled back, not published; cleanup errors are logged.
+Normal code should explicitly call `freeCacheData()` and check its result before
+reusing a member. In `member = cache.getCacheData(...)`, lookup happens before
+assignment cleans up the old member, so explicit completion also avoids waiting
+on one's own old lease. Self-move leaves the access unchanged.
 
 ## Cache access
 

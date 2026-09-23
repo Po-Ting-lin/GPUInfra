@@ -163,6 +163,14 @@ lease must finish separately, including leases borrowing the same allocation.
 Reset/release remain blocked until all accesses and waiting requests finish.
 The caller owns the allocation and keeps it alive through synchronization.
 
+`GpuDataAccess` now supports move construction and assignment while remaining
+non-copyable. Store master/reference accesses in caller-owned member slots
+across loadMaster/runRef/getDefects. A move preserves the existing lease and
+invalidates its source; finish each saved access explicitly. Assignment over a
+live access aborts its previous lease through synchronized RAII cleanup, so it
+must not replace normal success completion. Keep managers and CUDA resources
+alive until all saved accesses finish.
+
 ### 5.4 Backlog: complete multiple accesses with one synchronization
 
 Keep the current per-access freeCacheData() API for initial integration.

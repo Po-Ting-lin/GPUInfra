@@ -72,13 +72,18 @@ public:
 
     GpuDataAccess(const GpuDataAccess&) = delete;
     GpuDataAccess& operator=(const GpuDataAccess&) = delete;
-    GpuDataAccess(GpuDataAccess&&) = delete;
-    GpuDataAccess& operator=(GpuDataAccess&&) = delete;
+    // Transfer the lease without copying GPU data or publishing a fill.
+    // The source becomes Invalid. Assignment aborts any unfinished destination
+    // lease first (including stream synchronization); self-move is a no-op.
+    GpuDataAccess(GpuDataAccess&& other) noexcept;
+    GpuDataAccess& operator=(GpuDataAccess&& other) noexcept;
 
 private:
     friend class GpuCacheManager;
 
     GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, CacheStatus accessStatus);
+    void abortUnfinishedAccess() noexcept;
+    void takeAccess(GpuDataAccess& other) noexcept;
     void reset();
 
     GpuCacheManager* owner = nullptr;

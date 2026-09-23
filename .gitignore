@@ -1,10 +1,14 @@
 /build/
 /cmake-build-*/
 
-# New raw captures are local; preserve the recorded reference capture.
-/results/profiling/**/*.nsys-rep
-/results/profiling/**/*.sqlite
-!/results/profiling/20260920-nvtx/*.nsys-rep
-!/results/profiling/20260920-nvtx/*.sqlite
-__pycache__/
+# Raw profiler artifacts may embed environment credentials. Never commit them.
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
 *.nsys-rep
+*.qdrep
+*.qdstrm
+__pycache__/

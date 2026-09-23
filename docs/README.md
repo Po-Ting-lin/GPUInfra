@@ -4,12 +4,15 @@ Current implementation and integration contracts:
 
 - [Architecture](architecture.md): ownership and lifecycle.
 - [Graph golden rules](graph.md): NUMA affinity and framework callbacks.
+- [Toolchain compatibility](toolchain_compatibility.md): core-only builds and validation limits.
 - [CUDA logging](cuda_logging.md): checks, caller context and output examples.
 - [Cache statistics](cache_statistics.md): counters and A/B interpretation.
 - [NVTX profiling](profiling.md): build, collection and recorded results.
 - [Open issues](open_issues.md): integration work and future improvements.
 
 Integration references:
+
+- [AOI source review questions](integration/aoi_source_review_questions.md): pending integration evidence and caller mapping.
 
 - [Legacy versus current infrastructure](integration/old_vs_new.md).
 - [Legacy constant GPU memory usage](integration/legacy_constant_gpu_memory_usage.md).

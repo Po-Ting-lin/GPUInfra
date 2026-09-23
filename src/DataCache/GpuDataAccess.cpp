@@ -15,7 +15,35 @@ GpuDataAccess::GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std
       deviceId(gpuId),
       accessStatus(status) {}
 
+GpuDataAccess::GpuDataAccess(GpuDataAccess&& other) noexcept {
+    takeAccess(other);
+}
+
+GpuDataAccess& GpuDataAccess::operator=(GpuDataAccess&& other) noexcept {
+    if (this != &other) {
+        abortUnfinishedAccess();
+        takeAccess(other);
+    }
+    return *this;
+}
+
+void GpuDataAccess::takeAccess(GpuDataAccess& other) noexcept {
+    owner = other.owner;
+    d_data = other.d_data;
+    dataBytes = other.dataBytes;
+    entryIndex = other.entryIndex;
+    dataKey = other.dataKey;
+    stream = other.stream;
+    deviceId = other.deviceId;
+    accessStatus = other.accessStatus;
+    other.reset();
+}
+
 GpuDataAccess::~GpuDataAccess() {
+    abortUnfinishedAccess();
+}
+
+void GpuDataAccess::abortUnfinishedAccess() noexcept {
     if (owner == nullptr) {
         return;
     }
