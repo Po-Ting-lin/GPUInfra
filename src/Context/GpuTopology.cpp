@@ -2,9 +2,49 @@
 
 #include <cstdio>
 #include <limits>
+#include <sstream>
 
 #include <sys/syscall.h>
 #include <unistd.h>
+
+namespace {
+
+int singleOnlineNode(const std::string& onlineNodes) {
+    std::istringstream input(onlineNodes);
+    input >> std::ws;
+    if (input.peek() < '0' || input.peek() > '9') {
+        return -1;
+    }
+    int first = -1;
+    if (!(input >> first)) {
+        return -1;
+    }
+    if (input.peek() == '-') {
+        input.get();
+        if (input.peek() < '0' || input.peek() > '9') {
+            return -1;
+        }
+        int last = -1;
+        if (!(input >> last) || last != first) {
+            return -1;
+        }
+    }
+    input >> std::ws;
+    return input.eof() ? first : -1;
+}
+
+}  // namespace
+
+int GpuTopology::resolveGpuNumaNode(int reportedNode, const std::string& onlineNodes, bool requireNuma) {
+    if (reportedNode >= 0) {
+        return reportedNode;
+    }
+    const int onlyNode = singleOnlineNode(onlineNodes);
+    if (onlyNode >= 0) {
+        return onlyNode;
+    }
+    return requireNuma ? -1 : 0;
+}
 
 int GpuTopology::currentNumaNode() {
     unsigned int node = 0;

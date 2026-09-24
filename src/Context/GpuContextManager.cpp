@@ -3,6 +3,8 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <mutex>
 #include <new>
 #include <string>
@@ -44,8 +46,7 @@ int probeNumaNodeOfGpu(int gpuId) {
     if (!readOk) {
         return -1;
     }
-    // A sysfs value of -1 is normal on a single-node workstation.
-    return node < 0 ? 0 : node;
+    return node;
 }
 
 GpuContext* findGpu(const std::vector<GpuContext*>& availableContexts, int gpuId) {
@@ -93,13 +94,26 @@ bool GpuContextManager::init(const GpuInfraConfig& requestedConfig) { // Open Is
     contexts.clear();
 
     for (int gpu = 0; gpu < deviceCount; ++gpu) {
-        int node = probeNumaNodeOfGpu(gpu); // Map GPU to NUMA node. Save info into contexts.
-        if (node < 0 && !requestedConfig.requireNuma) {
-            node = 0;
-        }
-        if (node < 0) {
-            releaseContexts(contexts);
-            return false;
+        const int reportedNode = probeNumaNodeOfGpu(gpu);
+        int node = reportedNode;
+        if (reportedNode < 0) {
+            // Read the host topology, not a task's restricted affinity/cpuset.
+            std::ifstream onlineFile("/sys/devices/system/node/online");
+            std::string onlineNodes;
+            if (onlineFile.is_open()) {
+                onlineNodes.assign(std::istreambuf_iterator<char>(onlineFile), std::istreambuf_iterator<char>());
+                if (onlineFile.bad()) {
+                    onlineNodes.clear();
+                }
+            }
+            node = GpuTopology::resolveGpuNumaNode(reportedNode, onlineNodes, requestedConfig.requireNuma);
+            if (node < 0) {
+                std::fprintf(stderr, "[GPUInfra] cannot resolve GPU NUMA placement gpu=%d reported_node=%d; strict mode requires known PCI placement or exactly one online NUMA node\n", gpu, reportedNode);
+                releaseContexts(contexts);
+                return false;
+            }
+            const bool inferred = GpuTopology::resolveGpuNumaNode(reportedNode, onlineNodes, true) >= 0;
+            std::fprintf(stderr, "[GPUInfra] GPU NUMA placement gpu=%d reported_node=%d resolved_node=%d source=%s\n", gpu, reportedNode, node, inferred ? "single-online-node" : "explicit-nonstrict-node0-fallback");
         }
 
         CUDA_CHECK(cudaSetDevice(gpu), {

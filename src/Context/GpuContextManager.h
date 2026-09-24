@@ -10,6 +10,8 @@
 class GpuContext;
 
 struct GpuInfraConfig {
+    // Unknown PCI placement is accepted only with one confirmed online node.
+    // false explicitly allows node 0 fallback when topology is inconclusive.
     bool requireNuma = true;
 };
 

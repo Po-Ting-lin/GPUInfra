@@ -156,7 +156,12 @@ and tests. Individual callbacks and `GpuContextManager` do not set affinity.
 `GpuContext` is the authoritative GPU-to-NUMA mapping. During `load()`, a task
 observes its current NUMA node and asks `GpuContextManager` for the local GPU.
 Zero or multiple GPUs on that node are errors; no arbitrary first GPU is
-selected. The selected GPU is stored in `TaskGpuResources`, not supplied to
+selected. Unknown PCI NUMA placement is inferred only when the system-wide
+`/sys/devices/system/node/online` list identifies exactly one node (which need
+not be node 0). With the default `requireNuma=true`, ambiguous, missing or
+malformed fallback topology fails initialization. Explicit `requireNuma=false`
+retains a logged node-0 fallback; it is not the production golden-rule setting.
+The selected GPU is stored in `TaskGpuResources`, not supplied to
 the task constructor. `StaticData::init()` uses the same NUMA lookup policy.
 `DummyGraph` resolves its GPU list inside the execution environment before
 allocating tasks and retains `taskInstancesPerGpu * gpuIds.size()` and the
