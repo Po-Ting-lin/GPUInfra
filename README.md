@@ -606,6 +606,7 @@ demo/                      gpuinfra_demo_support library and demo executable
 tests/                     one test runner, split by responsibility
   gpuinfra_tests.cpp        test invocation and infrastructure lifetime
   cache_tests.cpp          leases, waits, fallback, LRU and statistics
+  result_cache_tests.cpp   D2D result handoff and CPU-backed miss recovery
   static_data_tests.cpp    layout validation and read-only GPU data
   diagnostics_tests.cpp    logger and cuFFT integration
   graph_tests.cpp          task/framework lifecycle and NUMA boundaries

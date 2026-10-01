@@ -143,6 +143,7 @@ if(BUILD_TESTING AND GPUINFRA_BUILD_DEMO)
         tests/gpuinfra_tests.cpp
         tests/test_support.cpp
         tests/cache_tests.cpp
+        tests/result_cache_tests.cpp
         tests/static_data_tests.cpp
         tests/diagnostics_tests.cpp
         tests/graph_tests.cpp

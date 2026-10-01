@@ -31,6 +31,7 @@ int main() {
         testGpuDataAccessMoves(test, locations.front());
         testIndependentPayloadCaches(test, locations.front(), 0);
         testIndependentPayloadCaches(test, locations.front(), 1);
+        testGpuResultCacheHandoff(test, locations.front());
         testConcurrentCacheRequests(test, locations.front());
         for (int scenario = 0; scenario < 4; ++scenario) {
             testCacheWaitWakeup(test, locations.front(), scenario);

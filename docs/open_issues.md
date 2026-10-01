@@ -76,6 +76,69 @@ Payload variant 已加入 key；AOI graph owner 的一致 ID 對應仍待接線�
 每個 manager 仍使用固定 entry size；mutable 或不可重建的 GPU intermediate
 仍需另外定義 ownership 與 eviction lifetime。
 
+## Graph task result handoff by dataId backlog
+
+狀態：設計方向已確認，尚未實作。Task A 決定結果的唯一 `dataId`，透過
+graph atom 傳給 Task B；兩者查詢同一個 graph-copy result cache。
+未來研究以通用 `dataId` 表達結果身分，目前 `GpuDataKey` 尚未改成此介面。
+
+CPU atom 持有正式結果與 metadata，GPU cache 用來減少下游 task 的 H2D。
+Task A 必須將 GPU 結果 **D2H（GPU → CPU）** 保存到 atom，不能只保存
+cache key 或 device pointer。即使 A 因 cache 滿載而使用自己的 fallback
+buffer 產生結果，也必須保留這份 CPU 正式資料。
+
+```text
+Task A：演算法照常寫入私有 GPU output
+  → CacheFill 時，D2D 複製私有 output 到 result cache
+  → D2H 將私有 output 保存到 CPU atom
+  → 成功完成 access，若是 CacheFill 則發布結果
+  → graph atom 帶著 dataId、CPU 結果與 metadata 交給 Task B
+
+Task B：以 dataId 查詢同一個 result cache
+  CacheHit     → 直接讀取 GPU 結果
+  CacheFill    → 從 CPU atom H2D 到 cache，再使用並完成 access
+  TaskFallback → 從 CPU atom H2D 到自己的 buffer，再使用並完成 access
+  Invalid      → 報錯，不提交使用無效 pointer 的工作
+```
+
+第一階段採用 **D2D 方案**：保持演算法既有的 private output 與 kernel
+輸出介面，由 Task A caller 在同一 stream 提交 D2D 到 cache，並沿用 D2H
+保存 CPU 正式副本。若取得 TaskFallback，可複製到 caller fallback；若現有
+private output 可合法直接作為 request fallback，則不需要 self-copy。
+兩種情況都必須完成 D2H，並在成功 completion 後才讓 B 執行。
+Private output 保留到其 D2D／D2H 都完成後才能重用；不提早發布 Fill。
+需另外量測 D2D bytes／成本；直接寫入 cache 的演算法介面暫不實作。
+
+目前已有 `testGpuResultCacheHandoff` 驗證固定 64-byte 模擬 GPU 結果：
+A 的 private output D2D 到 cache／D2H 到 test atom，B 在不同 stream 命中、
+entry 淘汰後從 CPU atom 重新 H2D、滿載 fallback，以及 A 自身 fallback 後
+B 仍能恢復結果。測試使用 K=1、waitTimeout=0，暫將 dataId 放入既有
+frameId 欄位；並未完成 generic key／metadata、實際演算法或 graph 接線。
+
+必須保留的契約：
+
+- `dataId` 在該 result manager 的有效生命週期內不撞號；多個 Task A
+  instances 共用一致的分配規則，不可各自從相同計數起點獨立產生 ID。
+- 相同 ID 永遠代表同一份 immutable 結果。演算法、參數或輸入改變而使
+  結果不同時換 ID；如需重用 ID，先在 quiescent boundary 清除舊 entries
+  並結束所有舊 requests／leases。不可讓計數器溢位後靜默重用 ID。
+- 若每次 execution 都產生新 ID，能支援 A→B 的結果共用，但不會命中
+  以前等價 execution 的結果。跨 execution 重用需要另定結果身分對應。
+- Graph 只有在 A 的 D2H 與正常 access completion 成功後才讓 B 使用；
+  A 失敗時傳播失敗，不發布成功 atom，也不把尚未完成的 Fill 交給 B。
+- Atom 的 CPU storage 保留到所有下游 consumers 與其 H2D 都已完成，
+  包含 fan-out 與取消／失敗清理；cache eviction 不影響 CPU 正式資料。
+- B 仍持有自己的 reader／fill／fallback lease 到 GPU consumers 完成，
+  不把 atom 中的 dataId 當成持續 pin 住 cache entry 的保證。
+- Metadata 描述實際結果 bytes、layout 與型別。固定大小 result manager
+  可先獨立整合；可變大小結果的有效長度與 allocation 契約另與下方
+  memory pool backlog 一起設計。
+
+實作需涵蓋多 producer IDs、fan-out readers、A 使用 fallback、A→B 之間
+entry 被淘汰、B 重新填入／fallback、D2H／H2D 失敗、取消及 ID 重用。
+量測 CPU 正式副本的容量與 A 的 D2H 成本，以及 B 命中節省的 H2D bytes
+與 throughput；此設計不消除 A 的 D2H。
+
 ## Cache sizing 與觀測
 
 `GraphConfig::gpuCacheEntries` 目前預設 4，沒有 CLI option。正式 workload
