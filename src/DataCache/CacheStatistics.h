@@ -31,6 +31,7 @@ struct CacheStatistics {
     std::uint64_t fillSucceeded = 0;
     std::uint64_t fillFailed = 0;
     std::uint64_t eviction = 0;
+    std::uint64_t discard = 0;
     std::uint64_t firstBlockedLoading = 0;
     std::uint64_t firstBlockedFull = 0;
     CacheFallbackStatistics fallbackReasons;

@@ -12,10 +12,10 @@ GpuCacheManager::~GpuCacheManager() {
     release();
 }
 
-bool GpuCacheManager::initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount, std::chrono::milliseconds configuredWaitTimeout) {
+bool GpuCacheManager::initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount, std::chrono::milliseconds configuredWaitTimeout, CacheEvictionPolicy configuredEvictionPolicy) {
     {
         std::lock_guard<std::mutex> guard(lock);
-        if (initialized || releasing || !entries.empty() || !eligibleGpuIds.empty() || residencyTable.isInitialized() || !emptyEntries.empty() || leastRecentlyUsed != NO_ENTRY || mostRecentlyUsed != NO_ENTRY || gpuIds.size() != 1 || gpuIds.front() < 0 || bytes == 0 || configuredWaitTimeout.count() < 0) {
+        if (initialized || releasing || !entries.empty() || !eligibleGpuIds.empty() || residencyTable.isInitialized() || !emptyEntries.empty() || leastRecentlyUsed != NO_ENTRY || mostRecentlyUsed != NO_ENTRY || oldestFilled != NO_ENTRY || newestFilled != NO_ENTRY || gpuIds.size() != 1 || gpuIds.front() < 0 || bytes == 0 || configuredWaitTimeout.count() < 0 || (configuredEvictionPolicy != CacheEvictionPolicy::LRU && configuredEvictionPolicy != CacheEvictionPolicy::FIFO)) {
             return false;
         }
     }
@@ -45,7 +45,7 @@ bool GpuCacheManager::initialize(const std::vector<int>& gpuIds, std::size_t byt
     }
 
     std::lock_guard<std::mutex> guard(lock);
-    if (initialized || releasing || !entries.empty() || !eligibleGpuIds.empty() || residencyTable.isInitialized() || !emptyEntries.empty() || leastRecentlyUsed != NO_ENTRY || mostRecentlyUsed != NO_ENTRY) {
+    if (initialized || releasing || !entries.empty() || !eligibleGpuIds.empty() || residencyTable.isInitialized() || !emptyEntries.empty() || leastRecentlyUsed != NO_ENTRY || mostRecentlyUsed != NO_ENTRY || oldestFilled != NO_ENTRY || newestFilled != NO_ENTRY) {
         return false;
     }
     try {
@@ -59,6 +59,7 @@ bool GpuCacheManager::initialize(const std::vector<int>& gpuIds, std::size_t byt
     emptyEntries = std::move(newEmptyEntries);
     dataBytes = bytes;
     waitTimeout = configuredWaitTimeout;
+    evictionPolicy = configuredEvictionPolicy;
     activeFallbackAccesses = 0;
     statistics = CacheStatistics();
     initialized = true;
@@ -138,7 +139,7 @@ GpuDataAccess GpuCacheManager::getCacheData(const FrameMetadata& metadata, const
                 // fill here. In the current one-GPU scope, the caller handles fallback.
                 return makeFallbackAccess(metadata, request, CacheFallbackReason::ReplicaUnavailable);
             }
-            if ((entry.activeAccesses == 0 && !removeEvictableEntry(index)) || (entry.activeAccesses != 0 && entry.inEvictableList)) {
+            if ((evictionPolicy == CacheEvictionPolicy::FIFO && !entry.inFilledList) || (entry.activeAccesses == 0 && !removeEvictableEntry(index)) || (entry.activeAccesses != 0 && entry.inEvictableList)) {
                 ++statistics.invalid;
                 GPUINFRA_REPORT_FAILURE("inconsistent cache reader lease");
                 return GpuDataAccess();
@@ -203,6 +204,14 @@ GpuDataAccess GpuCacheManager::getCacheData(const FrameMetadata& metadata, const
             GPUINFRA_REPORT_FAILURE("failed residency insert");
             return GpuDataAccess();
         }
+        if (!wasEmpty && evictionPolicy == CacheEvictionPolicy::FIFO && !removeFilledEntry(candidateIndex)) {
+            residencyTable.erase(metadata.key, candidateIndex);
+            residencyTable.insert(candidate.metadata.key, candidateIndex);
+            restoreCandidate(candidateIndex, false);
+            ++statistics.invalid;
+            GPUINFRA_REPORT_FAILURE("failed FIFO candidate removal");
+            return GpuDataAccess();
+        }
 
         ++statistics.fill;
         if (!wasEmpty) {
@@ -212,6 +221,7 @@ GpuDataAccess GpuCacheManager::getCacheData(const FrameMetadata& metadata, const
         candidate.invalidateReplicas();
         candidate.cacheState = GpuCacheState::Loading;
         candidate.activeAccesses = 1;
+        candidate.discardWhenUnused = false;
         return GpuDataAccess(this, deviceData, dataBytes, candidateIndex, metadata.key, request.stream, request.gpuId, CacheStatus::CacheFill);
     }
 }
@@ -252,6 +262,8 @@ bool GpuCacheManager::release() {
         emptyEntries.clear();
         leastRecentlyUsed = NO_ENTRY;
         mostRecentlyUsed = NO_ENTRY;
+        oldestFilled = NO_ENTRY;
+        newestFilled = NO_ENTRY;
         dataBytes = 0;
         activeFallbackAccesses = 0;
         initialized = false;
@@ -320,6 +332,8 @@ void GpuCacheManager::resetEntriesLocked() {
     emptyEntries.clear();
     leastRecentlyUsed = NO_ENTRY;
     mostRecentlyUsed = NO_ENTRY;
+    oldestFilled = NO_ENTRY;
+    newestFilled = NO_ENTRY;
     for (std::size_t index = entries.size(); index > 0; --index) {
         GpuCacheEntry& entry = *entries[index - 1];
         entry.metadata = FrameMetadata();
@@ -329,6 +343,10 @@ void GpuCacheManager::resetEntriesLocked() {
         entry.previousEvictable = NO_ENTRY;
         entry.nextEvictable = NO_ENTRY;
         entry.inEvictableList = false;
+        entry.previousFilled = NO_ENTRY;
+        entry.nextFilled = NO_ENTRY;
+        entry.inFilledList = false;
+        entry.discardWhenUnused = false;
         emptyEntries.push_back(index - 1);
     }
 }
@@ -344,7 +362,18 @@ std::size_t GpuCacheManager::takeCandidate(bool& wasEmpty) {
         return NO_ENTRY;
     }
 
-    const std::size_t index = leastRecentlyUsed;
+    std::size_t index = leastRecentlyUsed;
+    if (evictionPolicy == CacheEvictionPolicy::FIFO) {
+        // Keep busy entries in FIFO order. Skip them only for this eviction;
+        // after their readers finish they retain their original fill age.
+        index = oldestFilled;
+        while (index != NO_ENTRY && entries[index]->activeAccesses != 0) {
+            index = entries[index]->nextFilled;
+        }
+        if (index == NO_ENTRY) {
+            return NO_ENTRY;
+        }
+    }
     if (!removeEvictableEntry(index)) {
         return NO_ENTRY;
     }
@@ -411,7 +440,71 @@ bool GpuCacheManager::removeEvictableEntry(std::size_t index) {
     return true;
 }
 
-bool GpuCacheManager::completeAccess(GpuDataAccess& access, bool succeeded) {
+bool GpuCacheManager::addFilledEntry(std::size_t index) {
+    if (evictionPolicy != CacheEvictionPolicy::FIFO) {
+        return true;
+    }
+    if (index >= entries.size() || entries[index] == nullptr) {
+        return false;
+    }
+
+    GpuCacheEntry& entry = *entries[index];
+    if (entry.cacheState != GpuCacheState::Valid || entry.activeAccesses != 0 || entry.inFilledList) {
+        return false;
+    }
+    entry.previousFilled = newestFilled;
+    entry.nextFilled = NO_ENTRY;
+    entry.inFilledList = true;
+    if (newestFilled != NO_ENTRY) {
+        entries[newestFilled]->nextFilled = index;
+    }
+    else {
+        oldestFilled = index;
+    }
+    newestFilled = index;
+    return true;
+}
+
+bool GpuCacheManager::removeFilledEntry(std::size_t index) {
+    if (index >= entries.size() || entries[index] == nullptr) {
+        return false;
+    }
+
+    GpuCacheEntry& entry = *entries[index];
+    if (!entry.inFilledList) {
+        return false;
+    }
+    if (entry.previousFilled != NO_ENTRY) {
+        entries[entry.previousFilled]->nextFilled = entry.nextFilled;
+    }
+    else {
+        oldestFilled = entry.nextFilled;
+    }
+    if (entry.nextFilled != NO_ENTRY) {
+        entries[entry.nextFilled]->previousFilled = entry.previousFilled;
+    }
+    else {
+        newestFilled = entry.previousFilled;
+    }
+    entry.previousFilled = NO_ENTRY;
+    entry.nextFilled = NO_ENTRY;
+    entry.inFilledList = false;
+    return true;
+}
+
+bool GpuCacheManager::releaseReaderEntry(GpuCacheEntry& entry, std::size_t index) {
+    if (entry.activeAccesses != 0) {
+        return true;
+    }
+    if (entry.discardWhenUnused) {
+        resetEntry(entry, index);
+        ++statistics.discard;
+        return true;
+    }
+    return addEvictableEntry(index);
+}
+
+bool GpuCacheManager::completeAccess(GpuDataAccess& access, bool succeeded, CacheRetention retention) {
     GPUINFRA_NVTX_SCOPE("Cache.publish_release");
     if (access.owner != this) {
         return false;
@@ -436,8 +529,9 @@ bool GpuCacheManager::completeAccess(GpuDataAccess& access, bool succeeded) {
     if (access.accessStatus == CacheStatus::CacheHit) {
         valid = valid && entry->cacheState == GpuCacheState::Valid && entry->activeAccesses > 0 && !entry->inEvictableList && entry->replicaValid(access.deviceId);
         if (valid) {
+            entry->discardWhenUnused = entry->discardWhenUnused || retention == CacheRetention::Discard;
             --entry->activeAccesses;
-            if (entry->activeAccesses == 0 && !addEvictableEntry(access.entryIndex)) {
+            if (!releaseReaderEntry(*entry, access.entryIndex)) {
                 valid = false;
             }
         }
@@ -448,18 +542,22 @@ bool GpuCacheManager::completeAccess(GpuDataAccess& access, bool succeeded) {
             if (entry->markReplicaValid(access.deviceId)) {
                 entry->cacheState = GpuCacheState::Valid;
                 entry->activeAccesses = 0;
-                if (!addEvictableEntry(access.entryIndex)) {
-                    resetFillEntry(*entry, access.entryIndex);
+                if (retention == CacheRetention::Discard) {
+                    resetEntry(*entry, access.entryIndex);
+                    ++statistics.discard;
+                }
+                else if (!addFilledEntry(access.entryIndex) || !addEvictableEntry(access.entryIndex)) {
+                    resetEntry(*entry, access.entryIndex);
                     succeeded = false;
                 }
             }
             else {
-                resetFillEntry(*entry, access.entryIndex);
+                resetEntry(*entry, access.entryIndex);
                 succeeded = false;
             }
         }
         else if (valid) {
-            resetFillEntry(*entry, access.entryIndex);
+            resetEntry(*entry, access.entryIndex);
         }
         else {
             succeeded = false;
@@ -503,12 +601,10 @@ void GpuCacheManager::abortAccess(GpuDataAccess& access) {
         const bool matchingAccess = entry.metadata.key == access.dataKey && entry.dataForGpu(access.deviceId) == access.d_data && access.dataBytes == dataBytes;
         if (matchingAccess && access.accessStatus == CacheStatus::CacheHit && entry.cacheState == GpuCacheState::Valid && entry.activeAccesses > 0 && !entry.inEvictableList) {
             --entry.activeAccesses;
-            if (entry.activeAccesses == 0) {
-                addEvictableEntry(access.entryIndex);
-            }
+            releaseReaderEntry(entry, access.entryIndex);
         }
         else if (matchingAccess && access.accessStatus == CacheStatus::CacheFill && entry.cacheState == GpuCacheState::Loading && entry.activeAccesses == 1 && !entry.inEvictableList) {
-            resetFillEntry(entry, access.entryIndex);
+            resetEntry(entry, access.entryIndex);
         }
     }
     access.reset();
@@ -528,7 +624,13 @@ GpuDataAccess GpuCacheManager::makeFallbackAccess(const FrameMetadata& metadata,
     return GpuDataAccess(this, request.d_fallback, dataBytes, NO_ENTRY, metadata.key, request.stream, request.gpuId, CacheStatus::TaskFallback);
 }
 
-void GpuCacheManager::resetFillEntry(GpuCacheEntry& entry, std::size_t index) {
+void GpuCacheManager::resetEntry(GpuCacheEntry& entry, std::size_t index) {
+    if (entry.inEvictableList) {
+        removeEvictableEntry(index);
+    }
+    if (entry.inFilledList) {
+        removeFilledEntry(index);
+    }
     residencyTable.erase(entry.metadata.key, index);
     entry.metadata = FrameMetadata();
     entry.invalidateReplicas();
@@ -537,6 +639,10 @@ void GpuCacheManager::resetFillEntry(GpuCacheEntry& entry, std::size_t index) {
     entry.previousEvictable = NO_ENTRY;
     entry.nextEvictable = NO_ENTRY;
     entry.inEvictableList = false;
+    entry.previousFilled = NO_ENTRY;
+    entry.nextFilled = NO_ENTRY;
+    entry.inFilledList = false;
+    entry.discardWhenUnused = false;
     emptyEntries.push_back(index);
     cacheChanged.notify_all();
 }

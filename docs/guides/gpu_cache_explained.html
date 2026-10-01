@@ -29,6 +29,7 @@
 <main class="wrap">
 <p class="callout"><strong>等待策略更新：</strong>目前 manager 預設等待上限為 50 ms；同 key Loading 與滿載共用每次呼叫的截止時間，逾時才 fallback。0 ms 關閉等待，零容量直接 fallback。以下互動情境示範 <code>waitTimeout = 0 ms</code>；有等待者時 reset／release 也會失敗。</p>
 <section id="model">
+<p class="callout"><strong>淘汰與保留策略更新：</strong>目前 core 支援初始化選擇 LRU／FIFO；FIFO 按成功填入順序淘汰，Hit 不提升順位。兩者都支援 <code>freeCacheData(ok, CacheRetention::Discard)</code>，在全部 reader 完成後回收不再需要的 entry，保留 GPU 配置。以下互動演示採預設 LRU／Keep；完整契約見 <a href="../cache_policies.md">cache_policies.md</a>。</p>
 <div class="section-head"><span class="num">01</span><h2>先分清楚：資料、索引、存取權</h2></div>
 <p class="muted">Scheduler 先選 ready frame、free task 與 NUMA-local worker，之後才查 cache。Cache residency 不會改變排程選擇。</p>
 <div class="grid">

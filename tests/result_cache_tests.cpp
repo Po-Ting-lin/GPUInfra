@@ -47,7 +47,7 @@ bool produceResult(TestContext& test, GpuCacheManager& cache, const TaskGpuResou
     return atom.ready;
 }
 
-bool consumeResult(TestContext& test, GpuCacheManager& cache, const TaskGpuResources& consumer, void* d_consumerOutput, const ResultAtom& atom, CacheStatus expectedStatus, std::size_t& uploadedBytes) {
+bool consumeResult(TestContext& test, GpuCacheManager& cache, const TaskGpuResources& consumer, void* d_consumerOutput, const ResultAtom& atom, CacheStatus expectedStatus, std::size_t& uploadedBytes, CacheRetention retention = CacheRetention::Keep) {
     if (!atom.ready || atom.metadata.key.frameId != atom.dataId) {
         test.expect(false, "consumer requires a completed atom with the handed-off identity");
         return false;
@@ -76,20 +76,20 @@ bool consumeResult(TestContext& test, GpuCacheManager& cache, const TaskGpuResou
     if (submitted) {
         submitted = cudaMemcpyAsync(consumed.data(), d_consumerOutput, RESULT_BYTES, cudaMemcpyDeviceToHost, consumer.stream) == cudaSuccess;
     }
-    const bool finished = access.freeCacheData(submitted);
+    const bool finished = access.freeCacheData(submitted, retention);
     test.expect(submitted && finished && consumed == atom.data, "consumer GPU result matches the authoritative CPU atom on hit, refill and fallback");
     return submitted && finished && consumed == atom.data;
 }
 
 }  // namespace
 
-void testGpuResultCacheHandoff(TestContext& test, const GpuLocation& location) {
+void testGpuResultCacheHandoff(TestContext& test, const GpuLocation& location, CacheEvictionPolicy policy) {
     TaskGpuResources producer;
     TaskGpuResources consumer;
     GpuCacheManager resultCache;
     void* d_algoOutput = nullptr;
     void* d_consumerOutput = nullptr;
-    const bool initialized = initializeAccessResources(producer, location, RESULT_BYTES) && initializeAccessResources(consumer, location, RESULT_BYTES) && cudaMalloc(&d_algoOutput, RESULT_BYTES) == cudaSuccess && cudaMalloc(&d_consumerOutput, RESULT_BYTES) == cudaSuccess && resultCache.initialize({location.gpuId}, RESULT_BYTES, 1, std::chrono::milliseconds(0));
+    const bool initialized = initializeAccessResources(producer, location, RESULT_BYTES) && initializeAccessResources(consumer, location, RESULT_BYTES) && cudaMalloc(&d_algoOutput, RESULT_BYTES) == cudaSuccess && cudaMalloc(&d_consumerOutput, RESULT_BYTES) == cudaSuccess && resultCache.initialize({location.gpuId}, RESULT_BYTES, 1, std::chrono::milliseconds(0), policy);
     test.expect(initialized, "initialize a nonzero result cache and separate producer/consumer GPU resources");
     if (initialized) {
         test.expect(producer.stream != consumer.stream, "handoff crosses task streams after explicit publication");
@@ -128,6 +128,17 @@ void testGpuResultCacheHandoff(TestContext& test, const GpuLocation& location) {
         test.expect(uploadedBytes == 4 * RESULT_BYTES, "a producer fallback still supports downstream CPU recovery and later hits");
         test.expect(resultCache.statisticsSnapshot().eviction == 3, "result handoff covers actual eviction rather than reset-only misses");
         test.expect(first.ready && second.ready && third.ready && first.data.front() == 0x31 && second.data.front() == 0x72 && third.data.front() == 0xa5, "distinct result IDs retain independent authoritative CPU payloads");
+
+        test.expect(resultCache.resetCache(), "start a clean final-use result interval");
+        const std::size_t uploadsBefore = uploadedBytes;
+        for (std::uint64_t dataId : {1004U, 1005U}) {
+            ResultAtom terminal = makeResultAtom(dataId);
+            if (produceResult(test, resultCache, producer, d_algoOutput, terminal, 0x6b, CacheStatus::CacheFill)) {
+                consumeResult(test, resultCache, consumer, d_consumerOutput, terminal, CacheStatus::CacheHit, uploadedBytes, CacheRetention::Discard);
+            }
+        }
+        const CacheStatistics statistics = resultCache.statisticsSnapshot();
+        test.expect(uploadedBytes == uploadsBefore && statistics.discard == 2 && statistics.eviction == 0 && statistics.fillSucceeded == 2, "final-use consumers discard both policy results so the next producer reuses space without eviction or H2D");
     }
     test.expect(resultCache.release(), "release result cache after every producer/consumer lease finishes");
     if (d_consumerOutput != nullptr) {

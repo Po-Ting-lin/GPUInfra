@@ -32,6 +32,7 @@ int main() {
         testIndependentPayloadCaches(test, locations.front(), 0);
         testIndependentPayloadCaches(test, locations.front(), 1);
         testGpuResultCacheHandoff(test, locations.front());
+        testGpuResultCacheHandoff(test, locations.front(), CacheEvictionPolicy::FIFO);
         testConcurrentCacheRequests(test, locations.front());
         for (int scenario = 0; scenario < 4; ++scenario) {
             testCacheWaitWakeup(test, locations.front(), scenario);
@@ -44,6 +45,10 @@ int main() {
         testStaticDataRegions(test, locations.front());
         testGpuCacheResetBoundaries(test, locations.front());
         testGpuCacheManagerLru(test, locations.front());
+        testCacheEvictionPolicies(test, locations.front());
+        testCacheDiscard(test, locations.front());
+        testCacheDiscardWaiter(test, locations.front());
+        testStaticDataCachePolicy(test, locations.front());
         testFrameDataAcrossTaskInstances(test, locations.front());
         testTaskFallbackExecution(test, locations.front());
         return true;

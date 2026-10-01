@@ -83,10 +83,14 @@ cudaStream_t GpuDataAccess::getStream() const {
     return stream;
 }
 
-bool GpuDataAccess::freeCacheData(bool submittedSuccessfully) {
+bool GpuDataAccess::freeCacheData(bool submittedSuccessfully, CacheRetention retention) {
     GPUINFRA_NVTX_SCOPE("Cache.freeCacheData");
     const GpuDiagnosticScope diagnosticScope(deviceId, stream, dataKey, "Cache.freeCacheData");
     if (owner == nullptr || stream == nullptr) {
+        return false;
+    }
+    if (retention != CacheRetention::Keep && retention != CacheRetention::Discard) {
+        GPUINFRA_REPORT_FAILURE("invalid cache retention choice");
         return false;
     }
 
@@ -95,7 +99,7 @@ bool GpuDataAccess::freeCacheData(bool submittedSuccessfully) {
         GPUINFRA_NVTX_SCOPE("Cache.stream_sync");
         CUDA_CHECK(cudaStreamSynchronize(stream), succeeded = false);
     }
-    return owner->completeAccess(*this, succeeded);
+    return owner->completeAccess(*this, succeeded, retention);
 }
 
 void GpuDataAccess::reset() {

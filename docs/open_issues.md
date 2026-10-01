@@ -115,6 +115,12 @@ entry 淘汰後從 CPU atom 重新 H2D、滿載 fallback，以及 A 自身 fallb
 B 仍能恢復結果。測試使用 K=1、waitTimeout=0，暫將 dataId 放入既有
 frameId 欄位；並未完成 generic key／metadata、實際演算法或 graph 接線。
 
+Cache core 已支援初始化選擇 LRU／FIFO，以及 completion 的
+`CacheRetention::Keep／Discard`。A 預設 Keep；能保證沒有後續 consumer／重試
+時，B 可用 Discard，在全部 reader 結束後回收 entry，不必等待滿載淘汰。
+這不保證結果在 A→B 途中一直 resident；CPU atom 恢復路徑仍必要。
+API、FIFO 順序與獨立 discard 統計見 [cache_policies.md](cache_policies.md)。
+
 必須保留的契約：
 
 - `dataId` 在該 result manager 的有效生命週期內不撞號；多個 Task A

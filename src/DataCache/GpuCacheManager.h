@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "Types/FrameMetadata.h"
+#include "DataCache/CachePolicy.h"
 #include "DataCache/CacheStatistics.h"
 #include "DataCache/GpuCacheEntry.h"
 #include "DataCache/GpuDataAccess.h"
@@ -23,7 +24,8 @@ public:
     GpuCacheManager() = default;
     ~GpuCacheManager();
 
-    bool initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount, std::chrono::milliseconds waitTimeout = std::chrono::milliseconds(50));
+    // FIFO age starts at successful fill completion; Hits preserve that age.
+    bool initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount, std::chrono::milliseconds waitTimeout = std::chrono::milliseconds(50), CacheEvictionPolicy evictionPolicy = CacheEvictionPolicy::LRU);
     // Successful reset returns the previous interval and clears it atomically.
     // Failure leaves both statistics and the output argument unchanged.
     bool resetCache(CacheStatistics* completedStatistics = nullptr);
@@ -52,15 +54,19 @@ private:
     void restoreCandidate(std::size_t index, bool wasEmpty);
     bool addEvictableEntry(std::size_t index);
     bool removeEvictableEntry(std::size_t index);
-    bool completeAccess(GpuDataAccess& access, bool succeeded);
+    bool addFilledEntry(std::size_t index);
+    bool removeFilledEntry(std::size_t index);
+    bool releaseReaderEntry(GpuCacheEntry& entry, std::size_t index);
+    bool completeAccess(GpuDataAccess& access, bool succeeded, CacheRetention retention);
     void abortAccess(GpuDataAccess& access);
     GpuDataAccess makeFallbackAccess(const FrameMetadata& metadata, const GpuCacheRequest& request, CacheFallbackReason reason);
-    void resetFillEntry(GpuCacheEntry& entry, std::size_t index);
+    void resetEntry(GpuCacheEntry& entry, std::size_t index);
 
     CacheStatistics statistics;
     mutable std::mutex lock;
     std::condition_variable cacheChanged;
     std::chrono::milliseconds waitTimeout{50};
+    CacheEvictionPolicy evictionPolicy = CacheEvictionPolicy::LRU;
     std::size_t waitingAccesses = 0;
     std::vector<std::unique_ptr<GpuCacheEntry>> entries;
     std::vector<int> eligibleGpuIds;
@@ -68,6 +74,8 @@ private:
     std::vector<std::size_t> emptyEntries;
     std::size_t leastRecentlyUsed = NO_ENTRY;
     std::size_t mostRecentlyUsed = NO_ENTRY;
+    std::size_t oldestFilled = NO_ENTRY;
+    std::size_t newestFilled = NO_ENTRY;
     std::size_t dataBytes = 0;
     std::size_t activeFallbackAccesses = 0;
     bool initialized = false;

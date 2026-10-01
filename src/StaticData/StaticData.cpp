@@ -50,7 +50,7 @@ bool StaticData::init(const StaticDataConfig& config) {
             return false;
         }
     }
-    if (!gpuCacheManager.initialize(gpuIds, config.runtime.inBytes, config.gpuCacheEntries, config.gpuCacheWaitTimeout)) {
+    if (!gpuCacheManager.initialize(gpuIds, config.runtime.inBytes, config.gpuCacheEntries, config.gpuCacheWaitTimeout, config.gpuCacheEvictionPolicy)) {
         return false;
     }
 

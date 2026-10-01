@@ -56,6 +56,7 @@ struct GraphConfig {
     ExecutionModel executionModel = ExecutionModel::Batched;
     AlgoRuntimeInfo runtime;
     AlgoParams parameters;
+    CacheEvictionPolicy gpuCacheEvictionPolicy = CacheEvictionPolicy::LRU;
 };
 
 class DummyGraph {

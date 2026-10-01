@@ -50,6 +50,8 @@ a hit. Because the current input is immutable, a miss re-uploads from
   K=150.
 - [`open_issues.md`](docs/open_issues.md) records real-framework integration and
   future payload constraints.
+- [`cache_policies.md`](docs/cache_policies.md) explains selectable LRU/FIFO
+  eviction and caller-controlled Keep/Discard completion.
 - [`gpuinfra_class_diagram.html`](docs/guides/gpuinfra_class_diagram.html) and
   [`gpuinfra_resource_plot.html`](docs/guides/gpuinfra_resource_plot.html) visualize
   UML ownership, multiplicity, resources, and hit/fallback flow.
@@ -291,7 +293,7 @@ borrowed task stream supplied in `GpuCacheRequest`:
 | Status | Path |
 | --- | --- |
 | `CacheHit` | Matching `Valid` entry; use its immutable device pointer without H2D |
-| `CacheFill` | Reserve an empty/inactive-LRU entry; caller uploads or computes its payload |
+| `CacheFill` | Reserve an empty entry or an inactive LRU/FIFO candidate; caller uploads or computes its payload |
 | `TaskFallback` | Caller fills its supplied fallback buffer when capacity is zero, or a Loading/full-cache wait expires |
 | `Invalid` | Metadata, GPU, stream, or fallback request is invalid; do not submit work |
 
@@ -332,7 +334,7 @@ bool succeeded = access.freeCacheData(submittedSuccessfully);
 ```
 
 Independent `GpuCacheManager` instances may cache different fixed payload
-sizes with separate capacities, indexes, and LRU lists. A frame cache and a
+sizes with separate capacities, indexes, and eviction policies. A frame cache and a
 result cache may use the same key without sharing entries. Payloads whose GPU usage overlaps need non-overlapping fallback storage.
 A caller may reuse one fallback allocation across outstanding leases only
 when every read of the previous contents is ordered before the next overwrite
@@ -364,6 +366,19 @@ cache CEL/SDD/MI outputs. A result-cache caller must define versioned identity
 or reset at parameter changes and be able to recreate evicted data. The
 existing frame-shaped metadata and immutable, best-effort eviction contract
 remain in place.
+
+Each manager can select `CacheEvictionPolicy::LRU` (default) or `FIFO` at
+initialization. FIFO orders successful fill completions; hits never promote
+an entry, and live readers remain protected. `StaticDataConfig` and the demo's
+`GraphConfig` expose `gpuCacheEvictionPolicy` for the same choice.
+
+Callers can finish their last use with
+`access.freeCacheData(submittedSuccessfully, CacheRetention::Discard)` under
+either policy. The entry is removed after all readers finish, keeping its
+allocation available for another key. The default `Keep` preserves current
+behavior. Only use Discard when no future consumers or retries need the key;
+pending A-to-B results remain best-effort and still need CPU recovery. See
+[cache policies and examples](docs/cache_policies.md).
 
 ## Shared static GPU data
 
@@ -437,7 +452,7 @@ StaticData forwards them as `cacheStatisticsSnapshot()` and `resetCache()`.
 A successful reset returns and clears the previous interval; a rejected reset
 preserves both counters and the output argument.
 
-Counters cover final hit/fill/fallback/invalid, fill success/failure, eviction,
+Counters cover final hit/fill/fallback/invalid, fill success/failure, eviction, discard,
 first obstruction, fallback reasons, and actual condition-variable wait time.
 The demo caller prints a labeled warmup+timed report after execution. See
 [statistics definitions and legacy A/B mapping](docs/cache_statistics.md) before
@@ -576,7 +591,7 @@ The real-CUDA protocol test caches more than 220 unregistered incoming frames
 through two entries and covers fixed-table collisions/backward-shift deletion,
 capacity zero, layout rejection, reset-boundary lease rejection, reset without
 device reallocation, fill/hit/fallback, loading and busy
-fallback, RAII abort, failed fill, LRU eviction, stable device pointers,
+fallback, RAII abort, failed fill, LRU/FIFO eviction, deferred Discard, stable device pointers,
 cross-task reuse, pure-fallback correctness, both execution models, load-time GPU discovery,
 framework affinity rejection, graph-level task exclusivity, cancellation, and
 cleanup, independent frame/result caches with unequal payload sizes, and
@@ -606,7 +621,8 @@ demo/                      gpuinfra_demo_support library and demo executable
 tests/                     one test runner, split by responsibility
   gpuinfra_tests.cpp        test invocation and infrastructure lifetime
   cache_tests.cpp          leases, waits, fallback, LRU and statistics
-  result_cache_tests.cpp   D2D result handoff and CPU-backed miss recovery
+  cache_policy_tests.cpp   LRU/FIFO ordering, last-use Discard and wait wakeup
+  result_cache_tests.cpp   D2D handoff, CPU-backed recovery and terminal Discard
   static_data_tests.cpp    layout validation and read-only GPU data
   diagnostics_tests.cpp    logger and cuFFT integration
   graph_tests.cpp          task/framework lifecycle and NUMA boundaries

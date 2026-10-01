@@ -371,6 +371,7 @@ bool DummyGraph::initializeOnNumaNode() {
         staticDataConfig.runtime = config.runtime;
         staticDataConfig.gpuCacheEntries = config.gpuCacheEntries;
         staticDataConfig.gpuCacheWaitTimeout = config.gpuCacheWaitTimeout;
+        staticDataConfig.gpuCacheEvictionPolicy = config.gpuCacheEvictionPolicy;
         std::uint64_t nextId = config.firstFrameId;
         for (std::size_t index = 0; index < warmupCount; ++index) {
             const FrameMetadata metadata = makeFrameMetadata(nextId, config.runtime);
@@ -582,11 +583,12 @@ void DummyGraph::printCacheStatistics(std::ostream& output, const char* runId, s
     const double averageWaitMs = stats.waitedRequests == 0 ? 0 : totalWaitMs / static_cast<double>(stats.waitedRequests);
     output << "[CacheStatistics] run=" << runId << " graph=" << graphId << " gpu=" << (gpuIds.empty() ? -1 : gpuIds.front()) << " cache=frame interval=warmup+timed"
            << " entries=" << config.gpuCacheEntries << " wait_timeout_ms=" << config.gpuCacheWaitTimeout.count()
+           << " eviction_policy=" << (config.gpuCacheEvictionPolicy == CacheEvictionPolicy::FIFO ? "fifo" : "lru")
            << " warmup_frames_per_gpu=" << config.warmupFramesPerGpu << " timed_frames_per_gpu=" << config.timedFramesPerGpu
            << " frame_bytes=" << config.runtime.inBytes << " tasks=" << tasks.size() << " workers=" << workers.size()
            << " execution_model=" << (config.executionModel == ExecutionModel::Batched ? "batched" : "interleaved")
            << " hit=" << stats.hit << " fill=" << stats.fill << " fallback=" << stats.fallback << " invalid=" << stats.invalid
-           << " fill_succeeded=" << stats.fillSucceeded << " fill_failed=" << stats.fillFailed << " eviction=" << stats.eviction
+           << " fill_succeeded=" << stats.fillSucceeded << " fill_failed=" << stats.fillFailed << " eviction=" << stats.eviction << " discard=" << stats.discard
            << " first_blocked_loading=" << stats.firstBlockedLoading << " first_blocked_full=" << stats.firstBlockedFull
            << " capacity_zero=" << stats.fallbackReasons.capacityZero << " loading_timeout=" << stats.fallbackReasons.loadingTimeout
            << " full_timeout=" << stats.fallbackReasons.fullTimeout << " loading_no_wait=" << stats.fallbackReasons.loadingNoWait

@@ -50,8 +50,13 @@ private:
     std::size_t activeAccesses = 0;
     std::size_t previousEvictable = std::numeric_limits<std::size_t>::max();
     std::size_t nextEvictable = std::numeric_limits<std::size_t>::max();
+    // FIFO order includes live readers so a Hit never changes fill age.
+    std::size_t previousFilled = std::numeric_limits<std::size_t>::max();
+    std::size_t nextFilled = std::numeric_limits<std::size_t>::max();
     std::vector<GpuReplica> replicas;
     std::size_t dataBytes = 0;
     bool inEvictableList = false;
+    bool inFilledList = false;
+    bool discardWhenUnused = false;
     bool initialized = false;
 };

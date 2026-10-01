@@ -5,6 +5,7 @@
 
 #include <cuda_runtime.h>
 
+#include "DataCache/CachePolicy.h"
 #include "DataCache/GpuDataKey.h"
 
 enum class CacheStatus {
@@ -46,7 +47,7 @@ class GpuCacheManager;
 //
 // Submit all work using this pointer to getStream(), the borrowed request
 // stream. Call freeCacheData() once even if submission fails. It synchronizes
-// that stream, publishes a successful fill or rolls back a failed fill, and
+// that stream, retains a successful fill or rolls back a failed fill, and
 // ends this lease. No fill is published early. The access and its pointers
 // are invalid afterwards; getStream() returns nullptr and status() is Invalid.
 //
@@ -68,7 +69,11 @@ public:
 
     // Required normal-path finish operation; invalidates this access.
     // Releases the reservation while retaining the underlying GPU allocation.
-    bool freeCacheData(bool submittedSuccessfully);
+    // Discard removes this cache-backed key after every reader has finished,
+    // even if this caller's work failed. Later Keep releases cannot undo it.
+    // The caller guarantees there are no future consumers or retries. A
+    // fallback has no cache entry to discard. RAII cleanup defaults to Keep.
+    bool freeCacheData(bool submittedSuccessfully, CacheRetention retention = CacheRetention::Keep);
 
     GpuDataAccess(const GpuDataAccess&) = delete;
     GpuDataAccess& operator=(const GpuDataAccess&) = delete;

@@ -16,9 +16,10 @@ A normal getCacheData() return adds exactly one final outcome:
 | fill | Returned CacheFill; counts a reservation, not successful publication |
 | fallback | Returned TaskFallback |
 | invalid | Returned Invalid from the manager |
-| fillSucceeded | Fill completed and published successfully |
+| fillSucceeded | Fill completed successfully, including an explicit Discard completion |
 | fillFailed | Fill failed, including RAII abandonment |
 | eviction | An old Valid entry was replaced and a new CacheFill returned |
+| discard | A cache-backed entry was removed because a caller completed with Discard |
 | firstBlockedLoading | First obstruction in this request was a matching Loading entry |
 | firstBlockedFull | First obstruction was no empty or evictable entry in a nonzero-capacity cache |
 
@@ -32,6 +33,13 @@ undo its eviction count. While fills are live, fillSucceeded + fillFailed can
 be smaller than fill. They reconcile after normal completion/RAII cleanup.
 Hit/fallback execution failures do not become fillFailed or rewrite the
 already-returned lookup outcome.
+
+Discard is counted once when the entry actually returns to Empty, not when a
+reader first marks it. Remaining readers, including RAII cleanup, defer removal
+until their GPU use finishes. Discard does not count fallback completion,
+failed-fill rollback, reset or release. A successful fill completed with Discard
+counts both fillSucceeded and discard, and is not retained for later hits.
+See [eviction and retention policies](cache_policies.md).
 
 Counters cover manager calls only. Rejection in StaticData validation or a
 task before it calls the manager does not increment manager.invalid. Control
@@ -93,7 +101,8 @@ must cover all calls and leases.
 The demo caller prints one [CacheStatistics] line per graph after stopping,
 outside timed execution and before shutdown. It includes run, graph, logical
 GPU, cache name, capacity, timeout, frame size, task/worker counts, execution
-model, configured workload, raw counters and ratios.
+model, configured workload, eviction policy, raw counters (including discard)
+and ratios.
 
 The explicitly labeled interval is warmup+timed; reading it does not reset
 cache residency between phases. Production callers should label their own
@@ -134,6 +143,8 @@ caller-selected path when instrumenting the integration.
 
 Use identical input identities/order, actual capacities in bytes/entries,
 task/worker concurrency, GPU, execution model and run boundaries. State whether
-wait/stall policies are matched or are the variable being compared. Compare
-final caller outcomes, end-to-end throughput/latency and separately measured
+wait/stall policies are matched or are the variable being compared. Record
+LRU/FIFO and Keep/Discard settings explicitly; legacy has no equivalent
+last-use discard counter. Compare final caller outcomes, end-to-end
+throughput/latency and separately measured
 transfer bytes; hit ratio alone is not evidence of higher throughput.

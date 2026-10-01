@@ -85,7 +85,7 @@ The worker remains NUMA-bound; the selected task remains GPU-bound.
 | `FrameCpuAtom` | CPU input byte vector, intrinsic metadata, and preallocated result |
 | `StaticData` | Fixed frame layout, run-boundary reset, bounded GPU cache and StaticGpuData owner |
 | `StaticGpuData` | Separate DZ/distortion buffers; cold-path zeroing/upload and Ready publication |
-| `GpuCacheManager` | Fixed cache-entry array, fixed open-addressing residency table, short metadata mutex, lease counts, empty stack, and intrusive LRU |
+| `GpuCacheManager` | Fixed cache-entry array, fixed open-addressing residency table, short metadata mutex, lease counts, empty stack, intrusive LRU and optional FIFO order |
 | `GpuResidencyTable` | At most K resident/loading keys in allocation-free linear-probing storage sized to at least 2K slots |
 | `GpuCacheEntry` | One reusable entry with GPU-keyed persistent replicas and validity bits |
 | `GpuDataAccess` | Scoped non-owning cache/fallback view; synchronization and publish/abort |
@@ -169,11 +169,12 @@ StaticData::getCacheData(metadata, request)
   -> fixed layout validation
   -> GpuCacheManager::getCacheData(metadata, request)
        -> fixed open-addressing GpuDataKey -> resident entry index lookup
-       -> empty stack or intrusive inactive-entry LRU on miss
+       -> empty stack or an eligible LRU/FIFO entry on miss
 ```
 
 Residency lookup, insertion, and erasure are average `O(1)`. Empty selection
-and LRU victim selection are `O(1)`. The fixed table uses at least `2K`
+and LRU victim selection are `O(1)`. FIFO preserves successful fill order and
+may scan past live readers, up to `O(K)` for victim selection. The fixed table uses at least `2K`
 linear-probing slots and backward-shift deletion, so acquire does not allocate,
 rehash, grow a container, or scan the cache-entry array. Cache metadata updates
 use a short mutex; no CUDA call runs while it is held.
@@ -189,7 +190,7 @@ Each `GpuCacheEntry` is in one state:
 `GpuDataAccess::status()` returns `CacheStatus` for the selected execution path:
 
 - `CacheHit`: matching valid entry; immutable reader count increases;
-- `CacheFill`: empty or inactive-LRU entry reserved for caller-produced data;
+- `CacheFill`: empty or inactive LRU/FIFO entry reserved for caller-produced data;
 - `TaskFallback`: Loading/full-cache waiting expires, or capacity is zero;
 - `Invalid`: metadata/resource/GPU contract failed.
 
@@ -206,7 +207,7 @@ the deadline; scheduling and mutex reacquisition may add wall-clock delay.
 and fallback capacity. `getStream()` exposes that same stream. The cache no
 longer depends on `TaskGpuResources::d_input` or its input size. Different
 manager instances may use different payload sizes and independent fallback
-allocations; each still has one fixed entry size and its own index/LRU/lock.
+allocations; each still has one fixed entry size and its own index/policy/lock.
 The current demo supplies its task input buffer for the frame cache only.
 
 The caller performs uploads or result computation for CacheFill/TaskFallback.
@@ -214,6 +215,14 @@ No early publication occurs: `freeCacheData()` synchronizes all queued work
 on the access stream and then publishes or rolls back its fill. A concurrent
 request for Loading waits until availability or its deadline. No access object may be
 shared for concurrent mutation; each caller acquires its own lease.
+
+The default eviction policy is LRU. FIFO is selected during initialization and
+does not change an entry's age after a Hit. Both support caller-controlled
+`CacheRetention::Discard` in `freeCacheData()`: remove the key once all readers
+finish and return its allocation to the empty pool. A pending discard survives
+later Keep or RAII reader releases. Explicit discards have their own statistic
+and do not count as eviction. See [cache policies](cache_policies.md) for the
+last-use contract and A-to-B result workflow.
 
 ## 7. CUDA hot path
 

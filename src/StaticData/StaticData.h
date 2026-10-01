@@ -14,6 +14,7 @@ struct StaticDataConfig {
     std::size_t distortionBytes = 0;
     std::size_t gpuCacheEntries = 0;
     std::chrono::milliseconds gpuCacheWaitTimeout{50};
+    CacheEvictionPolicy gpuCacheEvictionPolicy = CacheEvictionPolicy::LRU;
 };
 
 // Graph-copy-scoped owner of fixed frame-layout validation and a bounded GPU
