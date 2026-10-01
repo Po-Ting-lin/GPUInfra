@@ -79,6 +79,7 @@ void testParameterRegistry(TestContext& test);
 void testGpuResidencyTable(TestContext& test);
 void testStaticDataValidation(TestContext& test, const GpuLocation& location);
 void testGpuDataAccessMoves(TestContext& test, const GpuLocation& location);
+void testPayloadIdentity(TestContext& test, const GpuLocation& location);
 void testGpuDataAccessState(TestContext& test, const GpuLocation& location);
 void testIndependentPayloadCaches(TestContext& test, const GpuLocation& location, std::size_t capacity);
 void testConcurrentCacheRequests(TestContext& test, const GpuLocation& location);

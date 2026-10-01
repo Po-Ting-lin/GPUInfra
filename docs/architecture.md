@@ -157,7 +157,7 @@ At every later cold run boundary, `StaticData::resetCache()` clears all
 residency, entry identity/validity, empty-stack, and LRU state. It rejects live
 leases/loading entries, retains every device allocation, and must run after all
 old-run executions finish and before any new-run execution starts. Between two
-resets, one `frameId + cameraId` must always identify the same immutable bytes.
+resets, one `frameId + cameraId + variantId` must always identify the same immutable bytes.
 
 ## 5. Logical lookup and cache lookup
 

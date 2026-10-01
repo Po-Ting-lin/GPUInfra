@@ -36,6 +36,82 @@ void testGpuResidencyTable(TestContext& test) {
     test.expect(!table.isInitialized() && table.slotCount() == 0, "release fixed residency table storage");
 }
 
+void testPayloadIdentity(TestContext& test, const GpuLocation& location) {
+    // Force different variants into the same bucket to verify exact equality
+    // and backward-shift erase, rather than relying on hash uniqueness.
+    GpuResidencyTable table;
+    test.expect(table.initialize(3), "initialize variant collision table");
+    const GpuDataKey rawKey{42, 7};
+    std::vector<GpuDataKey> variants{rawKey};
+    for (std::uint64_t variant = 1; variant < 10000 && variants.size() < 3; ++variant) {
+        const GpuDataKey key{42, 7, variant};
+        if ((GpuDataKeyHash{}(key) & (table.slotCount() - 1)) == (GpuDataKeyHash{}(rawKey) & (table.slotCount() - 1))) {
+            variants.push_back(key);
+        }
+    }
+    test.expect(variants.size() == 3, "find colliding payload variants");
+    if (variants.size() != 3) {
+        return;
+    }
+    test.expect(rawKey == GpuDataKey{42, 7, 0}, "two-field initialization preserves default variant zero");
+    for (std::size_t index = 0; index < variants.size(); ++index) {
+        test.expect(table.insert(variants[index], index), "colliding variants coexist in residency table");
+    }
+    std::size_t entryIndex = 0;
+    test.expect(table.erase(variants[0], 0) && table.find(variants[1], entryIndex) && entryIndex == 1 && table.find(variants[2], entryIndex) && entryIndex == 2, "erasing raw identity preserves colliding processed variants");
+
+    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    FrameMetadata raw = makeFrameMetadata(42, runtime, 7);
+    FrameMetadata processed = raw;
+    processed.key.variantId = variants[1].variantId;
+    FrameMetadata newGeneration = raw;
+    newGeneration.key.variantId = variants[2].variantId;
+    TaskGpuResources resources;
+    GpuCacheManager cache;
+    const bool initialized = initializeAccessResources(resources, location, runtime.inBytes) && cache.initialize({location.gpuId}, runtime.inBytes, 2, std::chrono::milliseconds(0));
+    test.expect(initialized, "initialize nonzero-capacity payload identity test");
+    if (!initialized) {
+        cache.release();
+        releaseAccessResources(resources);
+        return;
+    }
+    const GpuCacheRequest request = makeCacheRequest(resources);
+    {
+        GpuDataAccess rawFill = cache.getCacheData(raw, request);
+        GpuDataAccess processedFill = cache.getCacheData(processed, request);
+        test.expect(rawFill.status() == CacheStatus::CacheFill && processedFill.status() == CacheStatus::CacheFill && rawFill.data() != processedFill.data(), "different variants of the same frame fill independently while Loading");
+        GpuDataAccess duplicate = cache.getCacheData(processed, request);
+        test.expect(duplicate.status() == CacheStatus::TaskFallback && cache.statisticsSnapshot().fallbackReasons.loadingNoWait == 1, "same variant still follows Loading policy");
+        test.expect(duplicate.freeCacheData(true), "finish duplicate-variant fallback");
+        const bool rawSubmitted = cudaMemsetAsync(rawFill.writableData(), 0x11, rawFill.bytes(), resources.stream) == cudaSuccess;
+        const bool processedSubmitted = cudaMemsetAsync(processedFill.writableData(), 0x22, processedFill.bytes(), resources.stream) == cudaSuccess;
+        test.expect(rawFill.freeCacheData(rawSubmitted) && processedFill.freeCacheData(processedSubmitted), "publish distinct variant bytes");
+    }
+    {
+        GpuDataAccess rawHit = cache.getCacheData(raw, request);
+        GpuDataAccess processedHit = cache.getCacheData(processed, request);
+        unsigned char values[2] = {0, 0};
+        test.expect(rawHit.status() == CacheStatus::CacheHit && processedHit.status() == CacheStatus::CacheHit, "each variant hits its own entry");
+        const bool rawCopied = cudaMemcpyAsync(&values[0], rawHit.data(), 1, cudaMemcpyDeviceToHost, resources.stream) == cudaSuccess;
+        const bool processedCopied = cudaMemcpyAsync(&values[1], processedHit.data(), 1, cudaMemcpyDeviceToHost, resources.stream) == cudaSuccess;
+        test.expect(rawHit.freeCacheData(rawCopied) && values[0] == 0x11, "raw lookup returns raw bytes");
+        // Only raw is evictable. A new generation must not alias the live old one.
+        {
+            GpuDataAccess generationFill = cache.getCacheData(newGeneration, request);
+            test.expect(generationFill.status() == CacheStatus::CacheFill, "new generation replaces inactive raw entry, not active processed variant");
+        }
+        test.expect(processedHit.freeCacheData(processedCopied) && values[1] == 0x22, "aborting another variant preserves the original processed payload");
+        GpuDataAccess retry = cache.getCacheData(newGeneration, request);
+        test.expect(retry.status() == CacheStatus::CacheFill, "aborted generation remains a miss");
+    }
+    test.expect(cache.resetCache(), "quiescent reset clears all variant identities");
+    {
+        GpuDataAccess afterReset = cache.getCacheData(processed, request);
+        test.expect(afterReset.status() == CacheStatus::CacheFill, "previously cached variant misses after reset");
+    }
+    test.expect(cache.release() && releaseAccessResources(resources), "release payload identity resources");
+}
+
 void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
     const FrameMetadata firstMetadata = makeFrameMetadata(0, runtime);

@@ -102,14 +102,14 @@ void testCufftIntegration(TestContext& test, const GpuLocation& location) {
 void testGpuDiagnostics(TestContext& test) {
     char text[512];
     formatGpuDiagnosticInfo(text, sizeof(text));
-    test.expect(std::strstr(text, "driver_context_id=unknown") != nullptr && std::strstr(text, "frame=unknown") != nullptr, "unknown diagnostic fields are explicit");
+    test.expect(std::strstr(text, "driver_context_id=unknown") != nullptr && std::strstr(text, "frame=unknown") != nullptr && std::strstr(text, "variant_id=unknown") != nullptr, "unknown diagnostic fields are explicit");
     GpuDiagnosticInfo known;
     known.gpuId = 2;
     known.numaNode = 1;
     known.resourceId = 7;
     known.driverContextId = 42;
     known.driverContextIdKnown = true;
-    known.key = {1234, 5};
+    known.key = {1234, 5, 9001};
     known.frameKnown = true;
     known.stage = "test.execute";
     {
@@ -117,7 +117,7 @@ void testGpuDiagnostics(TestContext& test) {
         {
             const GpuDiagnosticScope inner("test.H2D");
             formatGpuDiagnosticInfo(text, sizeof(text));
-            test.expect(std::strstr(text, "bound_gpu=2 numa=1 resource=7") != nullptr && std::strstr(text, "driver_context_id=42") != nullptr && std::strstr(text, "frame=1234 camera=5 stage=test.H2D") != nullptr, "nested diagnostic stage retains immutable resource identity");
+            test.expect(std::strstr(text, "bound_gpu=2 numa=1 resource=7") != nullptr && std::strstr(text, "driver_context_id=42") != nullptr && std::strstr(text, "frame=1234 camera=5 variant_id=9001 stage=test.H2D") != nullptr, "nested diagnostic stage retains immutable resource identity");
         }
         test.expect(std::strcmp(currentGpuDiagnosticInfo().stage, "test.execute") == 0, "nested stage restores its caller");
         bool isolated = false;

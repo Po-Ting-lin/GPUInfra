@@ -66,14 +66,16 @@ static void formatDiagnosticInfo(char* output, std::size_t capacity, const GpuDi
     char driverId[32] = "unknown";
     char frame[32] = "unknown";
     char camera[32] = "unknown";
+    char variant[32] = "unknown";
     if (info.driverContextIdKnown) {
         std::snprintf(driverId, sizeof(driverId), "%llu", info.driverContextId);
     }
     if (info.frameKnown) {
         std::snprintf(frame, sizeof(frame), "%llu", static_cast<unsigned long long>(info.key.frameId));
         std::snprintf(camera, sizeof(camera), "%u", static_cast<unsigned int>(info.key.cameraId));
+        std::snprintf(variant, sizeof(variant), "%llu", static_cast<unsigned long long>(info.key.variantId));
     }
-    std::snprintf(output, capacity, "pid=%ld bound_gpu=%d numa=%d resource=%d context_handle=%p driver_context_id=%s stream=%p frame=%s camera=%s stage=%s", static_cast<long>(getpid()), info.gpuId, info.numaNode, info.resourceId, static_cast<void*>(info.context), driverId, static_cast<void*>(info.stream), frame, camera, info.stage == nullptr ? "unknown" : info.stage);
+    std::snprintf(output, capacity, "pid=%ld bound_gpu=%d numa=%d resource=%d context_handle=%p driver_context_id=%s stream=%p frame=%s camera=%s variant_id=%s stage=%s", static_cast<long>(getpid()), info.gpuId, info.numaNode, info.resourceId, static_cast<void*>(info.context), driverId, static_cast<void*>(info.stream), frame, camera, variant, info.stage == nullptr ? "unknown" : info.stage);
 }
 
 void formatGpuDiagnosticInfo(char* output, std::size_t capacity) {

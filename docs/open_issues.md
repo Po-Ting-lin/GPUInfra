@@ -26,7 +26,7 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData);
 - 每個 run 開始前、所有舊 execute 已結束且新 execute 尚未開始時，呼叫
   一次 graph-copy-scoped `StaticData::resetCache()`；不需要每個 task 各自呼叫，
   也不需要 frame registration list；
-- 保證兩次 reset 之間，相同 `frameId + cameraId` 永遠代表相同 immutable
+- 保證兩次 reset 之間，相同 `frameId + cameraId + variantId` 永遠代表相同 immutable
   bytes；若新 run 重用 identity，漏掉 reset 會造成 stale cache hit；
 - 每次 task execute 時取得同一個 graph-copy `StaticData&`；
 - framework 原有 scheduler／collections 自行管理 frame 的 ready、in-flight、
@@ -66,8 +66,11 @@ frame-owned output plane、spill/recompute 規則及其 lifetime。Best-effort
 stream。CacheFill／TaskFallback 的上傳或計算由 caller 執行，最後才由
 `freeCacheData()` 同步並發布／回滾，不提早發布。
 
+Payload variant 已加入 key；AOI graph owner 的一致 ID 對應仍待接線，
+契約見 [payload identity](integration/payload_identity.md)。
+
 目前 demo 的 `StaticData` 仍只有 frame cache，CEL／SDD／MI outputs 尚未
-接入 result cache。Key 仍是 `GpuDataKey(frameId, cameraId)`，descriptor
+接入 result cache。Key 仍是 `GpuDataKey(frameId, cameraId, variantId)`，descriptor
 仍是 `FrameMetadata`。加入 result cache 時，caller 必須定義參數／算法版本
 與 key 的關係或安全 reset 時機、可重算來源，以及獨立的 fallback buffer。
 每個 manager 仍使用固定 entry size；mutable 或不可重建的 GPU intermediate

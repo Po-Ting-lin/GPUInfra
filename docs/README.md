@@ -12,6 +12,12 @@ Current implementation and integration contracts:
 
 Integration references:
 
+- [GPUInfra combined review (2026-09-24)](integration/gpuinfra_review_20260924.md): findings, AOI integration status and priorities.
+
+- [AOI caller integration instructions](integration/aoi_caller_integration.md): direct GpuI2I changes, saved leases and transaction cleanup.
+
+- [Payload identity](integration/payload_identity.md): variant keys and AOI mapping contract.
+
 - [AOI source review questions](integration/aoi_source_review_questions.md): pending integration evidence and caller mapping.
 
 - [Legacy versus current infrastructure](integration/old_vs_new.md).

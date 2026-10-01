@@ -2,7 +2,7 @@
 
 CUDA Runtime/Driver error logs retain the original code, name, message and
 source location, and append known resource identity: PID, bound GPU, NUMA,
-task resource ID, context handle, Driver context ID, stream, frame/camera key,
+task resource ID, context handle, Driver context ID, stream, frame/camera/payload-variant key,
 and operation stage. Lexical thread-local scopes carry task identity through
 H2D, algorithm calls and cache completion, and restore it on exit. They perform
 no GPU queries, synchronization or allocations on the hot path.
@@ -99,7 +99,7 @@ CUDA_CHECK(cudaMalloc(&d_data, bytes), return false);
 Example allocation failure:
 
 ```text
-[CUDA Runtime] MyAlgo.cu:120 operation=cudaMalloc(&d_data, bytes) error=cudaErrorMemoryAllocation code=2 message=out of memory pid=12345 bound_gpu=0 numa=0 resource=2 context_handle=0x1234 driver_context_id=1 stream=0x5678 frame=100 camera=3 stage=MyAlgo.allocate
+[CUDA Runtime] MyAlgo.cu:120 operation=cudaMalloc(&d_data, bytes) error=cudaErrorMemoryAllocation code=2 message=out of memory pid=12345 bound_gpu=0 numa=0 resource=2 context_handle=0x1234 driver_context_id=1 stream=0x5678 frame=100 camera=3 variant_id=0 stage=MyAlgo.allocate
 ```
 
 The macro calls the cudaError_t overload of reportCudaError(). On failure it
@@ -117,7 +117,7 @@ If called before driver initialization, an illustrative output without an
 established diagnostic scope is:
 
 ```text
-[CUDA Driver] MyAlgo.cu:125 operation=cuCtxGetCurrent(&context) error=CUDA_ERROR_NOT_INITIALIZED code=3 message=initialization error pid=12345 bound_gpu=-1 numa=-1 resource=-1 context_handle=(nil) driver_context_id=unknown stream=(nil) frame=unknown camera=unknown stage=unknown
+[CUDA Driver] MyAlgo.cu:125 operation=cuCtxGetCurrent(&context) error=CUDA_ERROR_NOT_INITIALIZED code=3 message=initialization error pid=12345 bound_gpu=-1 numa=-1 resource=-1 context_handle=(nil) driver_context_id=unknown stream=(nil) frame=unknown camera=unknown variant_id=unknown stage=unknown
 ```
 
 ### cuFFT failure
@@ -129,7 +129,7 @@ CUDA_CHECK(cufftExecC2C(plan, d_input, d_output, CUFFT_FORWARD), return false);
 Example inside a scope named MyAlgo.fft:
 
 ```text
-[cuFFT] MyAlgo.cu:140 operation=cufftExecC2C(plan, d_input, d_output, CUFFT_FORWARD) error=CUFFT_INVALID_PLAN code=1 message=CUFFT_INVALID_PLAN pid=12345 bound_gpu=0 numa=0 resource=2 context_handle=0x1234 driver_context_id=1 stream=0x5678 frame=100 camera=3 stage=MyAlgo.fft
+[cuFFT] MyAlgo.cu:140 operation=cufftExecC2C(plan, d_input, d_output, CUFFT_FORWARD) error=CUFFT_INVALID_PLAN code=1 message=CUFFT_INVALID_PLAN pid=12345 bound_gpu=0 numa=0 resource=2 context_handle=0x1234 driver_context_id=1 stream=0x5678 frame=100 camera=3 variant_id=0 stage=MyAlgo.fft
 ```
 
 cuFFT message repeats the mapped status name; unknown values retain their numeric
@@ -147,7 +147,7 @@ if (bytes == 0) {
 ```
 
 ```text
-[GPUInfra] MyAlgo.cu:150 operation=MyAlgo.execute error=Failure code=none message=invalid input size pid=12345 bound_gpu=0 numa=0 resource=2 context_handle=0x1234 driver_context_id=1 stream=0x5678 frame=100 camera=3 stage=MyAlgo.execute
+[GPUInfra] MyAlgo.cu:150 operation=MyAlgo.execute error=Failure code=none message=invalid input size pid=12345 bound_gpu=0 numa=0 resource=2 context_handle=0x1234 driver_context_id=1 stream=0x5678 frame=100 camera=3 variant_id=0 stage=MyAlgo.execute
 ```
 
 This macro calls reportGpuFailure(). It always logs and does not return failure
@@ -188,3 +188,7 @@ previous identity on destruction, including early returns. Pass an explicit
 snapshot or establish a new scope on another thread. Stage strings are borrowed
 and must remain valid while used. Missing context information is not guessed.
 Normal cache timeout fallback is a strategy outcome, not an error log.
+
+`variant_id` is the caller-defined `GpuDataKey::variantId`; it is
+`unknown` when no key is known. It distinguishes preprocessing variants of the
+same frame/camera in cache diagnostics.

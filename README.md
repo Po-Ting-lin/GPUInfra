@@ -237,7 +237,7 @@ StaticData
 ```
 
 `StaticData::getCacheData()` accepts any incoming `GpuDataKey` whose metadata
-matches the fixed frame layout. `GpuDataKey` contains `frameId` and `cameraId`,
+matches the fixed frame layout. `GpuDataKey` contains `frameId`, `cameraId`, and `variantId`,
 so the same frame ID from different cameras cannot alias. `StaticData` stores
 no per-frame registry,
 scheduler state, `FramePhase`, CPU bytes, `JobResult`, or NUMA identity: graph
@@ -279,6 +279,10 @@ assignment cleans up the old member, so explicit completion also avoids waiting
 on one's own old lease. Self-move leaves the access unchanged.
 
 ## Cache access
+
+Distinct preprocessing results use distinct caller-defined `variantId` values
+(default 0). See the [payload identity contract](docs/integration/payload_identity.md)
+for shared AOI mapping, reset boundaries and remaining adapter work.
 
 `GpuCacheManager::getCacheData()` uses its fixed residency table and returns an RAII
 `GpuDataAccess`. `status()` returns `CacheStatus`; `getStream()` returns the
@@ -485,7 +489,7 @@ Reset does not call `cudaFree()` or `cudaMalloc()`: every
 `GpuCacheEntry` device pointer remains allocated and is reused by later fills.
 The graph-copy owner must call it after every old-run execution has finished
 and before any new-run execution can start. Between two resets, one
-`frameId + cameraId` identity must always represent the same immutable bytes.
+`frameId + cameraId + variantId` identity must always represent the same immutable bytes.
 If a run reuses an identity with new bytes and reset is skipped, stale cache
 data can be returned.
 

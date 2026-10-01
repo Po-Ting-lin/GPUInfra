@@ -27,6 +27,7 @@ int main() {
         testLifecycleAndResults(test, locations.front(), ExecutionModel::Interleaved, 2);
         testStaticDataValidation(test, locations.front());
         testGpuDataAccessState(test, locations.front());
+        testPayloadIdentity(test, locations.front());
         testGpuDataAccessMoves(test, locations.front());
         testIndependentPayloadCaches(test, locations.front(), 0);
         testIndependentPayloadCaches(test, locations.front(), 1);
