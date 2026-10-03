@@ -135,6 +135,9 @@ endforeach()
 if(GPUINFRA_BUILD_DEMO)
     add_executable(gpuinfra_demo demo/main.cpp)
     target_link_libraries(gpuinfra_demo PRIVATE gpuinfra_demo_support)
+    # Manual CPU lookup/complete-request measurement; not a timing-gated test.
+    add_executable(gpuinfra_cache_policy_benchmark EXCLUDE_FROM_ALL tools/cache_policy_benchmark.cpp)
+    target_link_libraries(gpuinfra_cache_policy_benchmark PRIVATE gpuinfra_demo_support)
 endif()
 
 include(CTest)

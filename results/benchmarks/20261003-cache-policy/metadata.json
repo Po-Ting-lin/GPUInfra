@@ -1,0 +1,21 @@
+{
+  "date": "2026-10-03",
+  "core_commit": "e0a9d4d22340724507994da27c60ed8007540000",
+  "cpu": "12th Gen Intel Core i5-12400",
+  "gpu": "NVIDIA GeForce RTX 3080",
+  "gpu_id": 0,
+  "numa_node": 0,
+  "driver": "595.84",
+  "cuda_runtime_version": 13010,
+  "cuda_driver_api_version": 13020,
+  "compiler": "GNU C++ 13.3.0",
+  "build_type": "RelWithDebInfo",
+  "nvtx": false,
+  "payload_bytes": 64,
+  "wait_timeout_ms": 0,
+  "retention": "Keep",
+  "warmup_requests_per_worker": 100,
+  "measured_requests_per_worker": 5000,
+  "repeats_per_policy": 3,
+  "samples": 96
+}

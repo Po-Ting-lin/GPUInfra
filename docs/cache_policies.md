@@ -110,3 +110,22 @@ configuration forwarding.
 The fixed-size result handoff test also runs both policies, verifying A's D2D
 publication and CPU atom copy, B's cross-stream hit/recovery, and last-use
 Discard allowing the next producer to reuse space without eviction.
+
+A four-entry FIFO regression also discards the middle (with outstanding
+readers), tail and head, checks surviving bytes, and forces subsequent
+replacements to verify that the oldest surviving keys are evicted in order.
+
+## Lookup-cost benchmark
+
+The manual `gpuinfra_cache_policy_benchmark` CMake target compares LRU/FIFO
+with a configurable prefix of long-held reader leases and one or more request
+workers. It reports getCacheData latency separately from complete-request
+throughput, including the normal CUDA fill and synchronization costs.
+It is excluded from default builds and is not a timing-gated CTest.
+
+[Recorded measurements and reproduction commands](../results/benchmarks/20261003-cache-policy/README.md)
+show increasing FIFO cost as more old entries are held. Large capacity alone
+does not imply a long scan. In the A-to-B workflow, results waiting between
+tasks are normally idle cache entries after A finishes Keep, not live readers.
+Use actual concurrent lease counts and workload timings to decide whether
+replacing the FIFO scan is worthwhile.

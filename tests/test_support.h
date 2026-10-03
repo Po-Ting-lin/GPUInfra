@@ -94,6 +94,7 @@ void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location)
 void testFrameDataAcrossTaskInstances(TestContext& test, const GpuLocation& location);
 void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location);
 void testCacheEvictionPolicies(TestContext& test, const GpuLocation& location);
+void testFifoDiscardPositions(TestContext& test, const GpuLocation& location);
 void testCacheDiscard(TestContext& test, const GpuLocation& location);
 void testCacheDiscardWaiter(TestContext& test, const GpuLocation& location);
 void testStaticDataCachePolicy(TestContext& test, const GpuLocation& location);

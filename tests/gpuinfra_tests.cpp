@@ -46,6 +46,7 @@ int main() {
         testGpuCacheResetBoundaries(test, locations.front());
         testGpuCacheManagerLru(test, locations.front());
         testCacheEvictionPolicies(test, locations.front());
+        testFifoDiscardPositions(test, locations.front());
         testCacheDiscard(test, locations.front());
         testCacheDiscardWaiter(test, locations.front());
         testStaticDataCachePolicy(test, locations.front());

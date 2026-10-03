@@ -1,6 +1,8 @@
 # Recorded results
 
-- `benchmarks/`: timing CSVs and plots from model/factor comparisons.
+- `benchmarks/`: model/factor timings and cache-policy lookup measurements.
+- [Cache policy benchmark, 2026-10-03](benchmarks/20261003-cache-policy/README.md):
+  LRU/FIFO with long-held readers, latency and complete-request throughput.
 - `profiling/`: NVTX capture summaries, logs and CSVs; raw traces stay local.
 
 Run tools from the repository root; see [profiling instructions](../docs/profiling.md).

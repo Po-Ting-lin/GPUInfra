@@ -149,6 +149,70 @@ void testCacheEvictionPolicies(TestContext& test, const GpuLocation& location) {
     }
 }
 
+void testFifoDiscardPositions(TestContext& test, const GpuLocation& location) {
+    CachePolicyResources fixture(test, location, 4, CacheEvictionPolicy::FIFO);
+    if (!fixture.initialized) {
+        return;
+    }
+    GpuCacheManager& cache = fixture.cache;
+    const TaskGpuResources& resources = fixture.resources[0];
+    for (std::uint64_t dataId : {1U, 2U, 3U, 4U}) {
+        fillPolicyPayload(test, cache, resources, dataId);
+    }
+
+    // Remove a middle entry with two readers. Keep the following entry alive
+    // so that corruption of either FIFO link cannot hide behind eviction.
+    {
+        GpuDataAccess following = cache.getCacheData(makePolicyMetadata(3), makeCacheRequest(resources));
+        GpuDataAccess terminal = cache.getCacheData(makePolicyMetadata(2), makeCacheRequest(resources));
+        GpuDataAccess remaining = cache.getCacheData(makePolicyMetadata(2), makeCacheRequest(fixture.resources[1]));
+        const void* discardedBuffer = remaining.data();
+        test.expect(following.status() == CacheStatus::CacheHit && terminal.status() == CacheStatus::CacheHit && remaining.status() == CacheStatus::CacheHit, "hold readers around a middle FIFO discard");
+        test.expect(terminal.freeCacheData(true, CacheRetention::Discard), "mark middle FIFO entry for discard");
+        test.expect(cache.statisticsSnapshot().discard == 0, "middle entry remains linked until its last reader completes");
+        test.expect(remaining.freeCacheData(true), "last middle reader completes the deferred discard");
+        GpuDataAccess replacement = cache.getCacheData(makePolicyMetadata(5), makeCacheRequest(resources));
+        test.expect(replacement.status() == CacheStatus::CacheFill && replacement.writableData() == discardedBuffer, "new FIFO tail reuses the discarded middle allocation");
+        const bool submitted = replacement.writableData() != nullptr && cudaMemsetAsync(replacement.writableData(), 5, POLICY_PAYLOAD_BYTES, replacement.getStream()) == cudaSuccess;
+        test.expect(replacement.freeCacheData(submitted), "publish replacement at FIFO tail");
+        test.expect(following.freeCacheData(true), "following entry survives removal of its predecessor");
+    }
+    for (std::uint64_t dataId : {1U, 3U, 4U, 5U}) {
+        verifyPolicyHit(test, cache, resources, dataId);
+    }
+
+    // FIFO is now 1,3,4,5. Remove its tail, append a new tail, then remove
+    // the head. Hits used to verify survivors must not change these positions.
+    {
+        GpuDataAccess tail = cache.getCacheData(makePolicyMetadata(5), makeCacheRequest(resources));
+        test.expect(tail.status() == CacheStatus::CacheHit && tail.freeCacheData(true, CacheRetention::Discard), "discard FIFO tail while older entries remain");
+    }
+    fillPolicyPayload(test, cache, resources, 6);
+    {
+        GpuDataAccess head = cache.getCacheData(makePolicyMetadata(1), makeCacheRequest(resources));
+        test.expect(head.status() == CacheStatus::CacheHit && head.freeCacheData(true, CacheRetention::Discard), "discard FIFO head while newer entries remain");
+    }
+    fillPolicyPayload(test, cache, resources, 7);
+    test.expect(cache.statisticsSnapshot().discard == 3 && cache.statisticsSnapshot().eviction == 0, "middle, tail and head discards create empty slots without eviction");
+    for (std::uint64_t dataId : {3U, 4U, 6U, 7U}) {
+        verifyPolicyHit(test, cache, resources, dataId);
+    }
+
+    // FIFO is 3,4,6,7. Force two consecutive replacements. Survivors catch a
+    // reversed/broken link, while probes establish which keys were evicted.
+    fillPolicyPayload(test, cache, resources, 8);
+    fillPolicyPayload(test, cache, resources, 9);
+    test.expect(cache.statisticsSnapshot().eviction == 2, "post-discard FIFO replaces the two oldest surviving entries");
+    for (std::uint64_t dataId : {6U, 7U, 8U, 9U}) {
+        verifyPolicyHit(test, cache, resources, dataId);
+    }
+    verifyPolicyMiss(test, cache, resources, 3);
+    verifyPolicyMiss(test, cache, resources, 4);
+    verifyPolicyMiss(test, cache, resources, 1);
+    verifyPolicyMiss(test, cache, resources, 2);
+    verifyPolicyMiss(test, cache, resources, 5);
+}
+
 void testCacheDiscard(TestContext& test, const GpuLocation& location) {
     for (CacheEvictionPolicy policy : {CacheEvictionPolicy::LRU, CacheEvictionPolicy::FIFO}) {
         CachePolicyResources fixture(test, location, 1, policy);

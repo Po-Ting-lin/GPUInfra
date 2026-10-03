@@ -379,6 +379,8 @@ allocation available for another key. The default `Keep` preserves current
 behavior. Only use Discard when no future consumers or retries need the key;
 pending A-to-B results remain best-effort and still need CPU recovery. See
 [cache policies and examples](docs/cache_policies.md).
+The optional `gpuinfra_cache_policy_benchmark` target measures lookup cost
+with long-held readers; see [results and reproduction](results/benchmarks/20261003-cache-policy/README.md).
 
 ## Shared static GPU data
 
@@ -632,7 +634,7 @@ docs/                      documentation index and current contracts
   design/                  design rationale and capacity analysis
   guides/                  standalone visual HTML guides
   archive/                 historical plans (not current API contracts)
-tools/                     benchmark and NVTX collection/summary scripts
+tools/                     benchmark drivers and NVTX collection/summary scripts
 results/                   retained benchmark and profiling artifacts
 ```
 
