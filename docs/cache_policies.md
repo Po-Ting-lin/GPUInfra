@@ -129,3 +129,10 @@ does not imply a long scan. In the A-to-B workflow, results waiting between
 tasks are normally idle cache entries after A finishes Keep, not live readers.
 Use actual concurrent lease counts and workload timings to decide whether
 replacing the FIFO scan is worthwhile.
+
+## A → CPU tasks → B benchmark
+
+The [result pipeline simulation](result_pipeline.md) uses separate A/B streams,
+a CPU task chain, and bounded in-flight frames. It compares both policies with
+Keep and Discard, measuring B hit rate, recovery traffic and end-to-end timing.
+Unlike the held-reader lookup benchmark, no lease spans the CPU task chain.

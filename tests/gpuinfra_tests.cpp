@@ -33,6 +33,7 @@ int main() {
         testIndependentPayloadCaches(test, locations.front(), 1);
         testGpuResultCacheHandoff(test, locations.front());
         testGpuResultCacheHandoff(test, locations.front(), CacheEvictionPolicy::FIFO);
+        testResultPipeline(test, locations.front());
         testConcurrentCacheRequests(test, locations.front());
         for (int scenario = 0; scenario < 4; ++scenario) {
             testCacheWaitWakeup(test, locations.front(), scenario);

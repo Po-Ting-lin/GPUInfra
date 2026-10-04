@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-04",
+  "core_commit": "ca63626f89c793be9d75eeaaed278ca496b5d227",
+  "simulation_uncommitted": true,
+  "gpu": "NVIDIA GeForce RTX 3080",
+  "driver": "595.84",
+  "numa_node": 0,
+  "cxx_compiler": "GNU 13.3.0",
+  "cuda_compiler": "13.1.115",
+  "build_type": "RelWithDebInfo",
+  "cuda_architecture": 86,
+  "nvtx": false,
+  "trials": 48,
+  "source_sha256": {
+    "CMakeLists.txt": "3d0de33b264cec32c7e92d2958d9c2b2c46530b696f1fc1175cb3ee1558c2fa5",
+    "demo/ResultPipeline/ResultKernel.cu": "9a23cea227c5353172bf49620b549a1f9b41327955129eac12d6b3177b9cb529",
+    "demo/ResultPipeline/ResultPipeline.cpp": "923b6dfa594798537a19d666355302020441729e74dbbd51052e96a7d543af82",
+    "demo/ResultPipeline/ResultPipeline.h": "00f4c38b199c532715b12e5d5c954168ed886e650441b7aa95dd2528952161f9",
+    "demo/ResultPipeline/ResultTasks.cpp": "ff97cdc905f5716c5ce374205a06235506b7d388d1a28ca5bdd2ca67e6690f20",
+    "demo/ResultPipeline/ResultTasks.h": "b893c4550c4a741a82e48a90d3b8c6fc8d2998998873b4d840534bb144e4eccc",
+    "tests/result_pipeline_tests.cpp": "07c06305360cf79c6a94ed48afb495c4460ffb49990fa79393539e4c08dd750b",
+    "tools/result_pipeline_benchmark.cpp": "fadf58befa79aefd56e9d77966c09a3057a77bd3c932152cf478a9735ab97223"
+  }
+}

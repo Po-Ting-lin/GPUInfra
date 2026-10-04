@@ -6,6 +6,7 @@ Current implementation and integration contracts:
 - [Graph golden rules](graph.md): NUMA affinity and framework callbacks.
 - [Toolchain compatibility](toolchain_compatibility.md): core-only builds and validation limits.
 - [CUDA logging](cuda_logging.md): checks, caller context and output examples.
+- [Result pipeline simulation](result_pipeline.md): A → CPU tasks → B tests and benchmarks.
 - [Cache statistics](cache_statistics.md): counters and A/B interpretation.
 - [NVTX profiling](profiling.md): build, collection and recorded results.
 - [Open issues](open_issues.md): integration work and future improvements.

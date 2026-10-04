@@ -83,6 +83,7 @@ void testPayloadIdentity(TestContext& test, const GpuLocation& location);
 void testGpuDataAccessState(TestContext& test, const GpuLocation& location);
 void testIndependentPayloadCaches(TestContext& test, const GpuLocation& location, std::size_t capacity);
 void testGpuResultCacheHandoff(TestContext& test, const GpuLocation& location, CacheEvictionPolicy policy = CacheEvictionPolicy::LRU);
+void testResultPipeline(TestContext& test, const GpuLocation& location);
 void testConcurrentCacheRequests(TestContext& test, const GpuLocation& location);
 void testCacheWaitWakeup(TestContext& test, const GpuLocation& location, int scenario);
 void testCacheWaitSharedDeadline(TestContext& test, const GpuLocation& location);

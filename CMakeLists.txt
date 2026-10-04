@@ -80,6 +80,9 @@ if(GPUINFRA_BUILD_DEMO)
         demo/Algo/Cel.cu
         demo/Algo/Mi.cu
         demo/Algo/Sdd.cu
+        demo/ResultPipeline/ResultTasks.cpp
+        demo/ResultPipeline/ResultKernel.cu
+        demo/ResultPipeline/ResultPipeline.cpp
         demo/DummyTask.cpp
         demo/Grape/DummyGraph.cpp
         demo/Grape/NumaExecutor.cpp
@@ -138,6 +141,8 @@ if(GPUINFRA_BUILD_DEMO)
     # Manual CPU lookup/complete-request measurement; not a timing-gated test.
     add_executable(gpuinfra_cache_policy_benchmark EXCLUDE_FROM_ALL tools/cache_policy_benchmark.cpp)
     target_link_libraries(gpuinfra_cache_policy_benchmark PRIVATE gpuinfra_demo_support)
+    add_executable(gpuinfra_result_pipeline_benchmark EXCLUDE_FROM_ALL tools/result_pipeline_benchmark.cpp)
+    target_link_libraries(gpuinfra_result_pipeline_benchmark PRIVATE gpuinfra_demo_support)
 endif()
 
 include(CTest)
@@ -148,6 +153,7 @@ if(BUILD_TESTING AND GPUINFRA_BUILD_DEMO)
         tests/cache_tests.cpp
         tests/cache_policy_tests.cpp
         tests/result_cache_tests.cpp
+        tests/result_pipeline_tests.cpp
         tests/static_data_tests.cpp
         tests/diagnostics_tests.cpp
         tests/graph_tests.cpp

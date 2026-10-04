@@ -379,6 +379,8 @@ allocation available for another key. The default `Keep` preserves current
 behavior. Only use Discard when no future consumers or retries need the key;
 pending A-to-B results remain best-effort and still need CPU recovery. See
 [cache policies and examples](docs/cache_policies.md).
+The [A → CPU tasks → B simulation](docs/result_pipeline.md) adds concrete result tasks,
+correctness tests, and a concurrent LRU/FIFO × Keep/Discard pipeline benchmark.
 The optional `gpuinfra_cache_policy_benchmark` target measures lookup cost
 with long-held readers; see [results and reproduction](results/benchmarks/20261003-cache-policy/README.md).
 
@@ -615,6 +617,7 @@ src/                       reusable gpuinfra library
 demo/                      gpuinfra_demo_support library and demo executable
   Algo/                    IAlgo and synthetic CEL/SDD/MI algorithms
   Grape/                   simulated framework, scheduler and NUMA executor
+  ResultPipeline/          A/CPU/B tasks and bounded concurrent simulation
   DummyTask.*              example caller lifecycle
   ParameterRegistry.*      simulated parameter delivery
   ImageSizing.h            synthetic image dimensions
@@ -625,6 +628,7 @@ tests/                     one test runner, split by responsibility
   cache_tests.cpp          leases, waits, fallback, LRU and statistics
   cache_policy_tests.cpp   LRU/FIFO ordering, last-use Discard and wait wakeup
   result_cache_tests.cpp   D2D handoff, CPU-backed recovery and terminal Discard
+  result_pipeline_tests.cpp A/CPU/B interleaving, recovery and policy outcomes
   static_data_tests.cpp    layout validation and read-only GPU data
   diagnostics_tests.cpp    logger and cuFFT integration
   graph_tests.cpp          task/framework lifecycle and NUMA boundaries
