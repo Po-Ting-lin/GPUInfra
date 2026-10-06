@@ -67,7 +67,7 @@ and an age bit for safe replacement.
 
 | Legacy requirement | Current GPUInfra behavior | Assessment |
 | --- | --- | --- |
-| One cache shared by multiple task instances | `StaticData` owns one graph-copy `GpuCacheManager` | Compatible and has clearer ownership |
+| One cache shared by multiple task instances | `StaticData` owns one graph-copy `GpuDataCache` | Compatible and has clearer ownership |
 | No hot-path `cudaMalloc()`/`cudaFree()` | Cache entries and task fallback buffers are allocated during initialization | Compatible |
 | Cache hit, fill, active readers, and safe replacement | `GpuDataAccess`, `GpuCacheState`, and `activeAccesses` implement scoped leases | Compatible |
 | Full-frame immutable cache payload | Each entry owns a fixed-size persistent GPU payload | Compatible if callers never modify cached input |
@@ -134,7 +134,7 @@ at every quiescent run boundary.
 The GpuI2I integration plan is for each caller/task instance to preallocate
 one master fallback buffer and one reference fallback buffer during load,
 then free them during unload. These are caller-specific resources, not roles
-to add to the generic GpuCacheManager or TaskGpuResources.
+to add to the generic GpuDataCache or TaskGpuResources.
 
 - loadMaster(): use the master cache access when available; on TaskFallback,
   upload into the caller's master buffer.
@@ -256,10 +256,10 @@ Production caller wiring remains to be integrated; see README for the API.
 Real graph copy
   └─ StaticData
        ├─ fixed data layout + resetCache() run boundary
-       ├─ GpuCacheManager
+       ├─ GpuDataCache
        │    ├─ fixed open-addressing residency table
        │    ├─ empty stack + intrusive global LRU
-       │    └─ persistent GpuCacheEntry allocations
+       │    └─ persistent GpuDataCacheEntry allocations
        └─ StaticGpuData: independent DZ/distortion buffers + upload stream
 
 Task instance
@@ -304,7 +304,7 @@ Only the framework extension points are required:
 ### Alternative: preserve the legacy `GpuCache` API
 
 An adapter can expose `register_thread()`, `getCacheFrame()`, and
-`freeCacheFrame()` while internally using `GpuCacheManager`. This is possible
+`freeCacheFrame()` while internally using `GpuDataCache`. This is possible
 but not preferred because the adapter must maintain an additional table of
 outstanding RAII accesses indexed by task, pointer, frame ID, and camera ID.
 It must also emulate loading-stream retry, constant memory, reset counters, and

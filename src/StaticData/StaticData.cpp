@@ -22,7 +22,7 @@ StaticData::~StaticData() {
 }
 
 bool StaticData::init(const StaticDataConfig& config) {
-    if (initialized || gpuStaticData.state() != StaticGpuDataState::Empty || gpuCacheManager.isInitialized() || frameRuntime.inBytes != 0 || config.runtime.inBytes == 0) {
+    if (initialized || gpuStaticData.state() != StaticGpuDataState::Empty || gpuDataCache.isInitialized() || frameRuntime.inBytes != 0 || config.runtime.inBytes == 0) {
         return false;
     }
 
@@ -50,7 +50,7 @@ bool StaticData::init(const StaticDataConfig& config) {
             return false;
         }
     }
-    if (!gpuCacheManager.initialize(gpuIds, config.runtime.inBytes, config.gpuCacheEntries, config.gpuCacheWaitTimeout, config.gpuCacheEvictionPolicy)) {
+    if (!gpuDataCache.initialize(gpuIds, config.runtime.inBytes, config.gpuCacheEntries, config.gpuCacheWaitTimeout, config.gpuCacheEvictionPolicy)) {
         return false;
     }
 
@@ -87,11 +87,11 @@ std::size_t StaticData::staticGpuDataBytes(StaticGpuDataType type) const {
 }
 
 bool StaticData::resetCache(CacheStatistics* completedStatistics) {
-    return initialized && frameRuntime.inBytes != 0 && gpuCacheManager.resetCache(completedStatistics);
+    return initialized && frameRuntime.inBytes != 0 && gpuDataCache.resetCache(completedStatistics);
 }
 
 CacheStatistics StaticData::cacheStatisticsSnapshot() const {
-    return gpuCacheManager.statisticsSnapshot();
+    return gpuDataCache.statisticsSnapshot();
 }
 
 bool StaticData::execute() const {
@@ -101,7 +101,7 @@ bool StaticData::execute() const {
 bool StaticData::release() {
     // Reject live cache users before touching static buffers. The framework must
     // also drain readers that only borrow static pointers (there are no leases).
-    if (!gpuCacheManager.release()) {
+    if (!gpuDataCache.release()) {
         return false;
     }
     initialized = false;
@@ -117,7 +117,7 @@ bool StaticData::isInitialized() const {
 }
 
 std::size_t StaticData::gpuCacheEntryCount() const {
-    return gpuCacheManager.entryCount();
+    return gpuDataCache.entryCount();
 }
 
 bool StaticData::validateFrame(const FrameMetadata& metadata) const {
@@ -128,5 +128,5 @@ GpuDataAccess StaticData::getCacheData(const FrameMetadata& metadata, const GpuC
     if (!validateFrame(metadata)) {
         return GpuDataAccess();
     }
-    return gpuCacheManager.getCacheData(metadata, request);
+    return gpuDataCache.getCacheData(metadata, request);
 }

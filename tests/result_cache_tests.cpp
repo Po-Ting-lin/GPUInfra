@@ -25,7 +25,7 @@ ResultAtom makeResultAtom(std::uint64_t dataId) {
     return atom;
 }
 
-bool produceResult(TestContext& test, GpuCacheManager& cache, const TaskGpuResources& producer, void* d_algoOutput, ResultAtom& atom, unsigned char value, CacheStatus expectedStatus) {
+bool produceResult(TestContext& test, GpuDataCache& cache, const TaskGpuResources& producer, void* d_algoOutput, ResultAtom& atom, unsigned char value, CacheStatus expectedStatus) {
     atom.ready = false;
     GpuDataAccess access = cache.getCacheData(atom.metadata, makeCacheRequest(producer));
     test.expect(access.status() == expectedStatus, "producer uses expected result reservation");
@@ -47,7 +47,7 @@ bool produceResult(TestContext& test, GpuCacheManager& cache, const TaskGpuResou
     return atom.ready;
 }
 
-bool consumeResult(TestContext& test, GpuCacheManager& cache, const TaskGpuResources& consumer, void* d_consumerOutput, const ResultAtom& atom, CacheStatus expectedStatus, std::size_t& uploadedBytes, CacheRetention retention = CacheRetention::Keep) {
+bool consumeResult(TestContext& test, GpuDataCache& cache, const TaskGpuResources& consumer, void* d_consumerOutput, const ResultAtom& atom, CacheStatus expectedStatus, std::size_t& uploadedBytes, CacheRetention retention = CacheRetention::Keep) {
     if (!atom.ready || atom.metadata.key.frameId != atom.dataId) {
         test.expect(false, "consumer requires a completed atom with the handed-off identity");
         return false;
@@ -86,7 +86,7 @@ bool consumeResult(TestContext& test, GpuCacheManager& cache, const TaskGpuResou
 void testGpuResultCacheHandoff(TestContext& test, const GpuLocation& location, CacheEvictionPolicy policy) {
     TaskGpuResources producer;
     TaskGpuResources consumer;
-    GpuCacheManager resultCache;
+    GpuDataCache resultCache;
     void* d_algoOutput = nullptr;
     void* d_consumerOutput = nullptr;
     const bool initialized = initializeAccessResources(producer, location, RESULT_BYTES) && initializeAccessResources(consumer, location, RESULT_BYTES) && cudaMalloc(&d_algoOutput, RESULT_BYTES) == cudaSuccess && cudaMalloc(&d_consumerOutput, RESULT_BYTES) == cudaSuccess && resultCache.initialize({location.gpuId}, RESULT_BYTES, 1, std::chrono::milliseconds(0), policy);

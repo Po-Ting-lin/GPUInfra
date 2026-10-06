@@ -11,7 +11,7 @@
 #include "Types/FrameMetadata.h"
 #include "DataCache/CachePolicy.h"
 #include "DataCache/CacheStatistics.h"
-#include "DataCache/GpuCacheEntry.h"
+#include "DataCache/GpuDataCacheEntry.h"
 #include "DataCache/GpuDataAccess.h"
 #include "DataCache/GpuCacheRequest.h"
 #include "DataCache/GpuResidencyTable.h"
@@ -19,10 +19,10 @@
 // Graph-copy-scoped, fixed-capacity GPU data cache. The current implementation
 // indexes immutable fixed-size payloads by GpuDataKey. The caller handles
 // misses and supplies independent fallback storage for each live payload.
-class GpuCacheManager {
+class GpuDataCache {
 public:
-    GpuCacheManager() = default;
-    ~GpuCacheManager();
+    GpuDataCache() = default;
+    ~GpuDataCache();
 
     // FIFO age starts at successful fill completion; Hits preserve that age.
     bool initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount, std::chrono::milliseconds waitTimeout = std::chrono::milliseconds(50), CacheEvictionPolicy evictionPolicy = CacheEvictionPolicy::LRU);
@@ -39,8 +39,8 @@ public:
     std::size_t entryCount() const;
     std::size_t bytes() const;
 
-    GpuCacheManager(const GpuCacheManager&) = delete;
-    GpuCacheManager& operator=(const GpuCacheManager&) = delete;
+    GpuDataCache(const GpuDataCache&) = delete;
+    GpuDataCache& operator=(const GpuDataCache&) = delete;
 
 private:
     friend class GpuDataAccess;
@@ -56,11 +56,11 @@ private:
     bool removeEvictableEntry(std::size_t index);
     bool addFilledEntry(std::size_t index);
     bool removeFilledEntry(std::size_t index);
-    bool releaseReaderEntry(GpuCacheEntry& entry, std::size_t index);
+    bool releaseReaderEntry(GpuDataCacheEntry& entry, std::size_t index);
     bool completeAccess(GpuDataAccess& access, bool succeeded, CacheRetention retention);
     void abortAccess(GpuDataAccess& access);
     GpuDataAccess makeFallbackAccess(const FrameMetadata& metadata, const GpuCacheRequest& request, CacheFallbackReason reason);
-    void resetEntry(GpuCacheEntry& entry, std::size_t index);
+    void resetEntry(GpuDataCacheEntry& entry, std::size_t index);
 
     CacheStatistics statistics;
     mutable std::mutex lock;
@@ -68,7 +68,7 @@ private:
     std::chrono::milliseconds waitTimeout{50};
     CacheEvictionPolicy evictionPolicy = CacheEvictionPolicy::LRU;
     std::size_t waitingAccesses = 0;
-    std::vector<std::unique_ptr<GpuCacheEntry>> entries;
+    std::vector<std::unique_ptr<GpuDataCacheEntry>> entries;
     std::vector<int> eligibleGpuIds;
     GpuResidencyTable residencyTable;
     std::vector<std::size_t> emptyEntries;

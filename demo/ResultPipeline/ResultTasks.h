@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "Context/GpuContextManager.h"
-#include "DataCache/GpuCacheManager.h"
+#include "DataCache/GpuDataCache.h"
 
 namespace result_pipeline {
 
@@ -40,7 +40,7 @@ public:
 class TaskA {
 public:
     bool load(std::size_t bytes);
-    bool execute(GpuCacheManager& cache, ResultAtom& atom);
+    bool execute(GpuDataCache& cache, ResultAtom& atom);
     bool unload();
 
 private:
@@ -59,7 +59,7 @@ private:
 class TaskB {
 public:
     bool load(std::size_t bytes);
-    bool execute(GpuCacheManager& cache, const ResultAtom& atom, std::size_t requiredCpuStages, CacheRetention retention);
+    bool execute(GpuDataCache& cache, const ResultAtom& atom, std::size_t requiredCpuStages, CacheRetention retention);
     bool unload();
     std::uint64_t hits = 0;
     std::uint64_t uploadedBytes = 0;

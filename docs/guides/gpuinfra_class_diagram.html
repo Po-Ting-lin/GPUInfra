@@ -495,7 +495,7 @@
                     <text class="uml-stereotype-text" x="1245" y="376">«graph-copy extension data»</text>
                     <text class="uml-title" x="1245" y="402">StaticData</text>
                     <line class="uml-divider" x1="1070" y1="416" x2="1420" y2="416"></line>
-                    <text class="uml-member" x="1086" y="442">- gpuCacheManager</text>
+                    <text class="uml-member" x="1086" y="442">- gpuDataCache</text>
                     <text class="uml-member" x="1086" y="465">- frameRuntime</text>
                     <line class="uml-divider" x1="1070" y1="480" x2="1420" y2="480"></line>
                     <text class="uml-member" x="1086" y="505">+ getCacheData()</text>
@@ -542,7 +542,7 @@
         <div class="uml-scroll">
             <svg class="uml-canvas" viewBox="0 0 1500 880" role="img" aria-labelledby="cache-uml-title cache-uml-desc">
                 <title id="cache-uml-title">GPUInfra GPU data cache UML diagram</title>
-                <desc id="cache-uml-desc">StaticData owns one GpuCacheManager. The manager owns one residency table and K cache entries. Each cache entry owns persistent GPU replicas. The manager creates scoped GpuDataAccess objects used by DummyTask.</desc>
+                <desc id="cache-uml-desc">StaticData owns one GpuDataCache. The manager owns one residency table and K cache entries. Each cache entry owns persistent GPU replicas. The manager creates scoped GpuDataAccess objects used by DummyTask.</desc>
                 <defs>
                     <marker id="cache-composition" markerWidth="12" markerHeight="12" refX="1" refY="6" orient="auto">
                         <path d="M1 6 L6 1 L11 6 L6 11 Z" fill="#e8f0ff"></path>
@@ -606,16 +606,16 @@
                     <text class="uml-stereotype-text" x="750" y="76">«graph-copy owner»</text>
                     <text class="uml-title" x="750" y="102">StaticData</text>
                     <line class="uml-divider" x1="585" y1="116" x2="915" y2="116"></line>
-                    <text class="uml-member" x="601" y="142">- gpuCacheManager</text>
+                    <text class="uml-member" x="601" y="142">- gpuDataCache</text>
                     <line class="uml-divider" x1="585" y1="157" x2="915" y2="157"></line>
                     <text class="uml-member" x="601" y="181">+ getCacheData()</text>
                     <text class="uml-member" x="601" y="204">+ resetCache()</text>
                 </g>
 
-                <g aria-label="GpuCacheManager class">
+                <g aria-label="GpuDataCache class">
                     <rect class="uml-box frame" x="1070" y="50" width="350" height="200" rx="10"></rect>
                     <text class="uml-stereotype-text" x="1245" y="76">«bounded cache manager»</text>
-                    <text class="uml-title" x="1245" y="102">GpuCacheManager</text>
+                    <text class="uml-title" x="1245" y="102">GpuDataCache</text>
                     <line class="uml-divider" x1="1070" y1="116" x2="1420" y2="116"></line>
                     <text class="uml-member" x="1086" y="142">- entries[K]</text>
                     <text class="uml-member" x="1086" y="165">- residencyTable</text>
@@ -646,10 +646,10 @@
                     <text class="uml-member" x="601" y="528">+ freeCacheData(success)</text>
                 </g>
 
-                <g aria-label="GpuCacheEntry class">
+                <g aria-label="GpuDataCacheEntry class">
                     <rect class="uml-box frame" x="1070" y="350" width="350" height="210" rx="10"></rect>
                     <text class="uml-stereotype-text" x="1245" y="376">«reusable persistent entry»</text>
-                    <text class="uml-title" x="1245" y="402">GpuCacheEntry</text>
+                    <text class="uml-title" x="1245" y="402">GpuDataCacheEntry</text>
                     <line class="uml-divider" x1="1070" y1="416" x2="1420" y2="416"></line>
                     <text class="uml-member" x="1086" y="442">- metadata: FrameMetadata</text>
                     <text class="uml-member" x="1086" y="465">- state / activeAccesses</text>
@@ -738,7 +738,7 @@
                     <li>accepts any matching incoming key without a registration list</li>
                     <li><code>resetCache()</code> clears residency at a quiescent run boundary without freeing device buffers</li>
                     <li>stores no NUMA or scheduler state</li>
-                    <li>owns one bounded <code>GpuCacheManager</code></li>
+                    <li>owns one bounded <code>GpuDataCache</code></li>
                     <li>default cache capacity 4; capacity 0 is valid</li>
                     <li>owns no scheduler execution state</li>
                     <li>does not participate in scheduler selection</li>
@@ -774,10 +774,10 @@
                 </ul>
             </article>
             <article class="class-card frame-card wide">
-                <header><span class="stereotype">bounded cache manager</span><h3>GpuCacheManager</h3></header>
+                <header><span class="stereotype">bounded cache manager</span><h3>GpuDataCache</h3></header>
                 <ul>
-                    <li><code>DataCache/GpuCacheManager.h/.cpp</code></li>
-                    <li>owns fixed <code>GpuCacheEntry[K]</code> entries</li>
+                    <li><code>DataCache/GpuDataCache.h/.cpp</code></li>
+                    <li>owns fixed <code>GpuDataCacheEntry[K]</code> entries</li>
                     <li>owns a fixed open-addressing residency table for at most K keys</li>
                     <li>coordinates entry state, active accesses, empty stack, and intrusive LRU</li>
                     <li>average O(1) lookup and O(1) victim selection</li>
@@ -797,9 +797,9 @@
                 </ul>
             </article>
             <article class="class-card frame-card wide">
-                <header><span class="stereotype">reusable cache entry</span><h3>GpuCacheEntry</h3></header>
+                <header><span class="stereotype">reusable cache entry</span><h3>GpuDataCacheEntry</h3></header>
                 <ul>
-                    <li><code>DataCache/GpuCacheEntry.h/.cpp</code></li>
+                    <li><code>DataCache/GpuDataCacheEntry.h/.cpp</code></li>
                     <li>temporarily cached complete metadata</li>
                     <li>directly owns GPU-keyed <code>GpuReplica</code> collection</li>
                     <li>one device buffer preallocated per entry today</li>
@@ -871,9 +871,9 @@
     <section class="section">
         <h2>Best-effort cached GPU payload</h2>
         <div class="relationship">
-            <div class="node"><strong style="color: var(--frame)">GpuCacheManager</strong><span>fixed K-entry owner</span></div>
+            <div class="node"><strong style="color: var(--frame)">GpuDataCache</strong><span>fixed K-entry owner</span></div>
             <div class="arrow">→</div>
-            <div class="node"><strong style="color: var(--frame)">GpuCacheEntry</strong><span>metadata + LRU/lease state</span></div>
+            <div class="node"><strong style="color: var(--frame)">GpuDataCacheEntry</strong><span>metadata + LRU/lease state</span></div>
             <div class="arrow">→</div>
             <div class="node"><strong style="color: var(--gpu)">GpuReplica</strong><span><code>gpuId</code> + persistent <code>d_data</code> + validity</span></div>
             <div class="arrow">or</div>

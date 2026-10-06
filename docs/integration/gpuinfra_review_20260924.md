@@ -70,7 +70,7 @@ support／target，保留 demo tests 為另一組。不需為此修改 public ca
 - [GpuDataAccess.h](../../src/DataCache/GpuDataAccess.h) 把 Fill 與 Fallback
   都描述成必須填滿整個 payload；AOI 指引允許 full-sized private buffer 的 ROI-only
   fallback。應明確限制完整填入要求於 CacheFill，Fallback 由 consumer 讀取範圍決定。
-- [GpuCacheManager.h](../../src/DataCache/GpuCacheManager.h) 要求每個 live payload
+- [GpuDataCache.h](../../src/DataCache/GpuDataCache.h) 要求每個 live payload
   有 independent fallback storage，未明確描述同 stream 有序重用同一 ref allocation。
 - [old_vs_new.md](old_vs_new.md) §2／§10 仍列 integration adapter、one-sync
   completion 與 separate constant storage 為剩餘工作，與「不新增 adapter」、

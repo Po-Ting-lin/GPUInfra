@@ -8,10 +8,10 @@ contracts; neither can overwrite Loading data or a live reader's allocation.
 ## Selecting LRU or FIFO
 
 ```cpp
-GpuCacheManager frameCache;
+GpuDataCache frameCache;
 bool frameInitialized = frameCache.initialize({gpuId}, frameBytes, frameCapacity);
 
-GpuCacheManager resultCache;
+GpuDataCache resultCache;
 bool resultInitialized = resultCache.initialize({gpuId}, resultBytes, resultCapacity, std::chrono::milliseconds(50), CacheEvictionPolicy::FIFO);
 ```
 

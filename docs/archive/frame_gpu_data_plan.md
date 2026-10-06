@@ -11,7 +11,7 @@ to different GPUs, without changing scheduler selection:
 ```text
 FrameCpuAtom
   -> TaskA on GPU 0
-  -> best-effort GpuCacheEntry cache entry
+  -> best-effort GpuDataCacheEntry cache entry
   -> TaskB on GPU 1
   -> TaskC on GPU 0
 ```
@@ -40,10 +40,10 @@ fallback.
 For `G` eligible GPUs and cache capacity `K`:
 
 ```text
-GpuCacheManager
+GpuDataCache
   ├─ fixed open-addressing GpuDataKey -> entry index table [~2K]
   ├─ empty-entry stack + intrusive inactive-entry LRU
-  └─ GpuCacheEntry[K]
+  └─ GpuDataCacheEntry[K]
        ├─ cached FrameMetadata
        ├─ whole-entry LRU / active state
        └─ GpuReplica[eligible GPUs]

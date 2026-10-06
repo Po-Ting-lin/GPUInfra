@@ -20,7 +20,7 @@ out of order:
 Both options change only the resident-key index. They retain the same:
 
 ```text
-persistent GpuCacheEntry[K]
+persistent GpuDataCacheEntry[K]
 global LRU
 Empty / Loading / Valid states
 active GpuDataAccess leases
@@ -35,7 +35,7 @@ cache entries.
 ## Option A: `std::unordered_map`
 
 ```cpp
-std::vector<std::unique_ptr<GpuCacheEntry>> entries;  // K persistent GPU allocations
+std::vector<std::unique_ptr<GpuDataCacheEntry>> entries;  // K persistent GPU allocations
 std::unordered_map<GpuDataKey, std::size_t, GpuDataKeyHash> residency;
 ```
 
@@ -60,7 +60,7 @@ The map cannot replace the persistent entry pool or LRU by itself:
 - The map does not choose an inactive LRU victim.
 - It does not prevent eviction of Loading or actively leased entries.
 - It does not own the graph-lifetime GPU buffers safely.
-- Directly erasing a map-owned `GpuCacheEntry` could destroy the entry and call
+- Directly erasing a map-owned `GpuDataCacheEntry` could destroy the entry and call
   `cudaFree()` on the hot path.
 
 The safe role of the map is only:
@@ -168,6 +168,6 @@ Adding a custom fixed allocator or node-recycling scheme to
 `std::unordered_map` can reduce its allocation cost, but it also removes much
 of the simplicity advantage over the current fixed table.
 
-The `GpuCacheManager` public API should remain independent of the chosen index,
+The `GpuDataCache` public API should remain independent of the chosen index,
 allowing the implementation to be replaced without changing `DummyTask` or the
 graph scheduler.

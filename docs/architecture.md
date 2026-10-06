@@ -26,7 +26,7 @@ process
   |     +-- FrameCpuAtom collections
   |     `-- StaticData
   |           +-- fixed layout + resetCache() boundary
-  |           `-- GpuCacheManager -> fixed residency table + GpuCacheEntry[K]
+  |           `-- GpuDataCache -> fixed residency table + GpuDataCacheEntry[K]
   |
   `-- DummyGraph(executor=NumaExecutor(1))
         +-- NUMA-local worker pool
@@ -34,7 +34,7 @@ process
         +-- FrameCpuAtom collections
         `-- StaticData
               +-- fixed layout + resetCache() boundary
-              `-- GpuCacheManager -> fixed residency table + GpuCacheEntry[K]
+              `-- GpuDataCache -> fixed residency table + GpuDataCacheEntry[K]
 ```
 
 `N` is the graph-owned logical frame count. `K` is the independently configured
@@ -85,9 +85,9 @@ The worker remains NUMA-bound; the selected task remains GPU-bound.
 | `FrameCpuAtom` | CPU input byte vector, intrinsic metadata, and preallocated result |
 | `StaticData` | Fixed frame layout, run-boundary reset, bounded GPU cache and StaticGpuData owner |
 | `StaticGpuData` | Separate DZ/distortion buffers; cold-path zeroing/upload and Ready publication |
-| `GpuCacheManager` | Fixed cache-entry array, fixed open-addressing residency table, short metadata mutex, lease counts, empty stack, intrusive LRU and optional FIFO order |
+| `GpuDataCache` | Fixed cache-entry array, fixed open-addressing residency table, short metadata mutex, lease counts, empty stack, intrusive LRU and optional FIFO order |
 | `GpuResidencyTable` | At most K resident/loading keys in allocation-free linear-probing storage sized to at least 2K slots |
-| `GpuCacheEntry` | One reusable entry with GPU-keyed persistent replicas and validity bits |
+| `GpuDataCacheEntry` | One reusable entry with GPU-keyed persistent replicas and validity bits |
 | `GpuDataAccess` | Scoped non-owning cache/fallback view; synchronization and publish/abort |
 | `DummyTask` | GPU-bound reusable execution lane and CEL/SDD/MI objects |
 | `TaskGpuResources` | Stream, pinned `h_in`, fallback `d_input`, scratch, GPU/resource/context identity |
@@ -99,7 +99,7 @@ The essential split is:
 ```text
 CPU input and host result       -> FrameCpuAtom
 logical execution state         -> DummyGraph collections/queues/counters
-best-effort cached GPU input     -> GpuCacheEntry / GpuReplica
+best-effort cached GPU input     -> GpuDataCacheEntry / GpuReplica
 correctness fallback GPU input  -> TaskGpuResources::d_input
 CUDA execution lane             -> DummyTask / TaskGpuResources
 host execution                  -> temporarily selected graph worker
@@ -167,7 +167,7 @@ boundary:
 ```text
 StaticData::getCacheData(metadata, request)
   -> fixed layout validation
-  -> GpuCacheManager::getCacheData(metadata, request)
+  -> GpuDataCache::getCacheData(metadata, request)
        -> fixed open-addressing GpuDataKey -> resident entry index lookup
        -> empty stack or an eligible LRU/FIFO entry on miss
 ```
@@ -181,7 +181,7 @@ use a short mutex; no CUDA call runs while it is held.
 
 ## 6. Cache states and leases
 
-Each `GpuCacheEntry` is in one state:
+Each `GpuDataCacheEntry` is in one state:
 
 - `Empty`: immediately available for a miss;
 - `Loading`: one cache fill owns the entry but has not published it;
@@ -287,7 +287,7 @@ FrameCpuAtom in the demo:
 StaticData frame layout:
   StaticData::init() -> release()
 
-GpuCacheEntry replicas:
+GpuDataCacheEntry replicas:
   StaticData::init() cudaMalloc
     -> repeated fill/hit/eviction/resetCache
     -> StaticData::release() cudaFree
@@ -315,7 +315,7 @@ DummyTask::stop() execution-cycle hook
   -> GpuContextManager::shutdown() retained contexts
 ```
 
-`GpuCacheManager::release()` rejects live cache or fallback leases and waiting requests. Normal graph
+`GpuDataCache::release()` rejects live cache or fallback leases and waiting requests. Normal graph
 teardown reaches it only after workers have joined.
 
 ## 11. Current and future topology

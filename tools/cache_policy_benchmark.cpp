@@ -16,7 +16,7 @@
 
 #include "Context/GpuContextManager.h"
 #include "CudaCheck.h"
-#include "DataCache/GpuCacheManager.h"
+#include "DataCache/GpuDataCache.h"
 #include "Grape/NumaExecutor.h"
 
 namespace {
@@ -79,7 +79,7 @@ void require(bool condition, const char* message) {
     }
 }
 
-bool fill(GpuCacheManager& cache, const GpuCacheRequest& request, std::uint64_t id, double* lookupUs = nullptr) {
+bool fill(GpuDataCache& cache, const GpuCacheRequest& request, std::uint64_t id, double* lookupUs = nullptr) {
     const FrameMetadata metadata = makeMetadata(id);
     const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     GpuDataAccess access = cache.getCacheData(metadata, request);
@@ -108,7 +108,7 @@ double percentile(const std::vector<double>& sorted, std::size_t percent) {
 }
 
 void measure(const GpuLocation& location, CacheEvictionPolicy policy, std::size_t capacity, std::size_t heldCount, std::size_t workerCount, std::size_t iterations, std::size_t repeat) {
-    GpuCacheManager cache;
+    GpuDataCache cache;
     require(cache.initialize({location.gpuId}, PAYLOAD_BYTES, capacity, std::chrono::milliseconds(0), policy), "cache initialization failed");
     std::vector<std::unique_ptr<Caller>> callers;
     for (std::size_t index = 0; index <= workerCount; ++index) {

@@ -11,7 +11,7 @@
 ## 1. 範圍與既定決策
 
 直接修改既有 `GpuI2I`／`GpuI2IInputs`／detector 與 graph resource owner，
-**不新增 AOI adapter 類別**，也不把交易角色放進 GpuCacheManager。
+**不新增 AOI adapter 類別**，也不把交易角色放進 GpuDataCache。
 保留既有 `loadMaster → runRef × N → getDefects` 對外流程與 scheduler。
 
 第一階段從 **K>0、waitTimeout=0** 整合，先跳過 K=0 整合測試。

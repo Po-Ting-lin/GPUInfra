@@ -15,9 +15,9 @@ enum class CacheStatus {
     TaskFallback,
 };
 
-class GpuCacheManager;
+class GpuDataCache;
 
-// Scoped, non-owning access to GPU data selected by GpuCacheManager. Keeping
+// Scoped, non-owning access to GPU data selected by GpuDataCache. Keeping
 // this object alive prevents a cache-backed entry from being evicted while
 // queued CUDA work may still read the returned pointer; task fallback use is
 // tracked for the same lifetime.
@@ -84,14 +84,14 @@ public:
     GpuDataAccess& operator=(GpuDataAccess&& other) noexcept;
 
 private:
-    friend class GpuCacheManager;
+    friend class GpuDataCache;
 
-    GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, CacheStatus accessStatus);
+    GpuDataAccess(GpuDataCache* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, CacheStatus accessStatus);
     void abortUnfinishedAccess() noexcept;
     void takeAccess(GpuDataAccess& other) noexcept;
     void reset();
 
-    GpuCacheManager* owner = nullptr;
+    GpuDataCache* owner = nullptr;
     void* d_data = nullptr;
     std::size_t dataBytes = 0;
     std::size_t entryIndex = 0;

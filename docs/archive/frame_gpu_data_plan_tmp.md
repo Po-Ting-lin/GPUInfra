@@ -11,7 +11,7 @@ possible, while keeping correctness independent of cache residency:
 ```text
 RAM / immutable FrameCpuAtom
   ├─ cache miss -> H2D -> task-private d_input -> algorithms
-  └─ cache fill -> H2D -> GpuCacheEntry.GpuReplica.d_data
+  └─ cache fill -> H2D -> GpuDataCacheEntry.GpuReplica.d_data
                               |
                     later task instance
                               |
@@ -40,10 +40,10 @@ never fails merely because all cache entries are busy.
 ```text
 StaticData
   ├─ fixed frame layout + resetCache() run boundary
-  └─ GpuCacheManager
+  └─ GpuDataCache
        ├─ fixed open-addressing GpuDataKey -> entry index table [~2K]
        ├─ empty-entry stack + intrusive inactive-entry LRU
-       └─ GpuCacheEntry[K]
+       └─ GpuDataCacheEntry[K]
             cached metadata + cache state + leases + LRU links
             └─ GpuReplica(gpuId, d_data, valid)
 ```
@@ -75,7 +75,7 @@ There is no fixed 220-frame capacity or frame registration list.
 - Stores no `JobResult`; result lifetime follows `FrameCpuAtom`.
 - Owns no CPU bytes and no per-frame device allocation.
 
-### `GpuCacheEntry`
+### `GpuDataCacheEntry`
 
 - Is a reusable GPU cache entry, not a logical frame record.
 - Temporarily stores cached metadata, `Empty`/`Loading`/`Valid` state, active
@@ -172,7 +172,7 @@ of an incomplete access synchronizes submitted work and aborts it.
 
 ## 6. Lookup and replacement
 
-`GpuCacheManager::getCacheData(metadata, request)` holds a short cache metadata
+`GpuDataCache::getCacheData(metadata, request)` holds a short cache metadata
 mutex and performs an average `O(1)` lookup in a fixed open-addressing table.
 The table holds at most K resident/loading keys in at least 2K slots. Misses
 erase and insert keys with linear probing and backward-shift deletion. An

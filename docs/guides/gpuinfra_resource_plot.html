@@ -331,7 +331,7 @@
                     <div class="resource thread"><strong>Graph-thread pool</strong><span>Every worker is pinned to NUMA 0 and can run any task in this graph copy</span></div>
                     <div class="resource frame"><strong>Warmup / timed FrameCpuAtom collections</strong><span>Graph-owned CPU inputs, metadata, results, and phase membership</span></div>
                     <div class="resource frame"><strong>StaticData → fixed layout + reset boundary</strong><span>No per-frame registry, NUMA, or scheduler state</span></div>
-                    <div class="resource frame"><strong>GpuCacheManager → fixed residency table + GpuCacheEntry[K]</strong><span>Average O(1) lookup, O(1) global-LRU victim, persistent replicas on GPU 0</span></div>
+                    <div class="resource frame"><strong>GpuDataCache → fixed residency table + GpuDataCacheEntry[K]</strong><span>Average O(1) lookup, O(1) global-LRU victim, persistent replicas on GPU 0</span></div>
                 </div>
             </article>
             <article class="numa-node node-1">
@@ -342,7 +342,7 @@
                     <div class="resource thread"><strong>Graph-thread pool</strong><span>Every worker is pinned to NUMA 1 and can run any task in this graph copy</span></div>
                     <div class="resource frame"><strong>Warmup / timed FrameCpuAtom collections</strong><span>Graph-owned CPU inputs, metadata, results, and phase membership</span></div>
                     <div class="resource frame"><strong>StaticData → fixed layout + reset boundary</strong><span>No per-frame registry, NUMA, or scheduler state</span></div>
-                    <div class="resource frame"><strong>GpuCacheManager → fixed residency table + GpuCacheEntry[K]</strong><span>Average O(1) lookup, O(1) global-LRU victim, persistent replicas on GPU 1</span></div>
+                    <div class="resource frame"><strong>GpuDataCache → fixed residency table + GpuDataCacheEntry[K]</strong><span>Average O(1) lookup, O(1) global-LRU victim, persistent replicas on GPU 1</span></div>
                 </div>
             </article>
         </div>
@@ -418,7 +418,7 @@
         <h2>Resource invariants</h2>
         <div class="rules">
             <div class="rule"><strong style="color: var(--frame)">Graph owns execution state</strong><span>Phase collections, submitted flags, ready queue, and counters remain independent from GPU residency.</span></div>
-            <div class="rule"><strong style="color: var(--frame)">Cache is bounded</strong><span>GpuCacheEntry[K] uses a fixed open-addressing residency table, empty stack, and intrusive inactive-entry global LRU; K defaults to 4 and may be zero.</span></div>
+            <div class="rule"><strong style="color: var(--frame)">Cache is bounded</strong><span>GpuDataCacheEntry[K] uses a fixed open-addressing residency table, empty stack, and intrusive inactive-entry global LRU; K defaults to 4 and may be zero.</span></div>
             <div class="rule"><strong style="color: var(--frame)">CPU input reconstructs</strong><span>FrameCpuAtom owns immutable bytes used by every fill or fallback H2D.</span></div>
             <div class="rule"><strong style="color: var(--frame)">Active entries are safe</strong><span>Reader/fill leases prevent eviction; incomplete fills return to Empty.</span></div>
             <div class="rule"><strong style="color: var(--task)">Task fallback is persistent</strong><span>Each TaskGpuResources owns one d_input allocated in load and freed in unload.</span></div>

@@ -20,10 +20,10 @@ enum class GpuCacheState {
 
 // Reusable cache entry that owns its persistent per-GPU device allocations.
 // It does not own scheduler state, CPU bytes, or task-private resources.
-class GpuCacheEntry {
+class GpuDataCacheEntry {
 public:
-    GpuCacheEntry() = default;
-    ~GpuCacheEntry();
+    GpuDataCacheEntry() = default;
+    ~GpuDataCacheEntry();
 
     bool initialize(const std::vector<int>& gpuIds, std::size_t bytes);
     bool release();
@@ -31,13 +31,13 @@ public:
     std::size_t bytes() const;
     std::size_t replicaCount() const;
 
-    GpuCacheEntry(const GpuCacheEntry&) = delete;
-    GpuCacheEntry& operator=(const GpuCacheEntry&) = delete;
-    GpuCacheEntry(GpuCacheEntry&&) = delete;
-    GpuCacheEntry& operator=(GpuCacheEntry&&) = delete;
+    GpuDataCacheEntry(const GpuDataCacheEntry&) = delete;
+    GpuDataCacheEntry& operator=(const GpuDataCacheEntry&) = delete;
+    GpuDataCacheEntry(GpuDataCacheEntry&&) = delete;
+    GpuDataCacheEntry& operator=(GpuDataCacheEntry&&) = delete;
 
 private:
-    friend class GpuCacheManager;
+    friend class GpuDataCache;
 
     void* dataForGpu(int gpuId);
     const void* dataForGpu(int gpuId) const;

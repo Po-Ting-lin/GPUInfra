@@ -23,7 +23,7 @@
 
 #include <cuda_runtime.h>
 
-#include "DataCache/GpuCacheManager.h"
+#include "DataCache/GpuDataCache.h"
 #include "DataCache/GpuDataAccess.h"
 #include "DataCache/GpuResidencyTable.h"
 #include "Grape/DummyGraph.h"
@@ -93,7 +93,7 @@ void testStaticGpuData(TestContext& test, const GpuLocation& location);
 void testStaticDataRegions(TestContext& test, const GpuLocation& location);
 void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location);
 void testFrameDataAcrossTaskInstances(TestContext& test, const GpuLocation& location);
-void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location);
+void testGpuDataCacheLru(TestContext& test, const GpuLocation& location);
 void testCacheEvictionPolicies(TestContext& test, const GpuLocation& location);
 void testFifoDiscardPositions(TestContext& test, const GpuLocation& location);
 void testCacheDiscard(TestContext& test, const GpuLocation& location);

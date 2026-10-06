@@ -1,6 +1,6 @@
 # Cache statistics and legacy A/B comparison
 
-Each GpuCacheManager owns always-enabled CacheStatistics. Counters use
+Each GpuDataCache owns always-enabled CacheStatistics. Counters use
 std::uint64_t; times use std::chrono::nanoseconds. All updates and snapshots
 use the existing manager mutex. There is no logging, allocation, or separate
 atomic counter on the cache hot path. Additional timestamps are taken only

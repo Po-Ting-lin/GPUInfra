@@ -1,18 +1,18 @@
 #include "Nvtx.h"
 #include "CudaCheck.h"
 
-#include "DataCache/GpuCacheManager.h"
+#include "DataCache/GpuDataCache.h"
 
 #include <algorithm>
 #include <memory>
 #include <utility>
 #include <vector>
 
-GpuCacheManager::~GpuCacheManager() {
+GpuDataCache::~GpuDataCache() {
     release();
 }
 
-bool GpuCacheManager::initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount, std::chrono::milliseconds configuredWaitTimeout, CacheEvictionPolicy configuredEvictionPolicy) {
+bool GpuDataCache::initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount, std::chrono::milliseconds configuredWaitTimeout, CacheEvictionPolicy configuredEvictionPolicy) {
     {
         std::lock_guard<std::mutex> guard(lock);
         if (initialized || releasing || !entries.empty() || !eligibleGpuIds.empty() || residencyTable.isInitialized() || !emptyEntries.empty() || leastRecentlyUsed != NO_ENTRY || mostRecentlyUsed != NO_ENTRY || oldestFilled != NO_ENTRY || newestFilled != NO_ENTRY || gpuIds.size() != 1 || gpuIds.front() < 0 || bytes == 0 || configuredWaitTimeout.count() < 0 || (configuredEvictionPolicy != CacheEvictionPolicy::LRU && configuredEvictionPolicy != CacheEvictionPolicy::FIFO)) {
@@ -25,13 +25,13 @@ bool GpuCacheManager::initialize(const std::vector<int>& gpuIds, std::size_t byt
         return false;
     }
 
-    std::vector<std::unique_ptr<GpuCacheEntry>> newEntries;
+    std::vector<std::unique_ptr<GpuDataCacheEntry>> newEntries;
     std::vector<std::size_t> newEmptyEntries;
     try {
         newEntries.reserve(cacheEntryCount);
         newEmptyEntries.reserve(cacheEntryCount);
         for (std::size_t index = 0; index < cacheEntryCount; ++index) {
-            std::unique_ptr<GpuCacheEntry> entry = std::make_unique<GpuCacheEntry>();
+            std::unique_ptr<GpuDataCacheEntry> entry = std::make_unique<GpuDataCacheEntry>();
             if (!entry->initialize(gpuIds, bytes)) {
                 return false;
             }
@@ -66,7 +66,7 @@ bool GpuCacheManager::initialize(const std::vector<int>& gpuIds, std::size_t byt
     return true;
 }
 
-bool GpuCacheManager::resetCache(CacheStatistics* completedStatistics) {
+bool GpuDataCache::resetCache(CacheStatistics* completedStatistics) {
     std::lock_guard<std::mutex> guard(lock);
     if (!initialized || releasing || !canResetLocked()) {
         return false;
@@ -79,12 +79,12 @@ bool GpuCacheManager::resetCache(CacheStatistics* completedStatistics) {
     return true;
 }
 
-CacheStatistics GpuCacheManager::statisticsSnapshot() const {
+CacheStatistics GpuDataCache::statisticsSnapshot() const {
     std::lock_guard<std::mutex> guard(lock);
     return statistics;
 }
 
-GpuDataAccess GpuCacheManager::getCacheData(const FrameMetadata& metadata, const GpuCacheRequest& request) {
+GpuDataAccess GpuDataCache::getCacheData(const FrameMetadata& metadata, const GpuCacheRequest& request) {
     GPUINFRA_NVTX_SCOPE("Cache.getCacheData");
     const GpuDiagnosticScope diagnosticScope(request.gpuId, request.stream, metadata.key, "Cache.getCacheData");
     const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
@@ -111,7 +111,7 @@ GpuDataAccess GpuCacheManager::getCacheData(const FrameMetadata& metadata, const
                 return GpuDataAccess();
             }
 
-            GpuCacheEntry& entry = *entries[index];
+            GpuDataCacheEntry& entry = *entries[index];
             if (!(entry.metadata == metadata)) {
                 ++statistics.invalid;
                 GPUINFRA_REPORT_FAILURE("cache metadata mismatch");
@@ -165,7 +165,7 @@ GpuDataAccess GpuCacheManager::getCacheData(const FrameMetadata& metadata, const
             return makeFallbackAccess(metadata, request, waitTimeout.count() == 0 ? CacheFallbackReason::FullNoWait : CacheFallbackReason::FullTimeout);
         }
 
-        GpuCacheEntry& candidate = *entries[candidateIndex];
+        GpuDataCacheEntry& candidate = *entries[candidateIndex];
         void* deviceData = candidate.dataForGpu(request.gpuId);
         if (deviceData == nullptr) {
             restoreCandidate(candidateIndex, wasEmpty);
@@ -227,7 +227,7 @@ GpuDataAccess GpuCacheManager::getCacheData(const FrameMetadata& metadata, const
 }
 
 
-bool GpuCacheManager::release() {
+bool GpuDataCache::release() {
     {
         std::lock_guard<std::mutex> guard(lock);
         if (!initialized && entries.empty() && eligibleGpuIds.empty() && !residencyTable.isInitialized() && emptyEntries.empty()) {
@@ -242,7 +242,7 @@ bool GpuCacheManager::release() {
 
     bool ok = true;
     bool allReleased = true;
-    for (const std::unique_ptr<GpuCacheEntry>& entry : entries) {
+    for (const std::unique_ptr<GpuDataCacheEntry>& entry : entries) {
         if (entry == nullptr) {
             continue;
         }
@@ -272,22 +272,22 @@ bool GpuCacheManager::release() {
     return ok;
 }
 
-bool GpuCacheManager::isInitialized() const {
+bool GpuDataCache::isInitialized() const {
     std::lock_guard<std::mutex> guard(lock);
     return initialized;
 }
 
-std::size_t GpuCacheManager::entryCount() const {
+std::size_t GpuDataCache::entryCount() const {
     std::lock_guard<std::mutex> guard(lock);
     return entries.size();
 }
 
-std::size_t GpuCacheManager::bytes() const {
+std::size_t GpuDataCache::bytes() const {
     std::lock_guard<std::mutex> guard(lock);
     return dataBytes;
 }
 
-bool GpuCacheManager::waitForCacheChange(std::unique_lock<std::mutex>& guard, std::chrono::steady_clock::time_point deadline, bool& waited, std::chrono::nanoseconds& requestWait) {
+bool GpuDataCache::waitForCacheChange(std::unique_lock<std::mutex>& guard, std::chrono::steady_clock::time_point deadline, bool& waited, std::chrono::nanoseconds& requestWait) {
     if (entries.empty() || waitTimeout.count() == 0 || std::chrono::steady_clock::now() >= deadline) {
         return false;
     }
@@ -315,11 +315,11 @@ bool GpuCacheManager::waitForCacheChange(std::unique_lock<std::mutex>& guard, st
     return true;
 }
 
-bool GpuCacheManager::canResetLocked() const {
+bool GpuDataCache::canResetLocked() const {
     if (activeFallbackAccesses != 0 || waitingAccesses != 0) {
         return false;
     }
-    for (const std::unique_ptr<GpuCacheEntry>& entry : entries) {
+    for (const std::unique_ptr<GpuDataCacheEntry>& entry : entries) {
         if (entry == nullptr || entry->activeAccesses != 0 || entry->cacheState == GpuCacheState::Loading) {
             return false;
         }
@@ -327,7 +327,7 @@ bool GpuCacheManager::canResetLocked() const {
     return true;
 }
 
-void GpuCacheManager::resetEntriesLocked() {
+void GpuDataCache::resetEntriesLocked() {
     residencyTable.clear();
     emptyEntries.clear();
     leastRecentlyUsed = NO_ENTRY;
@@ -335,7 +335,7 @@ void GpuCacheManager::resetEntriesLocked() {
     oldestFilled = NO_ENTRY;
     newestFilled = NO_ENTRY;
     for (std::size_t index = entries.size(); index > 0; --index) {
-        GpuCacheEntry& entry = *entries[index - 1];
+        GpuDataCacheEntry& entry = *entries[index - 1];
         entry.metadata = FrameMetadata();
         entry.invalidateReplicas();
         entry.cacheState = GpuCacheState::Empty;
@@ -351,7 +351,7 @@ void GpuCacheManager::resetEntriesLocked() {
     }
 }
 
-std::size_t GpuCacheManager::takeCandidate(bool& wasEmpty) {
+std::size_t GpuDataCache::takeCandidate(bool& wasEmpty) {
     if (!emptyEntries.empty()) {
         const std::size_t index = emptyEntries.back();
         emptyEntries.pop_back();
@@ -381,7 +381,7 @@ std::size_t GpuCacheManager::takeCandidate(bool& wasEmpty) {
     return index;
 }
 
-void GpuCacheManager::restoreCandidate(std::size_t index, bool wasEmpty) {
+void GpuDataCache::restoreCandidate(std::size_t index, bool wasEmpty) {
     if (wasEmpty) {
         emptyEntries.push_back(index);
         return;
@@ -389,12 +389,12 @@ void GpuCacheManager::restoreCandidate(std::size_t index, bool wasEmpty) {
     addEvictableEntry(index);
 }
 
-bool GpuCacheManager::addEvictableEntry(std::size_t index) {
+bool GpuDataCache::addEvictableEntry(std::size_t index) {
     if (index >= entries.size() || entries[index] == nullptr) {
         return false;
     }
 
-    GpuCacheEntry& entry = *entries[index];
+    GpuDataCacheEntry& entry = *entries[index];
     if (entry.cacheState != GpuCacheState::Valid || entry.activeAccesses != 0 || entry.inEvictableList) {
         return false;
     }
@@ -413,12 +413,12 @@ bool GpuCacheManager::addEvictableEntry(std::size_t index) {
     return true;
 }
 
-bool GpuCacheManager::removeEvictableEntry(std::size_t index) {
+bool GpuDataCache::removeEvictableEntry(std::size_t index) {
     if (index >= entries.size() || entries[index] == nullptr) {
         return false;
     }
 
-    GpuCacheEntry& entry = *entries[index];
+    GpuDataCacheEntry& entry = *entries[index];
     if (!entry.inEvictableList) {
         return false;
     }
@@ -440,7 +440,7 @@ bool GpuCacheManager::removeEvictableEntry(std::size_t index) {
     return true;
 }
 
-bool GpuCacheManager::addFilledEntry(std::size_t index) {
+bool GpuDataCache::addFilledEntry(std::size_t index) {
     if (evictionPolicy != CacheEvictionPolicy::FIFO) {
         return true;
     }
@@ -448,7 +448,7 @@ bool GpuCacheManager::addFilledEntry(std::size_t index) {
         return false;
     }
 
-    GpuCacheEntry& entry = *entries[index];
+    GpuDataCacheEntry& entry = *entries[index];
     if (entry.cacheState != GpuCacheState::Valid || entry.activeAccesses != 0 || entry.inFilledList) {
         return false;
     }
@@ -465,12 +465,12 @@ bool GpuCacheManager::addFilledEntry(std::size_t index) {
     return true;
 }
 
-bool GpuCacheManager::removeFilledEntry(std::size_t index) {
+bool GpuDataCache::removeFilledEntry(std::size_t index) {
     if (index >= entries.size() || entries[index] == nullptr) {
         return false;
     }
 
-    GpuCacheEntry& entry = *entries[index];
+    GpuDataCacheEntry& entry = *entries[index];
     if (!entry.inFilledList) {
         return false;
     }
@@ -492,7 +492,7 @@ bool GpuCacheManager::removeFilledEntry(std::size_t index) {
     return true;
 }
 
-bool GpuCacheManager::releaseReaderEntry(GpuCacheEntry& entry, std::size_t index) {
+bool GpuDataCache::releaseReaderEntry(GpuDataCacheEntry& entry, std::size_t index) {
     if (entry.activeAccesses != 0) {
         return true;
     }
@@ -504,7 +504,7 @@ bool GpuCacheManager::releaseReaderEntry(GpuCacheEntry& entry, std::size_t index
     return addEvictableEntry(index);
 }
 
-bool GpuCacheManager::completeAccess(GpuDataAccess& access, bool succeeded, CacheRetention retention) {
+bool GpuDataCache::completeAccess(GpuDataAccess& access, bool succeeded, CacheRetention retention) {
     GPUINFRA_NVTX_SCOPE("Cache.publish_release");
     if (access.owner != this) {
         return false;
@@ -521,7 +521,7 @@ bool GpuCacheManager::completeAccess(GpuDataAccess& access, bool succeeded, Cach
 
     std::lock_guard<std::mutex> guard(lock);
     bool valid = initialized && !releasing && access.entryIndex < entries.size();
-    GpuCacheEntry* entry = valid ? entries[access.entryIndex].get() : nullptr;
+    GpuDataCacheEntry* entry = valid ? entries[access.entryIndex].get() : nullptr;
     if (valid) {
         valid = entry != nullptr && entry->metadata.key == access.dataKey && entry->dataForGpu(access.deviceId) == access.d_data && access.dataBytes == dataBytes;
     }
@@ -579,7 +579,7 @@ bool GpuCacheManager::completeAccess(GpuDataAccess& access, bool succeeded, Cach
     return valid && succeeded;
 }
 
-void GpuCacheManager::abortAccess(GpuDataAccess& access) {
+void GpuDataCache::abortAccess(GpuDataAccess& access) {
     if (access.owner != this) {
         return;
     }
@@ -597,7 +597,7 @@ void GpuCacheManager::abortAccess(GpuDataAccess& access) {
         ++statistics.fillFailed;
     }
     if (access.entryIndex < entries.size()) {
-        GpuCacheEntry& entry = *entries[access.entryIndex];
+        GpuDataCacheEntry& entry = *entries[access.entryIndex];
         const bool matchingAccess = entry.metadata.key == access.dataKey && entry.dataForGpu(access.deviceId) == access.d_data && access.dataBytes == dataBytes;
         if (matchingAccess && access.accessStatus == CacheStatus::CacheHit && entry.cacheState == GpuCacheState::Valid && entry.activeAccesses > 0 && !entry.inEvictableList) {
             --entry.activeAccesses;
@@ -610,7 +610,7 @@ void GpuCacheManager::abortAccess(GpuDataAccess& access) {
     access.reset();
 }
 
-GpuDataAccess GpuCacheManager::makeFallbackAccess(const FrameMetadata& metadata, const GpuCacheRequest& request, CacheFallbackReason reason) {
+GpuDataAccess GpuDataCache::makeFallbackAccess(const FrameMetadata& metadata, const GpuCacheRequest& request, CacheFallbackReason reason) {
     ++statistics.fallback;
     switch (reason) {
         case CacheFallbackReason::CapacityZero: ++statistics.fallbackReasons.capacityZero; break;
@@ -624,7 +624,7 @@ GpuDataAccess GpuCacheManager::makeFallbackAccess(const FrameMetadata& metadata,
     return GpuDataAccess(this, request.d_fallback, dataBytes, NO_ENTRY, metadata.key, request.stream, request.gpuId, CacheStatus::TaskFallback);
 }
 
-void GpuCacheManager::resetEntry(GpuCacheEntry& entry, std::size_t index) {
+void GpuDataCache::resetEntry(GpuDataCacheEntry& entry, std::size_t index) {
     if (entry.inEvictableList) {
         removeEvictableEntry(index);
     }

@@ -67,7 +67,7 @@ void testPayloadIdentity(TestContext& test, const GpuLocation& location) {
     FrameMetadata newGeneration = raw;
     newGeneration.key.variantId = variants[2].variantId;
     TaskGpuResources resources;
-    GpuCacheManager cache;
+    GpuDataCache cache;
     const bool initialized = initializeAccessResources(resources, location, runtime.inBytes) && cache.initialize({location.gpuId}, runtime.inBytes, 2, std::chrono::milliseconds(0));
     test.expect(initialized, "initialize nonzero-capacity payload identity test");
     if (!initialized) {
@@ -116,7 +116,7 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
     const FrameMetadata firstMetadata = makeFrameMetadata(0, runtime);
     const FrameMetadata secondMetadata = makeFrameMetadata(1, runtime);
-    GpuCacheManager cache;
+    GpuDataCache cache;
     TaskGpuResources resources;
     const bool initialized = initializeAccessResources(resources, location, runtime.inBytes) && cache.initialize({location.gpuId}, runtime.inBytes, 1);
     test.expect(initialized, "initialize bounded frame GPU cache and fallback buffer");
@@ -190,7 +190,7 @@ void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
     test.expect(!cache.isInitialized() && cache.entryCount() == 0, "cache release resets allocation state");
     test.expect(cache.release(), "repeated cache release is harmless");
 
-    GpuCacheManager zeroCapacityCache;
+    GpuDataCache zeroCapacityCache;
     test.expect(zeroCapacityCache.initialize({location.gpuId}, runtime.inBytes, 0), "initialize a zero-capacity cache");
     GpuDataAccess zeroCapacityAccess = zeroCapacityCache.getCacheData(firstMetadata, makeCacheRequest(resources));
     test.expect(static_cast<bool>(zeroCapacityAccess) && zeroCapacityAccess.status() == CacheStatus::TaskFallback && zeroCapacityAccess.writableData() == resources.d_input, "zero cache capacity always uses task fallback");
@@ -214,8 +214,8 @@ void testGpuDataAccessMoves(TestContext& test, const GpuLocation& location) {
     const FrameMetadata metadata = makeFrameMetadata(70, runtime);
     const FrameMetadata otherMetadata = makeFrameMetadata(71, runtime);
     TaskGpuResources resources;
-    GpuCacheManager cache;
-    GpuCacheManager fallbackCache;
+    GpuDataCache cache;
+    GpuDataCache fallbackCache;
     const bool initialized = initializeAccessResources(resources, location, runtime.inBytes) && cache.initialize({location.gpuId}, runtime.inBytes, 1, std::chrono::milliseconds(0)) && fallbackCache.initialize({location.gpuId}, runtime.inBytes, 0);
     test.expect(initialized, "initialize move test resources");
     if (!initialized) {
@@ -289,8 +289,8 @@ void testIndependentPayloadCaches(TestContext& test, const GpuLocation& location
     constexpr std::size_t FRAME_BYTES = 16;
     constexpr std::size_t RESULT_BYTES = 64;
     TaskGpuResources resources;
-    GpuCacheManager frameCache;
-    GpuCacheManager resultCache;
+    GpuDataCache frameCache;
+    GpuDataCache resultCache;
     void* d_resultFallback = nullptr;
     const bool initialized = initializeAccessResources(resources, location, FRAME_BYTES) && cudaMalloc(&d_resultFallback, RESULT_BYTES) == cudaSuccess && frameCache.initialize({location.gpuId}, FRAME_BYTES, capacity) && resultCache.initialize({location.gpuId}, RESULT_BYTES, capacity);
     test.expect(initialized, "initialize independent frame/result caches with different payload sizes");
@@ -379,7 +379,7 @@ void testIndependentPayloadCaches(TestContext& test, const GpuLocation& location
 void testConcurrentCacheRequests(TestContext& test, const GpuLocation& location) {
     constexpr std::size_t PAYLOAD_BYTES = 64;
     std::array<TaskGpuResources, 3> resources;
-    GpuCacheManager cache;
+    GpuDataCache cache;
     bool initialized = cache.initialize({location.gpuId}, PAYLOAD_BYTES, 1);
     for (TaskGpuResources& taskResources : resources) {
         initialized = initializeAccessResources(taskResources, location, PAYLOAD_BYTES) && initialized;
@@ -455,7 +455,7 @@ void testConcurrentCacheRequests(TestContext& test, const GpuLocation& location)
 
 void testCacheWaitWakeup(TestContext& test, const GpuLocation& location, int scenario) {
     constexpr std::size_t PAYLOAD_BYTES = 64;
-    GpuCacheManager cache;
+    GpuDataCache cache;
     std::array<TaskGpuResources, 2> resources;
     bool initialized = cache.initialize({location.gpuId}, PAYLOAD_BYTES, 1, std::chrono::milliseconds(1000));
     for (TaskGpuResources& taskResources : resources) {
@@ -541,7 +541,7 @@ void testCacheWaitWakeup(TestContext& test, const GpuLocation& location, int sce
 
 void testCacheWaitSharedDeadline(TestContext& test, const GpuLocation& location) {
     constexpr std::size_t PAYLOAD_BYTES = 64;
-    GpuCacheManager cache;
+    GpuDataCache cache;
     std::array<TaskGpuResources, 2> resources;
     bool initialized = cache.initialize({location.gpuId}, PAYLOAD_BYTES, 2, std::chrono::milliseconds(80));
     for (TaskGpuResources& taskResources : resources) {
@@ -610,10 +610,10 @@ void testCacheWaitTimeout(TestContext& test, const GpuLocation& location) {
     metadata.height = 8;
     metadata.dtype = 1;
     metadata.bytes = PAYLOAD_BYTES;
-    GpuCacheManager invalidCache;
+    GpuDataCache invalidCache;
     test.expect(!invalidCache.initialize({location.gpuId}, PAYLOAD_BYTES, 1, std::chrono::milliseconds(-1)), "reject a negative wait timeout");
     for (int scenario = 0; scenario < 4; ++scenario) {
-        GpuCacheManager cache;
+        GpuDataCache cache;
         const bool initialized = scenario == 0 || scenario == 1 ? cache.initialize({location.gpuId}, PAYLOAD_BYTES, 1) : cache.initialize({location.gpuId}, PAYLOAD_BYTES, scenario == 2 ? 1 : 0, std::chrono::milliseconds(scenario == 2 ? 0 : 1000));
         test.expect(initialized, "initialize default, disabled or zero-capacity wait");
         {
@@ -647,8 +647,8 @@ void testCacheWaitTimeout(TestContext& test, const GpuLocation& location) {
 void testCacheStatistics(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
     TaskGpuResources resources;
-    GpuCacheManager cache;
-    GpuCacheManager independent;
+    GpuDataCache cache;
+    GpuDataCache independent;
     const bool initialized = initializeAccessResources(resources, location, runtime.inBytes) && cache.initialize({location.gpuId}, runtime.inBytes, 1, std::chrono::milliseconds(0)) && independent.initialize({location.gpuId}, runtime.inBytes, 0);
     test.expect(initialized, "initialize isolated statistics managers");
     if (!initialized) {
@@ -761,12 +761,12 @@ void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location)
     test.expect(releaseAccessResources(resources), "release run-boundary fallback resources");
 }
 
-void testGpuCacheManagerLru(TestContext& test, const GpuLocation& location) {
+void testGpuDataCacheLru(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
     const FrameMetadata firstMetadata = makeFrameMetadata(10, runtime);
     const FrameMetadata secondMetadata = makeFrameMetadata(11, runtime);
     const FrameMetadata thirdMetadata = makeFrameMetadata(12, runtime);
-    GpuCacheManager cache;
+    GpuDataCache cache;
     TaskGpuResources resources;
     const bool initialized = initializeAccessResources(resources, location, runtime.inBytes) && cache.initialize({location.gpuId}, runtime.inBytes, 2);
     test.expect(initialized, "initialize two-entry cache for LRU test");

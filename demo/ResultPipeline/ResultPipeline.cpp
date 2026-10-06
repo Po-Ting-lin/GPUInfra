@@ -64,7 +64,7 @@ bool runPipeline(int numaNode, const PipelineConfig& config, PipelineMeasurement
     if (config.frames == 0 || config.frames > 1000000 || config.entries == 0 || config.entries > 65536 || config.inFlight == 0 || config.inFlight > 65536 || config.bytes == 0 || config.bytes > 16777216 || config.cpuStages == 0 || config.cpuStages > 100 || config.cpuDelay.count() < 0 || config.cacheWait.count() < 0) return false;
     std::vector<int> gpuIds;
     if (!GpuContextManager::gpuIdsForCurrentNumaNode(gpuIds)) return false;
-    GpuCacheManager cache;
+    GpuDataCache cache;
     if (!cache.initialize(gpuIds, config.bytes, config.entries, config.cacheWait, config.policy)) return false;
 
     Scheduler scheduler;

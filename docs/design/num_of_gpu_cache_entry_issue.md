@@ -1,4 +1,4 @@
-# GpuCacheEntry 數量問題
+# GpuDataCacheEntry 數量問題
 
 ## 狀態
 
@@ -8,7 +8,7 @@
 20 warmup + 200 timed = 220 FrameCpuAtom
 ```
 
-它不是 `GpuCacheManager` 的 entry 數量，也不需要建立 220 筆 frame registry
+它不是 `GpuDataCache` 的 entry 數量，也不需要建立 220 筆 frame registry
 或 220 個 device input buffers。GPU cache 容量是獨立設定：
 
 ```text
@@ -38,10 +38,10 @@ Task instance 3: F3, F7, F11, ... F219
 ```text
 StaticData
   ├─ fixed frame layout + resetCache() run boundary
-  └─ GpuCacheManager
+  └─ GpuDataCache
        ├─ fixed open-addressing residency table [約 2K 至 4K slots]
        ├─ O(1) empty stack + intrusive global LRU
-       └─ GpuCacheEntry[K]
+       └─ GpuDataCacheEntry[K]
             cached metadata + lease/LRU state + persistent GpuReplica
 ```
 
@@ -49,14 +49,14 @@ StaticData
 - `FrameCpuAtom` 擁有 CPU input、metadata 與預配置的 `JobResult`。
 - 只要 incoming frame 的 layout 相符，就可嘗試使用 cache；`frameId` 與
   `cameraId` 不必事先登記。
-- `GpuCacheEntry` 是 best-effort cache，可被 global LRU 替換，不與某個
+- `GpuDataCacheEntry` 是 best-effort cache，可被 global LRU 替換，不與某個
   logical frame 永久綁定。
 - `TaskGpuResources::d_input` 是每個 task instance 的 persistent fallback
   buffer，只在 `load()`／`unload()` 配置與釋放。
 
 ## Fixed table 與 global LRU 如何配合
 
-`GpuCacheManager::getCacheData()` 先在 fixed open-addressing table 查找目前
+`GpuDataCache::getCacheData()` 先在 fixed open-addressing table 查找目前
 resident 或 loading 的 key：
 
 1. key 與完整 metadata 相符且 entry 為 `Valid`：回傳 `CacheHit`，不做 H2D。
@@ -83,8 +83,8 @@ allocations。
 immutable 的 `FrameCpuAtom` 重新 H2D 到 cache entry 或自己的 `d_input`：
 
 ```text
-cache hit         -> 使用 GpuCacheEntry.GpuReplica.d_data
-cache fill        -> FrameCpuAtom -> H2D -> GpuCacheEntry.GpuReplica.d_data
+cache hit         -> 使用 GpuDataCacheEntry.GpuReplica.d_data
+cache fill        -> FrameCpuAtom -> H2D -> GpuDataCacheEntry.GpuReplica.d_data
 cache unavailable -> FrameCpuAtom -> H2D -> TaskGpuResources.d_input
 ```
 
@@ -104,7 +104,7 @@ frame-owned authoritative output plane、明確的 spill/recompute contract，�
 ## 結論
 
 - `NumLogicalFrames` 決定 `FrameCpuAtom`、CPU input 與 result storage 數量。
-- `ConfiguredGpuCacheEntries` 決定 `GpuCacheEntry`、residency table 與 cache
+- `ConfiguredGpuCacheEntries` 決定 `GpuDataCacheEntry`、residency table 與 cache
   device buffer 數量；目前 `K = ConfiguredGpuCacheEntries`。
 - `NumTaskInstances` 決定 streams、fallback input、scratch 與 algo-private
   buffers 數量。

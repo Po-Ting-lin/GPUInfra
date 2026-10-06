@@ -82,7 +82,7 @@ bool TaskA::unload() {
     return resources.unload();
 }
 
-bool TaskA::execute(GpuCacheManager& cache, ResultAtom& atom) {
+bool TaskA::execute(GpuDataCache& cache, ResultAtom& atom) {
     GPUINFRA_NVTX_SCOPE("ResultPipeline.TaskA");
     TaskGpuResources& gpu = resources.gpu;
     if (atom.ready || atom.frame.size() != gpu.inBytes || atom.result.size() != gpu.inBytes || atom.metadata.bytes != gpu.inBytes || !GpuContextManager::makeTaskCurrent(gpu)) return false;
@@ -129,7 +129,7 @@ bool TaskB::unload() {
     return resources.unload();
 }
 
-bool TaskB::execute(GpuCacheManager& cache, const ResultAtom& atom, std::size_t requiredCpuStages, CacheRetention retention) {
+bool TaskB::execute(GpuDataCache& cache, const ResultAtom& atom, std::size_t requiredCpuStages, CacheRetention retention) {
     GPUINFRA_NVTX_SCOPE("ResultPipeline.TaskB");
     TaskGpuResources& gpu = resources.gpu;
     if (!atom.ready || atom.cpuStages != requiredCpuStages || atom.frame.size() != gpu.inBytes || atom.result.size() != gpu.inBytes || atom.metadata.bytes != gpu.inBytes || !GpuContextManager::makeTaskCurrent(gpu)) return false;

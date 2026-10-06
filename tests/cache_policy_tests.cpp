@@ -34,7 +34,7 @@ public:
         }
     }
 
-    GpuCacheManager cache;
+    GpuDataCache cache;
     std::array<TaskGpuResources, 2> resources;
     bool initialized = false;
 
@@ -42,7 +42,7 @@ private:
     TestContext& test;
 };
 
-bool fillPolicyPayload(TestContext& test, GpuCacheManager& cache, const TaskGpuResources& resources, std::uint64_t dataId, CacheRetention retention = CacheRetention::Keep) {
+bool fillPolicyPayload(TestContext& test, GpuDataCache& cache, const TaskGpuResources& resources, std::uint64_t dataId, CacheRetention retention = CacheRetention::Keep) {
     GpuDataAccess access = cache.getCacheData(makePolicyMetadata(dataId), makeCacheRequest(resources));
     test.expect(access.status() == CacheStatus::CacheFill, "new policy payload reserves a fill");
     if (access.status() != CacheStatus::CacheFill) {
@@ -54,7 +54,7 @@ bool fillPolicyPayload(TestContext& test, GpuCacheManager& cache, const TaskGpuR
     return submitted && finished;
 }
 
-bool verifyPolicyHit(TestContext& test, GpuCacheManager& cache, const TaskGpuResources& resources, std::uint64_t dataId) {
+bool verifyPolicyHit(TestContext& test, GpuDataCache& cache, const TaskGpuResources& resources, std::uint64_t dataId) {
     GpuDataAccess access = cache.getCacheData(makePolicyMetadata(dataId), makeCacheRequest(resources));
     test.expect(access.status() == CacheStatus::CacheHit, "expected survivor is still cached");
     if (access.status() != CacheStatus::CacheHit) {
@@ -69,7 +69,7 @@ bool verifyPolicyHit(TestContext& test, GpuCacheManager& cache, const TaskGpuRes
     return copied && finished && matches;
 }
 
-void verifyPolicyMiss(TestContext& test, GpuCacheManager& cache, const TaskGpuResources& resources, std::uint64_t dataId) {
+void verifyPolicyMiss(TestContext& test, GpuDataCache& cache, const TaskGpuResources& resources, std::uint64_t dataId) {
     GpuDataAccess access = cache.getCacheData(makePolicyMetadata(dataId), makeCacheRequest(resources));
     test.expect(access.status() == CacheStatus::CacheFill, "expected eviction victim is a miss");
     test.expect(!access.freeCacheData(false), "roll back unpopulated victim probe");
@@ -78,14 +78,14 @@ void verifyPolicyMiss(TestContext& test, GpuCacheManager& cache, const TaskGpuRe
 }  // namespace
 
 void testCacheEvictionPolicies(TestContext& test, const GpuLocation& location) {
-    GpuCacheManager invalidPolicy;
+    GpuDataCache invalidPolicy;
     test.expect(!invalidPolicy.initialize({location.gpuId}, POLICY_PAYLOAD_BYTES, 2, std::chrono::milliseconds(0), static_cast<CacheEvictionPolicy>(99)), "reject unknown eviction policy before allocating entries");
     for (CacheEvictionPolicy policy : {CacheEvictionPolicy::LRU, CacheEvictionPolicy::FIFO}) {
         CachePolicyResources fixture(test, location, 2, policy);
         if (!fixture.initialized) {
             continue;
         }
-        GpuCacheManager& cache = fixture.cache;
+        GpuDataCache& cache = fixture.cache;
         const TaskGpuResources& resources = fixture.resources[0];
 
         fillPolicyPayload(test, cache, resources, 1);
@@ -154,7 +154,7 @@ void testFifoDiscardPositions(TestContext& test, const GpuLocation& location) {
     if (!fixture.initialized) {
         return;
     }
-    GpuCacheManager& cache = fixture.cache;
+    GpuDataCache& cache = fixture.cache;
     const TaskGpuResources& resources = fixture.resources[0];
     for (std::uint64_t dataId : {1U, 2U, 3U, 4U}) {
         fillPolicyPayload(test, cache, resources, dataId);
@@ -219,7 +219,7 @@ void testCacheDiscard(TestContext& test, const GpuLocation& location) {
         if (!fixture.initialized) {
             continue;
         }
-        GpuCacheManager& cache = fixture.cache;
+        GpuDataCache& cache = fixture.cache;
         const TaskGpuResources& resources = fixture.resources[0];
         fillPolicyPayload(test, cache, resources, 1);
         const void* originalBuffer = nullptr;

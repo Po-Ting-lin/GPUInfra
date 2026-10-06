@@ -1,14 +1,14 @@
-#include "DataCache/GpuCacheEntry.h"
+#include "DataCache/GpuDataCacheEntry.h"
 
 #include <cuda_runtime.h>
 
 #include "CudaCheck.h"
 
-GpuCacheEntry::~GpuCacheEntry() {
+GpuDataCacheEntry::~GpuDataCacheEntry() {
     release();
 }
 
-bool GpuCacheEntry::initialize(const std::vector<int>& gpuIds, std::size_t bytes) {
+bool GpuDataCacheEntry::initialize(const std::vector<int>& gpuIds, std::size_t bytes) {
     const std::size_t noEntry = std::numeric_limits<std::size_t>::max();
     if (initialized || !replicas.empty() || cacheState != GpuCacheState::Empty || activeAccesses != 0 || previousEvictable != noEntry || nextEvictable != noEntry || inEvictableList || previousFilled != noEntry || nextFilled != noEntry || inFilledList || discardWhenUnused || gpuIds.size() != 1 || gpuIds.front() < 0 || bytes == 0) {
         return false;
@@ -41,7 +41,7 @@ bool GpuCacheEntry::initialize(const std::vector<int>& gpuIds, std::size_t bytes
     return true;
 }
 
-bool GpuCacheEntry::release() {
+bool GpuDataCacheEntry::release() {
     if (activeAccesses != 0 || cacheState == GpuCacheState::Loading) {
         return false;
     }
@@ -95,24 +95,24 @@ bool GpuCacheEntry::release() {
     return ok;
 }
 
-bool GpuCacheEntry::isInitialized() const {
+bool GpuDataCacheEntry::isInitialized() const {
     return initialized;
 }
 
-std::size_t GpuCacheEntry::bytes() const {
+std::size_t GpuDataCacheEntry::bytes() const {
     return dataBytes;
 }
 
-std::size_t GpuCacheEntry::replicaCount() const {
+std::size_t GpuDataCacheEntry::replicaCount() const {
     return replicas.size();
 }
 
-void* GpuCacheEntry::dataForGpu(int gpuId) {
-    const GpuCacheEntry* entry = this;
+void* GpuDataCacheEntry::dataForGpu(int gpuId) {
+    const GpuDataCacheEntry* entry = this;
     return const_cast<void*>(entry->dataForGpu(gpuId));
 }
 
-const void* GpuCacheEntry::dataForGpu(int gpuId) const {
+const void* GpuDataCacheEntry::dataForGpu(int gpuId) const {
     for (const GpuReplica& replica : replicas) {
         if (replica.gpuId == gpuId) {
             return replica.d_data;
@@ -121,7 +121,7 @@ const void* GpuCacheEntry::dataForGpu(int gpuId) const {
     return nullptr;
 }
 
-bool GpuCacheEntry::replicaValid(int gpuId) const {
+bool GpuDataCacheEntry::replicaValid(int gpuId) const {
     for (const GpuReplica& replica : replicas) {
         if (replica.gpuId == gpuId) {
             return replica.valid;
@@ -130,13 +130,13 @@ bool GpuCacheEntry::replicaValid(int gpuId) const {
     return false;
 }
 
-void GpuCacheEntry::invalidateReplicas() {
+void GpuDataCacheEntry::invalidateReplicas() {
     for (GpuReplica& replica : replicas) {
         replica.valid = false;
     }
 }
 
-bool GpuCacheEntry::markReplicaValid(int gpuId) {
+bool GpuDataCacheEntry::markReplicaValid(int gpuId) {
     for (GpuReplica& replica : replicas) {
         if (replica.gpuId == gpuId) {
             replica.valid = true;

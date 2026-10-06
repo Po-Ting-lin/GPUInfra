@@ -61,7 +61,7 @@
 </section>
 <section id="decisions">
 <div class="section-head"><span class="num">03</span><h2>取得資料：依這個順序判斷</h2></div>
-<p><code>StaticData::getCacheData(metadata, request)</code> 先驗證固定 layout，再進入 <code>GpuCacheManager::getCacheData()</code>。Miss 可以填入 cache，也可以使用 fallback。</p>
+<p><code>StaticData::getCacheData(metadata, request)</code> 先驗證固定 layout，再進入 <code>GpuDataCache::getCacheData()</code>。Miss 可以填入 cache，也可以使用 fallback。</p>
 <div class="card">
 <div class="branch"><strong>① 輸入與資源有效？</strong><p>否 → <span class="badge invalid">Invalid</span>停止。是 → 查完整 key。</p></div>
 <div class="branch"><strong>② Key 已在索引？</strong><div><p>有，但 metadata 不一致 → <span class="badge invalid">Invalid</span></p><p>有，狀態是 Loading → <span class="badge fallback">TaskFallback</span></p><p>有，Valid 且本 GPU replica 可用 → <span class="badge hit">CacheHit</span></p><p>有，Valid 但本 GPU replica 不可用 → <span class="badge fallback">TaskFallback</span></p><p>沒有 → 尋找可用 entry。</p></div></div>
@@ -141,7 +141,7 @@ if (!access.freeCacheData(ok)) return false;
 <details><summary>Hash collision、刪除與 LRU 的完整規則</summary><div><p>Residency table 保存 <code>key → entryIndex</code>。Hash 到相同 slot 時，以 linear probing 找完整 key 或空位；遇到空位表示 miss。Collision 不會讓不同 camera / frame 共用資料。Erase 使用 backward shift 維持 probe chain，讓後面的 key 仍能找到。</p><p>K &gt; 0 時 S ≥ 2K，最多一半 slots occupied；Loading 也占一筆 mapping。Slots 在初始化配置，hot path 不 grow / rehash。查找平均 O(1)，最壞可達 O(S)；平均值不是固定延遲保證。</p><p>Empty pool 優先於 LRU。Global LRU 是這個 manager 共用的一條 list，與 hash slot 排列無關；由左至右可理解為 LRU → MRU。首次 hit 移出 entry，最後一位 reader 結束後才放到 MRU；fill 成功也放到 MRU。所以可淘汰順序取決於 lease 結束時間，並非單純的 request 到達順序。</p><p>淘汰、失敗回 Empty、reset 都不重新配置 GPU buffer。Hot path 沒有 <code>cudaMalloc()</code> / <code>cudaFree()</code>；真正的配置與釋放在生命週期邊界。</p></div></details>
 </section>
 </main>
-<footer class="wrap"><p>對照目前單 GPU 實作整理。互動演示涵蓋正常狀態轉移；防禦性錯誤與呼叫契約列於各節的展開說明。</p><div class="links"><a href="../../src/StaticData/StaticData.cpp">StaticData</a><a href="../../src/DataCache/GpuCacheManager.cpp">GpuCacheManager</a><a href="../../src/DataCache/GpuDataAccess.cpp">GpuDataAccess</a><a href="../../src/DataCache/GpuResidencyTable.cpp">Residency table</a><a href="../../tests/gpuinfra_tests.cpp">對應測試</a><a href="../architecture.md">架構文件</a></div></footer>
+<footer class="wrap"><p>對照目前單 GPU 實作整理。互動演示涵蓋正常狀態轉移；防禦性錯誤與呼叫契約列於各節的展開說明。</p><div class="links"><a href="../../src/StaticData/StaticData.cpp">StaticData</a><a href="../../src/DataCache/GpuDataCache.cpp">GpuDataCache</a><a href="../../src/DataCache/GpuDataAccess.cpp">GpuDataAccess</a><a href="../../src/DataCache/GpuResidencyTable.cpp">Residency table</a><a href="../../tests/gpuinfra_tests.cpp">對應測試</a><a href="../architecture.md">架構文件</a></div></footer>
 <script>
 'use strict';
 // A deterministic teaching model: each scenario is replayed from an empty cache.
@@ -163,7 +163,7 @@ const scenarios = [
  {name:'12 · 無效 layout / 資源 / 同 key metadata', k:2, note:'Invalid 要停止提交，不是改用 fallback。Metadata 衝突是 manager 的防禦分支；正常 StaticData 固定 layout 檢查通常會更早拒絕。', steps:[get('A','bad-layout',{invalid:'layout 不符'}),get('A','bad-gpu',{invalid:'GPU 不在允許清單'}),get('A','bad-stream',{invalid:'stream 為空'}),get('A','good'),end('good'),get('A','conflict',{invalid:'同 key 的 metadata 不一致'})]},
  {name:'13 · 相同 frameId，不同 camera', k:2, note:'A = (47, camera 3)，B = (47, camera 4)。完整 key 不同，各自建立 mapping；A 再來只會命中 A。', steps:[get('A','cam3'),end('cam3'),get('B','cam4'),end('cam4'),get('A','cam3-again'),end('cam3-again')]},
  {name:'14 · Reset 被拒絕 → 安全重設 → 重新上傳', k:1, note:'Loading、reader 或 fallback lease 存活都不能 reset。安全重設清掉 identity 與 validity，但 E0 的配置保留。', steps:[get('A','a'),{op:'reset'},end('a'),get('A','r'),get('B','f'),{op:'reset'},end('r'),{op:'reset'},end('f'),{op:'reset'},get('A','again'),end('again')]},
- {name:'15 · Manager release 與重複收尾', k:1, note:'此處演示 GpuCacheManager::release。Live lease 會阻止釋放；成功後不接受新 access。StaticData wrapper 的差異見生命週期章節。', steps:[get('A','a'),{op:'release'},end('a'),end('a'),{op:'release'},get('A','after'),{op:'release'}]},
+ {name:'15 · Manager release 與重複收尾', k:1, note:'此處演示 GpuDataCache::release。Live lease 會阻止釋放；成功後不接受新 access。StaticData wrapper 的差異見生命週期章節。', steps:[get('A','a'),{op:'release'},end('a'),end('a'),{op:'release'},get('A','after'),{op:'release'}]},
  {name:'16 · Valid entry 的本地 replica 不可用', k:1, note:'防禦路徑示意：允許的 GPU 缺少有效 replica 時重傳到 task fallback。正常單 GPU 流程不會刻意產生這個狀態；錯誤 GPU ID 則是 Invalid。', steps:[get('A','a'),end('a'),{op:'replica'},get('A','f'),end('f'),{op:'reset'}]}
 ];
 function initial(k){return {entries:Array.from({length:k},()=>({state:'Empty',key:null,count:0,replica:false})),empty:Array.from({length:k},(_,i)=>i),lru:[],leases:{},released:false,event:{kind:'Empty',title:'準備好了，尚未取得資料',text:`K = ${k}。所有 entries 為 Empty，尚無 key mapping 或 live lease。`}};}

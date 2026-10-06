@@ -312,9 +312,9 @@ A context may be used by multiple host threads, but application data still
 needs correct ownership. GPUInfra gives every `DummyTask` a distinct stream,
 pinned input staging, persistent fallback `d_input`, scratch buffer, and
 private algorithm objects. Graph-copy-scoped `StaticData` separately owns a
-fixed frame layout, the run-boundary reset, and a bounded `GpuCacheManager`.
+fixed frame layout, the run-boundary reset, and a bounded `GpuDataCache`.
 The manager owns a fixed open-addressing table for at most K resident/loading
-keys; every reusable `GpuCacheEntry` directly owns its persistent `GpuReplica`
+keys; every reusable `GpuDataCacheEntry` directly owns its persistent `GpuReplica`
 allocations, while scoped `GpuDataAccess` objects coordinate cache hits, fills,
 and task fallback. The
 graph scheduler owns frame execution state, and its exclusive checkout prevents

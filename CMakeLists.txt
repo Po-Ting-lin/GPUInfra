@@ -59,8 +59,8 @@ endfunction()
 gpuinfra_check_cufft_errors()
 
 add_library(gpuinfra
-    src/DataCache/GpuCacheEntry.cpp
-    src/DataCache/GpuCacheManager.cpp
+    src/DataCache/GpuDataCacheEntry.cpp
+    src/DataCache/GpuDataCache.cpp
     src/DataCache/GpuDataAccess.cpp
     src/DataCache/GpuResidencyTable.cpp
     src/GpuDiagnostics.cpp

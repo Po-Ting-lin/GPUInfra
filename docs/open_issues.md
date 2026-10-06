@@ -56,12 +56,12 @@ point；不可用 process-global mutable singleton 取代。
 可由 immutable `FrameCpuAtom` 重新 H2D。若未來某個 stage 產生無法從 CPU
 atom 重建、且下游需要的 GPU intermediate，必須另行定義 authoritative
 frame-owned output plane、spill/recompute 規則及其 lifetime。Best-effort
-`GpuCacheManager` 不能作為這類資料的唯一 owner。
+`GpuDataCache` 不能作為這類資料的唯一 owner。
 
 ## Non-frame GPU data
 
 `GpuCacheRequest` 已將 GPU、stream、fallback pointer 與容量交由 caller
-提供；不同 `GpuCacheManager` instances 可有不同的固定 payload 大小。
+提供；不同 `GpuDataCache` instances 可有不同的固定 payload 大小。
 `GpuDataAccess::status()` 回傳 CacheStatus，`getStream()` 回傳 request 的
 stream。CacheFill／TaskFallback 的上傳或計算由 caller 執行，最後才由
 `freeCacheData()` 同步並發布／回滾，不提早發布。
@@ -181,7 +181,7 @@ CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED，因此不採用該方式。
 ## Variable-size GPU result cache and memory pool backlog
 
 狀態：需求已記錄，尚未實作；memory pool 的配置策略與 API 尚未定案。
-目前 GpuCacheManager 的每個 entry 都預配置固定大小，沒有按實際結果大小
+目前 GpuDataCache 的每個 entry 都預配置固定大小，沒有按實際結果大小
 借還區塊的 memory pool。
 
 未來演算法輸出大小由資料決定，多數結果遠小於已知上限，只有低機率接近

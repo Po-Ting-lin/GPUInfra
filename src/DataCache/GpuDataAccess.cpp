@@ -3,9 +3,9 @@
 #include "DataCache/GpuDataAccess.h"
 
 #include "CudaCheck.h"
-#include "DataCache/GpuCacheManager.h"
+#include "DataCache/GpuDataCache.h"
 
-GpuDataAccess::GpuDataAccess(GpuCacheManager* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, CacheStatus status)
+GpuDataAccess::GpuDataAccess(GpuDataCache* accessOwner, void* deviceData, std::size_t bytes, std::size_t index, const GpuDataKey& targetDataKey, cudaStream_t accessStream, int gpuId, CacheStatus status)
     : owner(accessOwner),
       d_data(deviceData),
       dataBytes(bytes),

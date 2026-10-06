@@ -4,7 +4,7 @@
 #include <cstddef>
 
 #include "Types/AlgoRuntimeInfo.h"
-#include "DataCache/GpuCacheManager.h"
+#include "DataCache/GpuDataCache.h"
 #include "Types/FrameMetadata.h"
 #include "StaticData/StaticGpuData.h"
 
@@ -44,7 +44,7 @@ public:
     StaticData& operator=(const StaticData&) = delete;
 
 private:
-    GpuCacheManager gpuCacheManager;
+    GpuDataCache gpuDataCache;
     StaticGpuData gpuStaticData;
     AlgoRuntimeInfo frameRuntime;
     bool initialized = false;

@@ -7,7 +7,7 @@ namespace {
 void testOrderedPipeline(TestContext& test, const GpuLocation& location, CacheEvictionPolicy policy, CacheRetention retention) {
     using namespace result_pipeline;
     constexpr std::size_t BYTES = 1024;
-    GpuCacheManager cache;
+    GpuDataCache cache;
     TaskA producer;
     TaskB consumer;
     DummyCPUTask cpu;

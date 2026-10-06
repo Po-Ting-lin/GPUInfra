@@ -22,7 +22,7 @@ The implementation demonstrates:
 - `DummyGraph` ownership of warmup/timed membership and execution state;
 - `StaticData` validation of one fixed frame layout and explicit run-boundary
   cache reset;
-- a bounded, best-effort `GpuCacheManager` with persistent `GpuCacheEntry` device
+- a bounded, best-effort `GpuDataCache` with persistent `GpuDataCacheEntry` device
   buffers and a fixed-capacity open-addressing residency table;
 - task-private persistent `d_input` fallback on cache miss;
 - no hot-path `cudaMalloc()`/`cudaFree()`;
@@ -190,7 +190,7 @@ framework NUMA executor resolves exactly one local GPU
   -> StaticData::init()
        -> resolve the same local GPU through the NUMA lookup
        -> store the fixed frame layout
-       -> create exactly K persistent GpuCacheEntry cache entries
+       -> create exactly K persistent GpuDataCacheEntry cache entries
        -> allocate a fixed open-addressing table plus empty/LRU structures
   -> start NUMA-local workers
   -> DummyGraph::start() calls DummyTask::start() on every task
@@ -230,10 +230,10 @@ bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData);
 ```text
 StaticData
   ├─ fixed frame layout + resetCache() run boundary
-  └─ GpuCacheManager
+  └─ GpuDataCache
        ├─ fixed open-addressing GpuDataKey -> entry index table [~2K]
        ├─ O(1) empty stack + intrusive inactive-entry LRU
-       └─ GpuCacheEntry[K]
+       └─ GpuDataCacheEntry[K]
             cached metadata + lease/LRU links
             └─ GpuReplica[gpuId] -> persistent d_data + validity
 ```
@@ -245,7 +245,7 @@ no per-frame registry,
 scheduler state, `FramePhase`, CPU bytes, `JobResult`, or NUMA identity: graph
 collections own execution state and the owning `FrameCpuAtom` carries its data
 and result.
-`GpuCacheEntry` is only a reusable best-effort GPU cache entry. It may represent
+`GpuDataCacheEntry` is only a reusable best-effort GPU cache entry. It may represent
 different logical frames over time while retaining the same device allocation.
 
 ### Keeping an access across caller methods
@@ -286,7 +286,7 @@ Distinct preprocessing results use distinct caller-defined `variantId` values
 (default 0). See the [payload identity contract](docs/integration/payload_identity.md)
 for shared AOI mapping, reset boundaries and remaining adapter work.
 
-`GpuCacheManager::getCacheData()` uses its fixed residency table and returns an RAII
+`GpuDataCache::getCacheData()` uses its fixed residency table and returns an RAII
 `GpuDataAccess`. `status()` returns `CacheStatus`; `getStream()` returns the
 borrowed task stream supplied in `GpuCacheRequest`:
 
@@ -333,7 +333,7 @@ if (submittedSuccessfully) {
 bool succeeded = access.freeCacheData(submittedSuccessfully);
 ```
 
-Independent `GpuCacheManager` instances may cache different fixed payload
+Independent `GpuDataCache` instances may cache different fixed payload
 sizes with separate capacities, indexes, and eviction policies. A frame cache and a
 result cache may use the same key without sharing entries. Payloads whose GPU usage overlaps need non-overlapping fallback storage.
 A caller may reuse one fallback allocation across outstanding leases only
@@ -505,7 +505,7 @@ global LRU state. It rejects active cache/fallback leases, waiting requests, or 
 fill.
 
 Reset does not call `cudaFree()` or `cudaMalloc()`: every
-`GpuCacheEntry` device pointer remains allocated and is reused by later fills.
+`GpuDataCacheEntry` device pointer remains allocated and is reused by later fills.
 The graph-copy owner must call it after every old-run execution has finished
 and before any new-run execution can start. Between two resets, one
 `frameId + cameraId + variantId` identity must always represent the same immutable bytes.
@@ -544,9 +544,9 @@ For size factor `F`, input is `(8F)x(8F)`, CEL is `(2F)x(2F)`, and SDD/MI are
 | `GpuContext` | GPU/NUMA identity, retained primary context, registered task table |
 | `DummyGraph` | workers, task pool, ready queue, CPU atoms, `StaticData`, phases, cancellation |
 | `FrameCpuAtom` | CPU input bytes, intrinsic metadata, and preallocated `JobResult` |
-| `StaticData` | fixed frame layout, reset boundary, and one bounded `GpuCacheManager` |
-| `GpuCacheManager` | fixed cache array, fixed open-addressing residency table, O(1) victim structures, metadata lock, and leases |
-| `GpuCacheEntry` | one reusable cache entry with persistent GPU-keyed replicas and validity |
+| `StaticData` | fixed frame layout, reset boundary, and one bounded `GpuDataCache` |
+| `GpuDataCache` | fixed cache array, fixed open-addressing residency table, O(1) victim structures, metadata lock, and leases |
+| `GpuDataCacheEntry` | one reusable cache entry with persistent GPU-keyed replicas and validity |
 | `GpuDataAccess` | scoped non-owning cache/fallback lease and stream completion |
 | `DummyTask` / `TaskGpuResources` | GPU binding, stream, `h_in`, fallback `d_input`, scratch, algorithms |
 | CEL/SDD/MI | private device outputs, pinned D2H staging, geometry, parameters |
@@ -644,7 +644,7 @@ results/                   retained benchmark and profiling artifacts
 
 Link production callers to `gpuinfra`; its public include root is `src/`.
 For example, include `CudaCheck.h`, `Context/GpuContextManager.h`, or
-`DataCache/GpuCacheManager.h`. The core does not include demo headers.
+`DataCache/GpuDataCache.h`. The core does not include demo headers.
 `gpuinfra_demo_support` links the core and adds the `demo/` include root and
 synthetic workload definitions. Tests and `gpuinfra_demo` link this support target.
 See the [documentation index](docs/README.md) for reading order.
