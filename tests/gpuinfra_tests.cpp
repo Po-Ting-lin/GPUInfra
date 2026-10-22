@@ -25,6 +25,7 @@ int main() {
     const bool callbacksRan = NumaExecutor(locations.front().numaNode).run([&test, &locations] {
         testLifecycleAndResults(test, locations.front(), ExecutionModel::Batched, 1);
         testLifecycleAndResults(test, locations.front(), ExecutionModel::Interleaved, 2);
+        testCudaDeviceGuard(test, locations.front());
         testStaticDataValidation(test, locations.front());
         testGpuDataAccessState(test, locations.front());
         testPayloadIdentity(test, locations.front());
@@ -49,6 +50,7 @@ int main() {
         testCacheEvictionPolicies(test, locations.front());
         testFifoDiscardPositions(test, locations.front());
         testCacheDiscard(test, locations.front());
+        testCacheCompletionFailures(test, locations.front());
         testCacheDiscardWaiter(test, locations.front());
         testStaticDataCachePolicy(test, locations.front());
         testFrameDataAcrossTaskInstances(test, locations.front());
@@ -59,6 +61,7 @@ int main() {
     testNumaExecutionBoundary(test, locations.front());
     testIndependentPools(test, locations.front());
     testConditionalNumaGraphs(test, locations);
+    testGraphShutdownReleasesPhaseGate(test, locations.front());
     testGraphCancellation(test, locations.front());
 
     GpuContextManager::shutdown();

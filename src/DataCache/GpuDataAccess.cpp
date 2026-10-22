@@ -51,7 +51,11 @@ void GpuDataAccess::abortUnfinishedAccess() noexcept {
     GPUINFRA_NVTX_SCOPE("Cache.RAII_abort_sync");
     const GpuDiagnosticScope diagnosticScope(deviceId, stream, dataKey, "Cache.RAII_abort");
     // Already-submitted CUDA work must not outlive the access on an early exit.
-    CUDA_CHECK(cudaStreamSynchronize(stream), );
+    bool synchronized = true;
+    CUDA_CHECK(cudaStreamSynchronize(stream), synchronized = false);
+    if (!synchronized) {
+        owner->noteSyncFailure();
+    }
     owner->abortAccess(*this);
 }
 
@@ -89,17 +93,24 @@ bool GpuDataAccess::freeCacheData(bool submittedSuccessfully, CacheRetention ret
     if (owner == nullptr || stream == nullptr) {
         return false;
     }
-    if (retention != CacheRetention::Keep && retention != CacheRetention::Discard) {
+    // An invalid retention choice is a failed completion: the lease is still
+    // finished (a fill rolls back) instead of being left for the destructor.
+    const bool validRetention = retention == CacheRetention::Keep || retention == CacheRetention::Discard;
+    if (!validRetention) {
         GPUINFRA_REPORT_FAILURE("invalid cache retention choice");
-        return false;
     }
 
-    bool succeeded = submittedSuccessfully;
+    bool succeeded = submittedSuccessfully && validRetention;
+    bool synchronized = true;
     {
         GPUINFRA_NVTX_SCOPE("Cache.stream_sync");
-        CUDA_CHECK(cudaStreamSynchronize(stream), succeeded = false);
+        CUDA_CHECK(cudaStreamSynchronize(stream), synchronized = false);
     }
-    return owner->completeAccess(*this, succeeded, retention);
+    if (!synchronized) {
+        succeeded = false;
+        owner->noteSyncFailure();
+    }
+    return owner->completeAccess(*this, succeeded, validRetention ? retention : CacheRetention::Keep);
 }
 
 void GpuDataAccess::reset() {

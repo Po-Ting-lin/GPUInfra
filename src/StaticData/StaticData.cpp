@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 
 #include "CudaCheck.h"
+#include "CudaDeviceGuard.h"
 #include "Context/GpuContextManager.h"
 
 namespace {
@@ -43,7 +44,10 @@ bool StaticData::init(const StaticDataConfig& config) {
     std::size_t freeBytes = 0;
     std::size_t totalBytes = 0;
     if (totalGpuBytes != 0) {
-        CUDA_CHECK(cudaSetDevice(gpuIds.front()), return false);
+        const CudaDeviceGuard deviceGuard(gpuIds.front());
+        if (!deviceGuard.ok()) {
+            return false;
+        }
         CUDA_CHECK(cudaMemGetInfo(&freeBytes, &totalBytes), return false);
         if (totalGpuBytes > freeBytes) {
             std::fprintf(stderr, "[GPUInfra] insufficient StaticData GPU memory gpu=%d required=%zu free=%zu total=%zu\n", gpuIds.front(), totalGpuBytes, freeBytes, totalBytes);
@@ -92,6 +96,10 @@ bool StaticData::resetCache(CacheStatistics* completedStatistics) {
 
 CacheStatistics StaticData::cacheStatisticsSnapshot() const {
     return gpuDataCache.statisticsSnapshot();
+}
+
+bool StaticData::cacheFailed() const {
+    return gpuDataCache.hasFailed();
 }
 
 bool StaticData::execute() const {

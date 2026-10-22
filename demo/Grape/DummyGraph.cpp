@@ -289,6 +289,10 @@ bool DummyGraph::shutdown() {
         if (phaseActive) {
             cancellation->store(true, std::memory_order_release);
             cancelReadyFramesLocked();
+            // Workers that already claimed a frame may still wait on the caller's gate.
+            if (phaseGate != nullptr) {
+                phaseGate->release();
+            }
         }
         cancelPreparedFramesLocked();
         workCondition.notify_all();
@@ -588,7 +592,7 @@ void DummyGraph::printCacheStatistics(std::ostream& output, const char* runId, s
            << " frame_bytes=" << config.runtime.inBytes << " tasks=" << tasks.size() << " workers=" << workers.size()
            << " execution_model=" << (config.executionModel == ExecutionModel::Batched ? "batched" : "interleaved")
            << " hit=" << stats.hit << " fill=" << stats.fill << " fallback=" << stats.fallback << " invalid=" << stats.invalid
-           << " fill_succeeded=" << stats.fillSucceeded << " fill_failed=" << stats.fillFailed << " eviction=" << stats.eviction << " discard=" << stats.discard
+           << " fill_succeeded=" << stats.fillSucceeded << " fill_failed=" << stats.fillFailed << " eviction=" << stats.eviction << " discard=" << stats.discard << " sync_failures=" << stats.syncFailures
            << " first_blocked_loading=" << stats.firstBlockedLoading << " first_blocked_full=" << stats.firstBlockedFull
            << " capacity_zero=" << stats.fallbackReasons.capacityZero << " loading_timeout=" << stats.fallbackReasons.loadingTimeout
            << " full_timeout=" << stats.fallbackReasons.fullTimeout << " loading_no_wait=" << stats.fallbackReasons.loadingNoWait

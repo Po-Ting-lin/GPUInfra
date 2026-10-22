@@ -38,6 +38,9 @@ AOI caller 不在本機；其行為來自另一位 agent 對 AOI commit `b96d8ca
 
 ### F2／P1 整合契約：同步失敗後不能把 lease 清空當成 GPU 已安全完成
 
+修正進度（2026-10-22）：已修正。同步失敗會標記 manager failed，拒絕新請求與 reset，
+詳見 [gpuinfra_review_20261022.md](gpuinfra_review_20261022.md) #4。以下為修正前的 finding。
+
 位置：[GpuDataAccess.cpp](../../src/DataCache/GpuDataAccess.cpp)，
 `abortUnfinishedAccess()` 與 `freeCacheData()`。
 

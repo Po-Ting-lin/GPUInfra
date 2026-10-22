@@ -20,6 +20,7 @@ A normal getCacheData() return adds exactly one final outcome:
 | fillFailed | Fill failed, including RAII abandonment |
 | eviction | An old Valid entry was replaced and a new CacheFill returned |
 | discard | A cache-backed entry was removed because a caller completed with Discard |
+| syncFailures | A completion or RAII cleanup could not synchronize its stream; the manager is then failed (see below) |
 | firstBlockedLoading | First obstruction in this request was a matching Loading entry |
 | firstBlockedFull | First obstruction was no empty or evictable entry in a nonzero-capacity cache |
 
@@ -40,6 +41,13 @@ until their GPU use finishes. Discard does not count fallback completion,
 failed-fill rollback, reset or release. A successful fill completed with Discard
 counts both fillSucceeded and discard, and is not retained for later hits.
 See [eviction and retention policies](cache_policies.md).
+
+A synchronization failure also marks the manager failed. Later getCacheData()
+calls return Invalid (counted in invalid) and resetCache() is rejected until
+release() and initialize() start a healthy manager, which also clears the
+counters. statisticsSnapshot() and release() remain available. The GPU work of
+the failing access may not have drained, so the framework must treat this as an
+execution failure. StaticData forwards the state as cacheFailed().
 
 Counters cover manager calls only. Rejection in StaticData validation or a
 task before it calls the manager does not increment manager.invalid. Control

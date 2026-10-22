@@ -41,8 +41,11 @@ class GpuDataCache;
 //       return false;
 //   }
 //
-// CacheHit is read-only. CacheFill and TaskFallback expose writableData();
-// the caller uploads or computes the entire payload before reading it.
+// CacheHit is read-only. CacheFill and TaskFallback expose writableData().
+// A CacheFill is shared with later readers, so the caller must upload or
+// compute the entire payload before it is published. A TaskFallback buffer is
+// caller-private: the caller may fill only the range its own consumers read
+// (for example an ROI), but the allocation is still at least the full payload.
 // The cache does not upload, compute, or inspect the payload itself.
 //
 // Submit all work using this pointer to getStream(), the borrowed request
@@ -50,9 +53,17 @@ class GpuDataCache;
 // that stream, retains a successful fill or rolls back a failed fill, and
 // ends this lease. No fill is published early. The access and its pointers
 // are invalid afterwards; getStream() returns nullptr and status() is Invalid.
+// An unknown CacheRetention value is a failed completion: it returns false,
+// rolls back a fill and still ends the lease.
+//
+// If the stream synchronization itself fails, the access's GPU work may not have
+// drained. The completion returns false and the manager is marked failed
+// (GpuDataCache::hasFailed()): it rejects new requests and resets until it is
+// released and initialized again. The caller must propagate this failure.
 //
 // The destructor is an error-path safety net: an unfinished access attempts
-// synchronization and aborts. It never publishes an unfinished CacheFill.
+// synchronization and aborts. It never publishes an unfinished CacheFill. A
+// synchronization failure there marks the manager failed in the same way.
 // Keep the manager, stream, and fallback allocation alive through completion.
 class GpuDataAccess {
 public:

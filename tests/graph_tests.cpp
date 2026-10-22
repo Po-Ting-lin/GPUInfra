@@ -365,6 +365,31 @@ void testConditionalNumaGraphs(TestContext& test, const std::vector<GpuLocation>
     test.expect(ok && sink.count() == locations.size(), "one graph copy runs on each GPU-bearing NUMA node");
 }
 
+void testGraphShutdownReleasesPhaseGate(TestContext& test, const GpuLocation& location) {
+    GraphSink sink;
+    std::atomic<bool> cancellation{false};
+    PhaseGate gate;
+    DummyGraph graph(NumaExecutor(location.numaNode), makeGraphConfig(2, 2, ExecutionModel::Batched), sink, cancellation);
+    test.expect(graph.initialize() && graph.start(), "initialize and start graph for unreleased phase gate shutdown");
+    test.expect(graph.startPhase(FramePhase::Timed, gate), "submit a phase whose gate stays closed");
+
+    // Workers claim frames and block on the closed gate.
+    const std::chrono::steady_clock::time_point claimDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (graph.lastMaxConcurrentExecutions() == 0 && std::chrono::steady_clock::now() < claimDeadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    test.expect(graph.lastMaxConcurrentExecutions() != 0, "a worker claims a frame while the phase gate is closed");
+
+    std::future<bool> shutdownResult = std::async(std::launch::async, [&graph] { return graph.shutdown(); });
+    const bool shutdownFinished = shutdownResult.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    if (!shutdownFinished) {
+        gate.release();
+    }
+    test.expect(shutdownFinished, "shutdown releases the active phase gate instead of waiting for the caller");
+    test.expect(shutdownResult.get(), "shutdown unloads a graph with a closed phase gate");
+    test.expect(sink.count() == 8 && sink.failureCount() == 8, "shutdown gives every frame of the closed-gate phase one failed terminal result");
+}
+
 void testGraphCancellation(TestContext& test, const GpuLocation& location) {
     GraphSink sink;
     std::atomic<bool> cancellation{false};

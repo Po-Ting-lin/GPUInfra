@@ -457,7 +457,10 @@ A successful reset returns and clears the previous interval; a rejected reset
 preserves both counters and the output argument.
 
 Counters cover final hit/fill/fallback/invalid, fill success/failure, eviction, discard,
-first obstruction, fallback reasons, and actual condition-variable wait time.
+stream synchronization failures, first obstruction, fallback reasons, and actual
+condition-variable wait time. A synchronization failure marks the manager failed:
+new requests return Invalid and reset is rejected until release and
+reinitialization (`cacheFailed()` reports it; the framework must propagate it).
 The demo caller prints a labeled warmup+timed report after execution. See
 [statistics definitions and legacy A/B mapping](docs/cache_statistics.md) before
 comparing legacy skip counts with final fallback outcomes.

@@ -32,6 +32,8 @@ public:
     std::size_t staticGpuDataBytes(StaticGpuDataType type) const;
     bool resetCache(CacheStatistics* completedStatistics = nullptr);
     CacheStatistics cacheStatisticsSnapshot() const;
+    // True after a cache stream synchronization failure; see GpuDataCache::hasFailed().
+    bool cacheFailed() const;
     bool execute() const;
     bool release();
 

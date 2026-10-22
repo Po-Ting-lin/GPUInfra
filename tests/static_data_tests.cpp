@@ -2,6 +2,41 @@
 
 namespace gpuinfra_tests {
 
+void testCudaDeviceGuard(TestContext& test, const GpuLocation& location) {
+    test.expect(!CudaDeviceGuard(-1).ok(), "device guard rejects a negative GPU id");
+
+    int deviceCount = 0;
+    const bool countKnown = cudaGetDeviceCount(&deviceCount) == cudaSuccess;
+    test.expect(countKnown && deviceCount > 0, "device guard test can query CUDA devices");
+
+    // Cold-path library calls must leave the caller's current device untouched.
+    int otherGpu = location.gpuId;
+    for (int gpu = 0; countKnown && gpu < deviceCount; ++gpu) {
+        if (gpu != location.gpuId) {
+            otherGpu = gpu;
+            break;
+        }
+    }
+    int before = -1;
+    test.expect(cudaSetDevice(otherGpu) == cudaSuccess && cudaGetDevice(&before) == cudaSuccess && before == otherGpu, "select a caller current device before the guard");
+    {
+        const CudaDeviceGuard guard(location.gpuId);
+        int inside = -1;
+        test.expect(guard.ok() && cudaGetDevice(&inside) == cudaSuccess && inside == location.gpuId, "device guard selects the requested GPU");
+    }
+    int after = -1;
+    test.expect(cudaGetDevice(&after) == cudaSuccess && after == otherGpu, "device guard restores the caller current device");
+
+    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    StaticData staticData;
+    test.expect(initializeStaticData(staticData, location, runtime, 2), "initialize StaticData with a different caller current device");
+    int afterInit = -1;
+    test.expect(cudaGetDevice(&afterInit) == cudaSuccess && afterInit == otherGpu, "StaticData cold path preserves the caller current device");
+    test.expect(staticData.release(), "release StaticData with a different caller current device");
+    int afterRelease = -1;
+    test.expect(cudaGetDevice(&afterRelease) == cudaSuccess && afterRelease == otherGpu, "StaticData release preserves the caller current device");
+}
+
 void testStaticDataValidation(TestContext& test, const GpuLocation& location) {
     const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
     const GraphConfig defaultGraphConfig;

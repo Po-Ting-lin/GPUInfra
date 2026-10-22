@@ -6,6 +6,7 @@ Current implementation and integration contracts:
 - [Graph golden rules](graph.md): NUMA affinity and framework callbacks.
 - [Toolchain compatibility](toolchain_compatibility.md): core-only builds and validation limits.
 - [CUDA logging](cuda_logging.md): checks, caller context and output examples.
+- [Cache policies](cache_policies.md): LRU/FIFO eviction and Keep/Discard completion.
 - [Result pipeline simulation](result_pipeline.md): A → CPU tasks → B tests and benchmarks.
 - [Cache statistics](cache_statistics.md): counters and A/B interpretation.
 - [NVTX profiling](profiling.md): build, collection and recorded results.
@@ -13,6 +14,7 @@ Current implementation and integration contracts:
 
 Integration references:
 
+- [GPUInfra code and documentation review (2026-10-22)](integration/gpuinfra_review_20261022.md): findings, fixes applied and remaining follow-ups.
 - [GPUInfra combined review (2026-09-24)](integration/gpuinfra_review_20260924.md): findings, AOI integration status and priorities.
 
 - [AOI caller integration instructions](integration/aoi_caller_integration.md): direct GpuI2I changes, saved leases and transaction cleanup.

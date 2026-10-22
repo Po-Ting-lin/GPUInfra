@@ -62,13 +62,14 @@ bool GpuDataCache::initialize(const std::vector<int>& gpuIds, std::size_t bytes,
     evictionPolicy = configuredEvictionPolicy;
     activeFallbackAccesses = 0;
     statistics = CacheStatistics();
+    failed = false;
     initialized = true;
     return true;
 }
 
 bool GpuDataCache::resetCache(CacheStatistics* completedStatistics) {
     std::lock_guard<std::mutex> guard(lock);
-    if (!initialized || releasing || !canResetLocked()) {
+    if (!initialized || releasing || failed || !canResetLocked()) {
         return false;
     }
     if (completedStatistics != nullptr) {
@@ -89,7 +90,7 @@ GpuDataAccess GpuDataCache::getCacheData(const FrameMetadata& metadata, const Gp
     const GpuDiagnosticScope diagnosticScope(request.gpuId, request.stream, metadata.key, "Cache.getCacheData");
     const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> guard(lock);
-    if (!initialized || releasing || metadata.bytes != dataBytes || metadata.width <= 0 || metadata.height <= 0 || request.gpuId < 0 || request.stream == nullptr || request.d_fallback == nullptr || request.fallbackBytes < dataBytes || std::find(eligibleGpuIds.begin(), eligibleGpuIds.end(), request.gpuId) == eligibleGpuIds.end()) {
+    if (!initialized || releasing || failed || metadata.bytes != dataBytes || metadata.width <= 0 || metadata.height <= 0 || request.gpuId < 0 || request.stream == nullptr || request.d_fallback == nullptr || request.fallbackBytes < dataBytes || std::find(eligibleGpuIds.begin(), eligibleGpuIds.end(), request.gpuId) == eligibleGpuIds.end()) {
         ++statistics.invalid;
         GPUINFRA_REPORT_FAILURE("invalid cache request or unavailable manager");
         return GpuDataAccess();
@@ -102,6 +103,12 @@ GpuDataAccess GpuDataCache::getCacheData(const FrameMetadata& metadata, const Gp
     bool waited = false;
     std::chrono::nanoseconds requestWait{0};
     while (true) {
+        if (failed) {
+            // A synchronization failure may arrive while this request waits.
+            ++statistics.invalid;
+            GPUINFRA_REPORT_FAILURE("cache manager failed after a stream synchronization error");
+            return GpuDataAccess();
+        }
         std::size_t residentIndex = NO_ENTRY;
         if (residencyTable.find(metadata.key, residentIndex)) {
             const std::size_t index = residentIndex;
@@ -266,10 +273,16 @@ bool GpuDataCache::release() {
         newestFilled = NO_ENTRY;
         dataBytes = 0;
         activeFallbackAccesses = 0;
+        failed = false;
         initialized = false;
     }
     releasing = false;
     return ok;
+}
+
+bool GpuDataCache::hasFailed() const {
+    std::lock_guard<std::mutex> guard(lock);
+    return failed;
 }
 
 bool GpuDataCache::isInitialized() const {
@@ -502,6 +515,14 @@ bool GpuDataCache::releaseReaderEntry(GpuDataCacheEntry& entry, std::size_t inde
         return true;
     }
     return addEvictableEntry(index);
+}
+
+void GpuDataCache::noteSyncFailure() {
+    std::lock_guard<std::mutex> guard(lock);
+    ++statistics.syncFailures;
+    failed = true;
+    // Requests waiting for a Loading entry or a free slot must not start new work.
+    cacheChanged.notify_all();
 }
 
 bool GpuDataCache::completeAccess(GpuDataAccess& access, bool succeeded, CacheRetention retention) {

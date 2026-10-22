@@ -278,6 +278,15 @@ This rule does not cover mutable GPU-only intermediates. Such data needs a
 separate authoritative frame-owned output plane or a defined spill/recompute
 contract before eviction is safe.
 
+A stream synchronization failure while finishing an access (explicit
+`freeCacheData()` or RAII cleanup) means its GPU work may not have drained. The
+access still ends and rolls back, but the manager becomes failed: new requests
+return `Invalid` and `resetCache()` is rejected until `release()` and
+`initialize()`. `GpuDataCache::hasFailed()` / `StaticData::cacheFailed()` expose
+the state, and `syncFailures` counts it. There is no automatic recovery or CPU
+fallback; the framework must propagate the failure. An unknown `CacheRetention`
+value is a failed completion that still ends the lease.
+
 ## 9. Memory lifetime
 
 ```text

@@ -31,6 +31,7 @@
 #include "Grape/FrameCpuAtom.h"
 #include "Context/GpuContextManager.h"
 #include "CudaCheck.h"
+#include "CudaDeviceGuard.h"
 #include "ImageSizing.h"
 #include "Grape/NumaExecutor.h"
 #include "ParameterRegistry.h"
@@ -97,6 +98,7 @@ void testGpuDataCacheLru(TestContext& test, const GpuLocation& location);
 void testCacheEvictionPolicies(TestContext& test, const GpuLocation& location);
 void testFifoDiscardPositions(TestContext& test, const GpuLocation& location);
 void testCacheDiscard(TestContext& test, const GpuLocation& location);
+void testCacheCompletionFailures(TestContext& test, const GpuLocation& location);
 void testCacheDiscardWaiter(TestContext& test, const GpuLocation& location);
 void testStaticDataCachePolicy(TestContext& test, const GpuLocation& location);
 void testTaskFallbackExecution(TestContext& test, const GpuLocation& location);
@@ -107,6 +109,8 @@ void testGpuTopologySelection(TestContext& test);
 void testNumaExecutionBoundary(TestContext& test, const GpuLocation& location);
 void testIndependentPools(TestContext& test, const GpuLocation& location);
 void testConditionalNumaGraphs(TestContext& test, const std::vector<GpuLocation>& locations);
+void testCudaDeviceGuard(TestContext& test, const GpuLocation& location);
+void testGraphShutdownReleasesPhaseGate(TestContext& test, const GpuLocation& location);
 void testGraphCancellation(TestContext& test, const GpuLocation& location);
 
 }  // namespace gpuinfra_tests

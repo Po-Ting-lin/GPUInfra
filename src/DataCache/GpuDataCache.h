@@ -18,7 +18,9 @@
 
 // Graph-copy-scoped, fixed-capacity GPU data cache. The current implementation
 // indexes immutable fixed-size payloads by GpuDataKey. The caller handles
-// misses and supplies independent fallback storage for each live payload.
+// misses and supplies independent fallback storage for each live payload. One
+// fallback allocation may back several leases only when every read of its
+// previous contents is ordered before the next overwrite on the same stream.
 class GpuDataCache {
 public:
     GpuDataCache() = default;
@@ -27,14 +29,20 @@ public:
     // FIFO age starts at successful fill completion; Hits preserve that age.
     bool initialize(const std::vector<int>& gpuIds, std::size_t bytes, std::size_t cacheEntryCount, std::chrono::milliseconds waitTimeout = std::chrono::milliseconds(50), CacheEvictionPolicy evictionPolicy = CacheEvictionPolicy::LRU);
     // Successful reset returns the previous interval and clears it atomically.
-    // Failure leaves both statistics and the output argument unchanged.
+    // Failure leaves both statistics and the output argument unchanged. A failed
+    // manager (see hasFailed()) rejects reset.
     bool resetCache(CacheStatistics* completedStatistics = nullptr);
     CacheStatistics statisticsSnapshot() const;
     // One shared deadline for Loading and full-cache waits; zero disables waiting.
     // The caller must keep this manager and request resources alive until return.
     GpuDataAccess getCacheData(const FrameMetadata& metadata, const GpuCacheRequest& request);
+    // release() always remains available; initialize() starts a healthy manager.
     bool release();
 
+    // True after a stream synchronization failed while finishing an access. The
+    // GPU work of that access may not have drained, so the manager rejects new
+    // requests (Invalid) and reset until released and initialized again.
+    bool hasFailed() const;
     bool isInitialized() const;
     std::size_t entryCount() const;
     std::size_t bytes() const;
@@ -57,6 +65,7 @@ private:
     bool addFilledEntry(std::size_t index);
     bool removeFilledEntry(std::size_t index);
     bool releaseReaderEntry(GpuDataCacheEntry& entry, std::size_t index);
+    void noteSyncFailure();
     bool completeAccess(GpuDataAccess& access, bool succeeded, CacheRetention retention);
     void abortAccess(GpuDataAccess& access);
     GpuDataAccess makeFallbackAccess(const FrameMetadata& metadata, const GpuCacheRequest& request, CacheFallbackReason reason);
@@ -80,4 +89,5 @@ private:
     std::size_t activeFallbackAccesses = 0;
     bool initialized = false;
     bool releasing = false;
+    bool failed = false;
 };

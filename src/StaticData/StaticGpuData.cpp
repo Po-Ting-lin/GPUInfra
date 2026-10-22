@@ -1,6 +1,9 @@
 #include "StaticData/StaticGpuData.h"
 
+#include <optional>
+
 #include "CudaCheck.h"
+#include "CudaDeviceGuard.h"
 
 StaticGpuData::~StaticGpuData() {
     release();
@@ -14,7 +17,10 @@ bool StaticGpuData::initialize(int gpuId, std::size_t detectionZoneBytes, std::s
     if (gpuId < 0) {
         return false;
     }
-    CUDA_CHECK(cudaSetDevice(gpuId), return false);
+    const CudaDeviceGuard deviceGuard(gpuId);
+    if (!deviceGuard.ok()) {
+        return false;
+    }
     deviceId = gpuId;
     buffers[0].capacity = detectionZoneBytes;
     buffers[1].capacity = distortionBytes;
@@ -47,7 +53,11 @@ bool StaticGpuData::upload(StaticGpuDataType type, const void* source, std::size
         currentState = StaticGpuDataState::Failed;
         return false;
     }
-    CUDA_CHECK(cudaSetDevice(deviceId), { currentState = StaticGpuDataState::Failed; return false; });
+    const CudaDeviceGuard deviceGuard(deviceId);
+    if (!deviceGuard.ok()) {
+        currentState = StaticGpuDataState::Failed;
+        return false;
+    }
     bool succeeded = true;
     CUDA_CHECK(cudaMemcpyAsync(static_cast<unsigned char*>(buffer->d_data) + offset, source, count, cudaMemcpyHostToDevice, uploadStream), succeeded = false);
     // Drain even after a submission error so earlier work cannot borrow source
@@ -63,7 +73,11 @@ bool StaticGpuData::finalize() {
     if (currentState != StaticGpuDataState::Uploading) {
         return false;
     }
-    CUDA_CHECK(cudaSetDevice(deviceId), { currentState = StaticGpuDataState::Failed; return false; });
+    const CudaDeviceGuard deviceGuard(deviceId);
+    if (!deviceGuard.ok()) {
+        currentState = StaticGpuDataState::Failed;
+        return false;
+    }
     if (uploadStream != nullptr) {
         CUDA_CHECK(cudaStreamSynchronize(uploadStream), { currentState = StaticGpuDataState::Failed; return false; });
     }
@@ -100,9 +114,13 @@ bool StaticGpuData::release() {
     for (const Buffer& buffer : buffers) {
         hasResources = hasResources || buffer.d_data != nullptr;
     }
+    std::optional<CudaDeviceGuard> deviceGuard;
     if (hasResources) {
         currentState = StaticGpuDataState::Failed;
-        CUDA_CHECK(cudaSetDevice(deviceId), return false);
+        deviceGuard.emplace(deviceId);
+        if (!deviceGuard->ok()) {
+            return false;
+        }
     }
 
     bool succeeded = true;

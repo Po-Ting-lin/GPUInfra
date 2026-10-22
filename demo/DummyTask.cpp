@@ -198,7 +198,7 @@ bool DummyTask::applyParameters(const ParameterSnapshot& parameters) {
     return true;
 }
 
-bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) { // TODO: not sure where is the correct place for static data
+bool DummyTask::execute(FrameCpuAtom& atom, StaticData& staticData) {
     GPUINFRA_NVTX_SCOPE("Task.execute");
     const GpuDiagnosticScope diagnosticScope(resources, "Task.execute", &atom.metadata.key);
     atom.result.id = atom.metadata.key.frameId;

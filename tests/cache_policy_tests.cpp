@@ -285,10 +285,80 @@ void testCacheDiscard(TestContext& test, const GpuLocation& location) {
         verifyPolicyHit(test, cache, resources, 1);
         {
             GpuDataAccess access = cache.getCacheData(makePolicyMetadata(1), makeCacheRequest(resources));
-            test.expect(!access.freeCacheData(true, static_cast<CacheRetention>(99)) && access.status() == CacheStatus::CacheHit, "unknown retention is rejected while leaving the lease available for cleanup");
-            test.expect(access.freeCacheData(true, CacheRetention::Discard), "valid completion cleans up a rejected retention choice");
+            test.expect(!access.freeCacheData(true, static_cast<CacheRetention>(99)) && access.status() == CacheStatus::Invalid, "unknown retention fails the completion and still finishes the lease");
+        }
+        {
+            GpuDataAccess access = cache.getCacheData(makePolicyMetadata(1), makeCacheRequest(resources));
+            test.expect(access.status() == CacheStatus::CacheHit, "a rejected retention choice keeps the cached payload as a Keep completion");
+            test.expect(access.freeCacheData(true, CacheRetention::Discard), "valid Discard completion after a rejected retention choice");
         }
         test.expect(cache.statisticsSnapshot().discard == 2 && cache.statisticsSnapshot().eviction == 0, "successful Fill and Hit discards count independently of failed fills and fallback");
+    }
+}
+
+void testCacheCompletionFailures(TestContext& test, const GpuLocation& location) {
+    {
+        CachePolicyResources fixture(test, location, 1, CacheEvictionPolicy::LRU);
+        if (fixture.initialized) {
+            GpuDataCache& cache = fixture.cache;
+            const TaskGpuResources& resources = fixture.resources[0];
+            {
+                GpuDataAccess fill = cache.getCacheData(makePolicyMetadata(1), makeCacheRequest(resources));
+                const bool submitted = fill.status() == CacheStatus::CacheFill && cudaMemsetAsync(fill.writableData(), 1, POLICY_PAYLOAD_BYTES, fill.getStream()) == cudaSuccess;
+                test.expect(submitted && !fill.freeCacheData(true, static_cast<CacheRetention>(99)) && fill.status() == CacheStatus::Invalid, "unknown retention fails a fill completion and finishes its lease");
+            }
+            test.expect(cache.resetCache() && !cache.hasFailed(), "rejected retention leaves no live lease and does not fail the manager");
+            GpuDataAccess retry = cache.getCacheData(makePolicyMetadata(1), makeCacheRequest(resources));
+            test.expect(retry.status() == CacheStatus::CacheFill, "a fill with a rejected retention choice was rolled back instead of published");
+            test.expect(!retry.freeCacheData(false), "roll back the retry probe");
+        }
+    }
+
+    // Synchronizing a stream that is being captured fails without corrupting the context.
+    for (int raii = 0; raii < 2; ++raii) {
+        GpuDataCache cache;
+        TaskGpuResources broken;
+        TaskGpuResources healthy;
+        const bool ready = cache.initialize({location.gpuId}, POLICY_PAYLOAD_BYTES, 1, std::chrono::milliseconds(0), CacheEvictionPolicy::LRU) && initializeAccessResources(broken, location, POLICY_PAYLOAD_BYTES) && initializeAccessResources(healthy, location, POLICY_PAYLOAD_BYTES);
+        test.expect(ready, "initialize cache and caller streams for synchronization failure");
+        if (!ready) {
+            cache.release();
+            releaseAccessResources(broken);
+            releaseAccessResources(healthy);
+            continue;
+        }
+
+        {
+            GpuDataAccess fill = cache.getCacheData(makePolicyMetadata(1), makeCacheRequest(broken));
+            test.expect(fill.status() == CacheStatus::CacheFill, "reserve a fill on the stream that will fail");
+            test.expect(cudaStreamBeginCapture(broken.stream, cudaStreamCaptureModeRelaxed) == cudaSuccess, "start capture so the completion synchronization is illegal");
+            if (raii == 0) {
+                test.expect(!fill.freeCacheData(true), "synchronization failure fails the explicit completion");
+            }
+        }
+        cudaGraph_t capturedGraph = nullptr;
+        cudaStreamEndCapture(broken.stream, &capturedGraph);
+        if (capturedGraph != nullptr) {
+            cudaGraphDestroy(capturedGraph);
+        }
+        test.expect(cudaGetLastError() != cudaErrorUnknown, "clear the non-sticky capture error");
+        const CacheStatistics failedStatistics = cache.statisticsSnapshot();
+        test.expect(cache.hasFailed() && failedStatistics.syncFailures == 1 && failedStatistics.fillFailed == 1, "synchronization failure marks the manager failed and counts once");
+
+        GpuDataAccess rejected = cache.getCacheData(makePolicyMetadata(2), makeCacheRequest(healthy));
+        test.expect(rejected.status() == CacheStatus::Invalid && cache.statisticsSnapshot().invalid == failedStatistics.invalid + 1, "failed manager rejects new requests");
+        test.expect(!cache.resetCache(), "failed manager rejects a run-boundary reset");
+        test.expect(cache.release() && !cache.hasFailed(), "failed manager can still be released");
+
+        const bool reinitialized = cache.initialize({location.gpuId}, POLICY_PAYLOAD_BYTES, 1, std::chrono::milliseconds(0), CacheEvictionPolicy::LRU);
+        test.expect(reinitialized && !cache.hasFailed() && cache.statisticsSnapshot().syncFailures == 0, "initialization starts a healthy manager");
+        if (reinitialized) {
+            GpuDataAccess fill = cache.getCacheData(makePolicyMetadata(3), makeCacheRequest(healthy));
+            test.expect(fill.status() == CacheStatus::CacheFill, "reinitialized manager accepts new requests");
+            test.expect(!fill.freeCacheData(false), "roll back the reinitialized probe");
+        }
+        test.expect(cache.release(), "release reinitialized cache");
+        test.expect(releaseAccessResources(broken) && releaseAccessResources(healthy), "release synchronization failure caller resources");
     }
 }
 

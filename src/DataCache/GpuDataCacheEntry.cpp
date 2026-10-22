@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 
 #include "CudaCheck.h"
+#include "CudaDeviceGuard.h"
 
 GpuDataCacheEntry::~GpuDataCacheEntry() {
     release();
@@ -27,7 +28,8 @@ bool GpuDataCacheEntry::initialize(const std::vector<int>& gpuIds, std::size_t b
 
     bool ok = true;
     for (GpuReplica& replica : replicas) {
-        CUDA_CHECK(cudaSetDevice(replica.gpuId), ok = false);
+        const CudaDeviceGuard deviceGuard(replica.gpuId);
+        ok = deviceGuard.ok();
         if (ok) {
             CUDA_CHECK(cudaMalloc(&replica.d_data, dataBytes), ok = false);
         }
@@ -52,9 +54,8 @@ bool GpuDataCacheEntry::release() {
             continue;
         }
 
-        bool deviceReady = true;
-        CUDA_CHECK(cudaSetDevice(replica.gpuId), deviceReady = false);
-        if (!deviceReady) {
+        const CudaDeviceGuard deviceGuard(replica.gpuId);
+        if (!deviceGuard.ok()) {
             ok = false;
             continue;
         }

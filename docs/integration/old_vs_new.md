@@ -24,15 +24,28 @@ Drop-in source/API replacement     -> not currently feasible
 Replacement without scheduler work -> feasible
 Implemented first step             -> composite key, run reset,
                                       average O(1) lookup/victim selection
-Remaining work                     -> dual fallback, multi-access completion,
-                                      and integration adapter
+Implemented since                  -> caller-supplied fallback (GpuCacheRequest),
+                                      movable GpuDataAccess, statistics,
+                                      StaticGpuData, bounded waiting
+Remaining work                     -> direct caller changes (no adapter), owner
+                                      ordering, and real-caller verification
 ```
 
-The most important correctness gap is that one legacy task execution can hold
+> **Status (2026-10-22).** The first revision of this document listed dual
+> fallback buffers, one-sync completion and an integration adapter as blockers.
+> Those conclusions are superseded: fallback storage is caller-owned through
+> `GpuCacheRequest` (§5.3), batch completion is a measurement-driven backlog
+> (§5.4), constant storage is implemented (§5.7), and the integration decision
+> is to change the caller directly rather than add an adapter. The remaining
+> work is tracked in [the AOI caller integration instructions](aoi_caller_integration.md)
+> and [open issues](../open_issues.md). Sections below keep their original
+> analysis where it still explains the design.
+
+The original correctness concern was that one legacy task execution can hold
 two adjacent frames, master and reference, at the same time. GPUInfra can hold
-two cache-entry leases, but `TaskGpuResources` currently owns only one fallback
-`d_input`. If both acquisitions fall back, the second H2D can overwrite the
-first input before computation completes.
+two cache-entry leases. A single task-owned fallback `d_input` would let the
+second H2D overwrite the first input when both acquisitions fall back, so the
+caller supplies one fallback buffer per live payload role (§5.3).
 
 ## 3. Legacy behavior
 
@@ -71,19 +84,19 @@ and an age bit for safe replacement.
 | No hot-path `cudaMalloc()`/`cudaFree()` | Cache entries and task fallback buffers are allocated during initialization | Compatible |
 | Cache hit, fill, active readers, and safe replacement | `GpuDataAccess`, `GpuCacheState`, and `activeAccesses` implement scoped leases | Compatible |
 | Full-frame immutable cache payload | Each entry owns a fixed-size persistent GPU payload | Compatible if callers never modify cached input |
-| Master and reference held simultaneously | Multiple cache leases are possible, but there is only one task fallback buffer | Correctness blocker |
+| Master and reference held simultaneously | Multiple cache leases are possible; each request names its own fallback buffer (§5.3) | Resolved when the caller supplies separate master/reference buffers |
 | Identity is `(frame ID, camera ID)` | Explicit `GpuDataKey` contains frame ID and camera ID | Compatible |
 | Frame IDs may be reused in a later run | `resetCache()` clears old residency before reused identities arrive | Compatible when the caller provides a quiescent run-boundary hook |
 | Cache invalidation without freeing allocation | `resetCache()` clears residency/validity while retaining device pointers | Compatible |
 | Frames may be discovered during a run | Any incoming key with the fixed layout may enter the cache; no registration list is required | Compatible |
-| Loading frame can cause stall/retry | A matching `Loading` entry immediately returns task fallback | Correct but different performance and caller flow |
-| Separate master/reference fallback buffers | `TaskGpuResources` has one `d_input` | Missing |
-| ROI-only upload on fallback | The cache core lets the caller choose the copy, but the demo task uploads a full frame | Can be preserved in an adapter |
+| Loading frame can cause stall/retry | A matching `Loading` entry waits within a bounded per-request deadline (default 50 ms, 0 disables), then returns task fallback | Correct but different performance and caller flow |
+| Separate master/reference fallback buffers | `GpuCacheRequest` carries the caller's fallback pointer and capacity; the demo task still has one `d_input` | Supported by the API; the production caller allocates them in `load()` |
+| ROI-only upload on fallback | The cache core lets the caller choose the copy, but the demo task uploads a full frame | Preserved in the caller; consumers must read only the filled range |
 | Cache allocation failure disables only the cache | Cache initialization failure fails `StaticData::init()` | Intentional difference: fail initialization; no automatic capacity-zero fallback |
 | Constant-frame GPU memory | StaticData owns separate byte-sized DZ/distortion buffers through StaticGpuData | Implemented; caller supplies uploads and cold-path handoff |
 | Direct-mapped two-way O(1) lookup | A fixed open-addressing table gives average O(1) lookup; empty stack and intrusive global LRU give O(1) victim selection | Scalable alternative policy; exact legacy placement/age behavior is intentionally not preserved |
 | Cache modality filters | Not implemented | Optional only if they are performance controls |
-| Hit/miss/skip/debug counters | Planned but not implemented | Operational gap, not a correctness blocker |
+| Hit/miss/skip/debug counters | `CacheStatistics` counts outcomes, fallback reasons, evictions and waits ([cache_statistics.md](../cache_statistics.md)) | Implemented |
 | Many registered task streams | Every task already owns its stream; no fixed stream table is needed | Compatible and removes the legacy limit |
 | Multiple GPUs in one NUMA graph copy | Temporary GPUInfra implementation accepts exactly one GPU | Future work |
 
@@ -265,8 +278,8 @@ Real graph copy
 Task instance
   └─ TaskGpuResources
        ├─ stream
-       ├─ master fallback or caller-owned fallback slot 0
-       ├─ reference fallback or caller-owned fallback slot 1
+       ├─ (demo) one fallback d_input
+       │    production: caller-owned master/reference fallback buffers (§5.3)
        ├─ scratch
        └─ algorithm-private buffers
 
@@ -355,21 +368,25 @@ GPUInfra is a suitable foundation for replacing the legacy cache because its
 graph-scoped ownership, persistent allocations, cache leases, fallback path,
 and scheduler-independent selection match the intended direction.
 
-The first implementation step is complete and tested:
+The cache core is complete and tested:
 
-- composite key including frame and camera identity;
+- composite key including frame and camera identity (plus `variantId`);
 - run-boundary reset without freeing device memory;
 - arbitrary incoming-frame caching without a registration list;
 - fixed-capacity average `O(1)` residency lookup and `O(1)` global-LRU victim
-  selection.
+  selection;
+- caller-supplied fallback storage and movable RAII accesses;
+- separate constant storage (`StaticGpuData`).
 
-Replacement should proceed only after the remaining correctness requirements
-are implemented and tested:
+Replacement should proceed after the remaining caller-side work is done and
+tested against the real source:
 
-- independent master/reference fallback storage;
-- one-sync completion of multiple leases;
-- graph-copy lifecycle integration;
-- separate constant storage if used.
+- caller-owned master/reference fallback buffers and saved accesses (§5.3);
+- graph-copy lifecycle integration (owner-first ordering, reset boundary);
+- verification of the behaviors listed in §8.
+
+One-sync completion of multiple leases is a measurement-driven backlog (§5.4),
+not a prerequisite.
 
 After those changes, the old cache can be removed without modifying scheduler
 selection. Cache modality, loading stall behavior, statistics, and lookup
