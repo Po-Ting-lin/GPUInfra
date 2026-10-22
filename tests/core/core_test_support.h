@@ -54,6 +54,31 @@ private:
     int failures = 0;
 };
 
+// How a named test is run by runTestSuite().
+//   Pure:   before GPU infrastructure exists; locations is empty.
+//   Numa:   inside the first GPU's NUMA environment, like a framework callback.
+//   Direct: after initialization on the caller thread; may use every location.
+enum class TestKind {
+    Pure,
+    Numa,
+    Direct
+};
+
+struct TestCase {
+    const char* name;
+    TestKind kind;
+    std::function<void(TestContext&, const std::vector<GpuLocation>&)> run;
+};
+
+TestCase pureTest(const char* name, std::function<void(TestContext&)> test);
+TestCase numaTest(const char* name, std::function<void(TestContext&, const GpuLocation&)> test);
+TestCase directTest(const char* name, std::function<void(TestContext&, const GpuLocation&)> test);
+TestCase allLocationsTest(const char* name, std::function<void(TestContext&, const std::vector<GpuLocation>&)> test);
+
+// No argument runs every test. `--list` prints the names; otherwise each
+// argument selects one test by exact name. Returns a process exit code.
+int runTestSuite(const char* suiteName, const std::vector<TestCase>& tests, int argc, char* argv[]);
+
 constexpr int TEST_FRAME_FACTOR = 16;
 
 // Frame layout used by tests: a square byte image whose side is 8 * factor. The

@@ -38,6 +38,17 @@ endforeach()
 
 option(GPUINFRA_ENABLE_NVTX "Compile NVTX profiling annotations" OFF)
 
+# Host-code sanitizer for C++ targets (address, thread or undefined); device code
+# is covered by running a test under compute-sanitizer instead.
+set(GPUINFRA_SANITIZER "" CACHE STRING "Host sanitizer: address, thread or undefined")
+if(GPUINFRA_SANITIZER)
+    if(NOT GPUINFRA_SANITIZER MATCHES "^(address|thread|undefined)$")
+        message(FATAL_ERROR "GPUINFRA_SANITIZER must be address, thread or undefined")
+    endif()
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fsanitize=${GPUINFRA_SANITIZER}> $<$<COMPILE_LANGUAGE:CXX>:-fno-omit-frame-pointer>)
+    add_link_options($<$<LINK_LANGUAGE:CXX>:-fsanitize=${GPUINFRA_SANITIZER}>)
+endif()
+
 find_package(Threads REQUIRED)
 find_package(CUDAToolkit 10.1 REQUIRED)
 
@@ -152,6 +163,22 @@ if(GPUINFRA_BUILD_DEMO)
 endif()
 
 include(CTest)
+
+# One ctest entry per named test in a suite's main file, so a failure names the
+# test and `ctest -R` can select it. Names are read from the test table.
+function(gpuinfra_add_suite_tests target source prefix)
+    file(READ ${source} contents)
+    string(REGEX MATCHALL "(pureTest|numaTest|directTest|allLocationsTest)\\(\"[a-z0-9_]+\"" entries "${contents}")
+    if(NOT entries)
+        message(FATAL_ERROR "No named tests found in ${source}")
+    endif()
+    foreach(entry IN LISTS entries)
+        string(REGEX REPLACE "^[A-Za-z]+\\(\"([a-z0-9_]+)\"$" "\\1" name "${entry}")
+        add_test(NAME ${prefix}.${name} COMMAND ${target} ${name})
+    endforeach()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${source})
+endfunction()
+
 if(BUILD_TESTING)
     # Core tests need only the gpuinfra library, so they also build with
     # -DGPUINFRA_BUILD_DEMO=OFF and a host C++17 compiler.
@@ -169,7 +196,7 @@ if(BUILD_TESTING)
         tests/core/topology_tests.cpp
     )
     target_link_libraries(gpuinfra_core_tests PRIVATE gpuinfra_test_support)
-    add_test(NAME gpuinfra_core_tests COMMAND gpuinfra_core_tests)
+    gpuinfra_add_suite_tests(gpuinfra_core_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/core/core_tests.cpp core)
 endif()
 
 if(BUILD_TESTING AND GPUINFRA_BUILD_DEMO)
@@ -181,7 +208,7 @@ if(BUILD_TESTING AND GPUINFRA_BUILD_DEMO)
     )
     target_link_libraries(gpuinfra_demo_tests PRIVATE gpuinfra_demo_support gpuinfra_test_support)
 
-    add_test(NAME gpuinfra_demo_protocol_tests COMMAND gpuinfra_demo_tests)
+    gpuinfra_add_suite_tests(gpuinfra_demo_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/demo/demo_tests.cpp demo)
     add_test(NAME gpuinfra_demo_runs COMMAND gpuinfra_demo)
     add_test(NAME gpuinfra_demo_interleaved_runs COMMAND gpuinfra_demo 2 1 interleaved)
     add_test(NAME gpuinfra_demo_min_factor_runs COMMAND gpuinfra_demo 2 1 batched 16)

@@ -1,63 +1,40 @@
 #include "core/core_test_support.h"
 
-int main() {
+int main(int argc, char* argv[]) {
     using namespace gpuinfra_tests;
-    TestContext test;
-    testGpuDiagnostics(test);
-    testUnifiedGpuLogger(test);
-    testGpuResidencyTable(test);
-    testGpuTopologySelection(test);
-
-    GpuInfraConfig config;
-    config.requireNuma = true;
-    if (!GpuContextManager::init(config)) {
-        std::cerr << "FAIL: CUDA/NUMA infrastructure initialization\n";
-        return 1;
-    }
-    const std::vector<GpuLocation> locations = GpuContextManager::gpuLocations();
-    if (locations.empty()) {
-        std::cerr << "FAIL: no CUDA GPU locations\n";
-        GpuContextManager::shutdown();
-        return 1;
-    }
-
-    const bool callbacksRan = NumaExecutor(locations.front().numaNode).run([&test, &locations] {
-        testCudaDeviceGuard(test, locations.front());
-        testStaticDataValidation(test, locations.front());
-        testGpuDataAccessState(test, locations.front());
-        testPayloadIdentity(test, locations.front());
-        testGpuDataAccessMoves(test, locations.front());
-        testIndependentPayloadCaches(test, locations.front(), 0);
-        testIndependentPayloadCaches(test, locations.front(), 1);
-        testGpuResultCacheHandoff(test, locations.front());
-        testGpuResultCacheHandoff(test, locations.front(), CacheEvictionPolicy::FIFO);
-        testConcurrentCacheRequests(test, locations.front());
-        for (int scenario = 0; scenario < 4; ++scenario) {
-            testCacheWaitWakeup(test, locations.front(), scenario);
-        }
-        testCacheWaitTimeout(test, locations.front());
-        testCacheWaitSharedDeadline(test, locations.front());
-        testCufftIntegration(test, locations.front());
-        testCacheStatistics(test, locations.front());
-        testStaticGpuData(test, locations.front());
-        testStaticDataRegions(test, locations.front());
-        testGpuCacheResetBoundaries(test, locations.front());
-        testGpuDataCacheLru(test, locations.front());
-        testCacheEvictionPolicies(test, locations.front());
-        testFifoDiscardPositions(test, locations.front());
-        testCacheDiscard(test, locations.front());
-        testCacheCompletionFailures(test, locations.front());
-        testCacheDiscardWaiter(test, locations.front());
-        testStaticDataCachePolicy(test, locations.front());
-        return true;
-    });
-    test.expect(callbacksRan, "all core tests execute inside the NUMA environment");
-
-    GpuContextManager::shutdown();
-    if (test.failureCount() != 0) {
-        std::cerr << test.failureCount() << " test assertion(s) failed\n";
-        return 1;
-    }
-    std::cout << "All GPUInfra core tests passed\n";
-    return 0;
+    const std::vector<TestCase> tests = {
+        pureTest("gpu_diagnostics", testGpuDiagnostics),
+        pureTest("unified_logger", testUnifiedGpuLogger),
+        pureTest("residency_table", testGpuResidencyTable),
+        pureTest("topology_selection", testGpuTopologySelection),
+        numaTest("cuda_device_guard", testCudaDeviceGuard),
+        numaTest("static_data_validation", testStaticDataValidation),
+        numaTest("data_access_state", testGpuDataAccessState),
+        numaTest("payload_identity", testPayloadIdentity),
+        numaTest("data_access_moves", testGpuDataAccessMoves),
+        numaTest("independent_payload_caches_0", [](TestContext& test, const GpuLocation& location) { testIndependentPayloadCaches(test, location, 0); }),
+        numaTest("independent_payload_caches_1", [](TestContext& test, const GpuLocation& location) { testIndependentPayloadCaches(test, location, 1); }),
+        numaTest("result_cache_handoff_lru", [](TestContext& test, const GpuLocation& location) { testGpuResultCacheHandoff(test, location); }),
+        numaTest("result_cache_handoff_fifo", [](TestContext& test, const GpuLocation& location) { testGpuResultCacheHandoff(test, location, CacheEvictionPolicy::FIFO); }),
+        numaTest("concurrent_requests", testConcurrentCacheRequests),
+        numaTest("wait_wakeup_0", [](TestContext& test, const GpuLocation& location) { testCacheWaitWakeup(test, location, 0); }),
+        numaTest("wait_wakeup_1", [](TestContext& test, const GpuLocation& location) { testCacheWaitWakeup(test, location, 1); }),
+        numaTest("wait_wakeup_2", [](TestContext& test, const GpuLocation& location) { testCacheWaitWakeup(test, location, 2); }),
+        numaTest("wait_wakeup_3", [](TestContext& test, const GpuLocation& location) { testCacheWaitWakeup(test, location, 3); }),
+        numaTest("wait_timeout", testCacheWaitTimeout),
+        numaTest("wait_shared_deadline", testCacheWaitSharedDeadline),
+        numaTest("cufft_integration", testCufftIntegration),
+        numaTest("statistics", testCacheStatistics),
+        numaTest("static_gpu_data", testStaticGpuData),
+        numaTest("static_data_regions", testStaticDataRegions),
+        numaTest("reset_boundaries", testGpuCacheResetBoundaries),
+        numaTest("lru", testGpuDataCacheLru),
+        numaTest("eviction_policies", testCacheEvictionPolicies),
+        numaTest("fifo_discard_positions", testFifoDiscardPositions),
+        numaTest("discard", testCacheDiscard),
+        numaTest("completion_failures", testCacheCompletionFailures),
+        numaTest("discard_waiter", testCacheDiscardWaiter),
+        numaTest("static_data_cache_policy", testStaticDataCachePolicy),
+    };
+    return runTestSuite("core", tests, argc, argv);
 }

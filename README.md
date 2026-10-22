@@ -89,6 +89,19 @@ The default CUDA architecture is `sm_86`. Override it when building:
 ctest --test-dir build --output-on-failure
 ```
 
+Every named test is its own ctest entry (`core.*` and `demo.*`), so a failure
+names the test and `ctest -R cache` selects a group. The executables accept the
+same names directly: `build/gpuinfra_core_tests --list` prints them and
+`build/gpuinfra_core_tests lru` runs one. With no argument they run everything.
+
+Optional host sanitizers: configure with `-DGPUINFRA_SANITIZER=thread`
+(or `address`, `undefined`). ThreadSanitizer needs ASLR disabled on recent
+kernels (`setarch $(uname -m) -R build/gpuinfra_core_tests`); AddressSanitizer
+needs `ASAN_OPTIONS=protect_shadow_gap=0:replace_intrin=0:detect_leaks=0` for
+CUDA to initialize. Device code is not covered; run a test under
+`compute-sanitizer` instead. Use `-DGPUINFRA_BUILD_DEMO=OFF` for sanitizer
+builds (the sanitizer applies to host C++ targets only).
+
 Equivalent build commands:
 
 ```bash

@@ -10,7 +10,7 @@
 驗證環境：單張 RTX 3080、Release、`-Wall -Wextra -Wpedantic -Wconversion`。
 
 - 審查前：建置 0 警告，CTest 7/7 通過。
-- 修正後：建置 0 警告，CTest 通過（#6 之後共 8 項）；新增測試在還原 #1 修正時會失敗
+- 修正後：建置 0 警告，CTest 通過（#5、#6 之後共 50 項）；新增測試在還原 #1 修正時會失敗
   （`shutdown` 卡在關閉的 `PhaseGate`），套用修正後通過。
 - 本機只有一張 GPU、一個 NUMA node：多 GPU 的 device 還原路徑與多 NUMA graph
   沒有硬體驗證（見 #2、#6）。
@@ -26,7 +26,7 @@
 | 2 | 冷路徑 `cudaSetDevice` 改變呼叫 thread 的 current device | 程式 | 已修正（見範圍） |
 | 3 | `freeCacheData()` 遇不合法 `retention` 不釋放 lease | 程式 | 已修正 |
 | 4 | 同步失敗只記 log 仍清除 lease | 契約 | 已修正（同 09-24 F2） |
-| 5 | 測試為單一 executable／單一 ctest 項目，無 sanitizer | 測試 | 未處理 |
+| 5 | 測試為單一 executable／單一 ctest 項目，無 sanitizer | 測試 | 已修正 |
 | 6 | core 無獨立測試、無 CI | 測試 | core 測試已拆出；CI 未處理（同 09-24 F3） |
 | 7 | CMake：PUBLIC 連結 cuFFT、無 `install()`、架構預設寫死 | 建置 | 未處理 |
 | 8 | `docs/README.md` 漏列 `cache_policies.md` | 文件 | 已修正 |
@@ -110,6 +110,29 @@ worker 領取 frame 後會等待 caller 持有的 `PhaseGate`。`shutdown()` 只
 
 限制：本機是 CUDA 13.1 單 GPU，未在 AOI 的舊 CUDA／編譯器上驗證；測試仍需真 GPU 與
 NUMA topology，因此仍不能在無 GPU 的 CI runner 上執行。
+
+### #5 測試可篩選與 sanitizer
+
+原本每個 executable 只有一個 ctest 項目，失敗時看不出是哪個測試，也無法單獨重跑。
+
+修正（刻意維持精簡）：
+- 兩個 executable 改用一張具名測試表（`core_tests.cpp`／`demo_tests.cpp`）與共用的
+  `runTestSuite()`：無參數執行全部、`--list` 列出名稱、帶名稱只跑指定測試。
+- CMake 從測試表讀出名稱，為每個測試註冊獨立 ctest 項目（`core.*`、`demo.*`，共 44 項），
+  `ctest -R` 可篩選，失敗會指出測試名稱。測試表是唯一來源，不需同步第二份清單。
+- 新增 `GPUINFRA_SANITIZER=address|thread|undefined`，只套用到 host C++ 目標；device
+  程式碼改用 `compute-sanitizer`（未納入 CMake）。
+
+驗證：
+- 每個測試以獨立 process 執行皆通過（沒有隱含的順序依賴），ctest 共 50 項通過。
+- ThreadSanitizer 跑完整 core 測試與各並行測試（`concurrent_requests`、`wait_wakeup_*`、
+  `wait_shared_deadline`、`discard_waiter`）：0 個 data race 警告。
+- AddressSanitizer 跑完整 core 測試：通過。
+
+使用限制（已寫入 README）：新核心上 TSAN 需以 `setarch -R` 關閉 ASLR，否則在啟動時因
+記憶體映射位址而中止；ASAN 需設定 `protect_shadow_gap=0:replace_intrin=0`，並關閉
+leak 偵測（`detect_leaks=0`），否則 `cuInit` 會因 shadow 記憶體而失敗，或回報 libcuda
+自身的一次性配置為 leak。沒有納入 CI，也沒有 suppression 檔案。
 
 ### #8 `docs/README.md` 索引
 
@@ -217,6 +240,6 @@ one-GPU cache」，但 [archive/README.md](../archive/README.md) 說它們不是
 
 ## 3. 建議順序
 
-1. #5：讓測試可單獨篩選執行，並評估 CI 與 sanitizer（core 測試已可在 AOI 工具鏈建置）。
+1. CI：需要有 GPU 的 runner，視環境再決定。
 2. #11–#14：文件整併，一次處理以免再次漂移。
 3. #15–#18：與真實 framework 整合後，依實際瓶頸與使用方式決定。
