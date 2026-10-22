@@ -41,6 +41,15 @@ process
 cache capacity; the default is 4. `StaticData` does not copy or register the N
 frame keys.
 
+`GpuContextManager::init()` discovers Runtime API devices, maps their PCI NUMA
+nodes, primes primary contexts, and retains one Driver API primary-context
+reference per GPU. Unknown PCI NUMA placement is inferred only when the
+system-wide `/sys/devices/system/node/online` list identifies exactly one node
+(which need not be node 0). With the default `requireNuma=true`, ambiguous,
+missing or malformed fallback topology fails initialization. Explicit
+`requireNuma=false` retains a logged node-0 fallback; it is not the production
+golden-rule setting.
+
 `GpuContext::numaNode` is the authoritative GPU-to-NUMA mapping. The framework
 establishes CPU affinity before every task callback, including cold-path
 registration and load. `Grape/NumaExecutor` supplies this environment in the
@@ -259,6 +268,12 @@ effective D2H traffic per algo  = output bytes × GPUINFRA_D2H_SIZE_MULTIPLIER
 compute repetitions per element = GPUINFRA_COMPUTE_SIZE_MULTIPLIER
 ```
 
+Batched mode submits all kernels before all D2H copies; Interleaved mode submits
+each algorithm kernel followed by its D2H. All three algorithms consume the
+original square byte input, so the ordering does not form an output-to-input
+chain. For size factor `F`, input is `(8F)x(8F)`, CEL is `(2F)x(2F)`, and SDD/MI
+are `(3F)x(3F)`; results are row-major `uint32_t` matrices.
+
 All copies remain ordered on the selected task stream. A cache hit still
 submits no H2D, regardless of the H2D multiplier. These controls affect traffic
 and compute time only; they do not increase persistent GPU or host allocation.
@@ -288,6 +303,8 @@ fallback; the framework must propagate the failure. An unknown `CacheRetention`
 value is a failed completion that still ends the lease.
 
 ## 9. Memory lifetime
+
+See [GPU memory consumption](design/gpu_mem_consumption.md) for the summary formulas.
 
 ```text
 FrameCpuAtom in the demo:
@@ -349,6 +366,15 @@ The CUDA tests verify:
 - stable pointers, fill failure, RAII abort, and LRU eviction;
 - release rejection while any lease is active;
 - wrong-GPU rejection;
+- LRU and FIFO ordering, `Keep`/`Discard` completion and wait wakeups;
+- completion failures: unknown retention, stream-synchronization failure and the
+  failed-manager state, through both explicit and RAII paths;
+- independent frame and result caches with unequal payload sizes, concurrent
+  readers on separate task streams, and the A → CPU → B result pipeline;
+- the cold-path device guard restoring the caller's current device;
+- synthetic topology selection (zero or multiple local GPUs, GPU IDs that differ
+  from NUMA IDs) and framework-affinity rejection; multi-NUMA execution when the
+  hardware supports it;
 - data reuse across task instances and pure-fallback result correctness;
 - register-before-load ordering, initial parameter application during load,
   change-only notification, and explicit graph/task start-stop barriers;

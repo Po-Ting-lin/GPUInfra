@@ -20,4 +20,4 @@ Collecting data...
 Generating '/tmp/nsys-report-760a.qdstrm'
 [1/1] [0%                          ] batched.nsys-rep[1/1] [0%                          ] batched.nsys-rep[1/1] [============55%             ] batched.nsys-rep[1/1] [===============67%          ] batched.nsys-rep[1/1] [=================73%        ] batched.nsys-rep[1/1] [===================80%      ] batched.nsys-rep[1/1] [========================100%] batched.nsys-rep[1/1] [========================100%] batched.nsys-rep
 Generated:
-	/home/ptl/project/GPUInfra/profiling/20260920-nvtx/batched.nsys-rep
+	<repo>/profiling/20260920-nvtx/batched.nsys-rep

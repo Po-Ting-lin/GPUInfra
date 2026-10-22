@@ -20,4 +20,4 @@ Collecting data...
 Generating '/tmp/nsys-report-e3c7.qdstrm'
 [1/1] [0%                          ] interleaved.nsys-rep[1/1] [0%                          ] interleaved.nsys-rep[1/1] [============55%             ] interleaved.nsys-rep[1/1] [===============67%          ] interleaved.nsys-rep[1/1] [=================73%        ] interleaved.nsys-rep[1/1] [===================80%      ] interleaved.nsys-rep[1/1] [========================100%] interleaved.nsys-rep[1/1] [========================100%] interleaved.nsys-rep
 Generated:
-	/home/ptl/project/GPUInfra/profiling/20260920-nvtx/interleaved.nsys-rep
+	<repo>/profiling/20260920-nvtx/interleaved.nsys-rep

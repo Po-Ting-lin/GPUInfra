@@ -10,7 +10,8 @@
 Run tools from the repository root; see [profiling instructions](../docs/profiling.md).
 Benchmark output defaults to `results/benchmarks/`.
 Commands and source paths recorded inside historical logs describe the original
-capture. Raw profiler files can embed process environment credentials, so SQLite,
+capture; the repository root was replaced by `<repo>` to avoid recording a
+local user path. Raw profiler files can embed process environment credentials, so SQLite,
 Nsight reports and intermediate captures are never tracked, including reference
 captures. Keep local raw files only as needed. Summaries, logs and CSVs should
 also be reviewed for sensitive content before committing.

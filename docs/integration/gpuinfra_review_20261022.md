@@ -32,10 +32,10 @@
 | 8 | `docs/README.md` 漏列 `cache_policies.md` | 文件 | 已修正 |
 | 9 | `old_vs_new.md` 與 header 註解過時 | 文件 | 已修正（同 09-24 F4） |
 | 10 | 程式 TODO 與 `open_issues.md` 的「已確定」矛盾 | 文件 | 已修正 |
-| 11 | README 與 `architecture.md` 大量重複並開始漂移 | 文件 | 未處理 |
-| 12 | README 對 archive 文件的描述自相矛盾 | 文件 | 未處理 |
-| 13 | 問題追蹤分散、中英文混用 | 文件 | 部分（本文件已在 `open_issues.md` 加入指標） |
-| 14 | `results/` 的 log 含本機絕對路徑 | 文件 | 未處理 |
+| 11 | README 與 `architecture.md` 大量重複並開始漂移 | 文件 | 已修正 |
+| 12 | README 對 archive 文件的描述自相矛盾 | 文件 | 已修正 |
+| 13 | 問題追蹤分散、中英文混用 | 文件 | 已修正（語言不翻譯，改為標註） |
+| 14 | `results/` 的 log 含本機絕對路徑 | 文件 | 已修正 |
 | 15 | `GpuContextManager` 為全域 static 狀態、`shutdown()` 無回傳值 | 設計 | 未處理 |
 | 16 | `GpuDataCache.cpp` 狀態重置重複、條件式過長 | 可維護性 | 未處理 |
 | 17 | 持鎖時做 I/O、`notify_all` 驚群 | 效能 | 未處理 |
@@ -134,6 +134,43 @@ NUMA topology，因此仍不能在無 GPU 的 CI runner 上執行。
 leak 偵測（`detect_leaks=0`），否則 `cuInit` 會因 shadow 記憶體而失敗，或回報 libcuda
 自身的一次性配置為 leak。沒有納入 CI，也沒有 suppression 檔案。
 
+### #11 README 與 `architecture.md` 重複
+
+README 從 663 行縮為約 280 行，只保留入口資訊：功能摘要、文件導覽、需求、建置與測試、
+workload 倍率、簡短的運作概觀（拓樸、排程、cache 樹狀圖、frame 執行流程、失敗與測試）、
+原始碼配置、NVTX 與診斷。
+
+- 詳細的 API 用法（lookup 狀態、miss 處理、saved access、獨立 cache、StaticGpuData、
+  統計、等待、run boundary）整段移到新文件 [api_guide.md](../api_guide.md)，內容不改寫，
+  只調整相對連結。
+- 與 `architecture.md` 重複的段落（冷路徑、排程、ownership 表、memory、teardown、
+  驗證清單）從 README 移除。移除前逐段比對，README 獨有的內容補進 `architecture.md`：
+  GPU 探索與 `requireNuma` 規則（§1）、Batched／Interleaved 與 frame 尺寸（§7）、
+  完整的驗證清單（§12，含 FIFO、Discard、completion failure、result pipeline、
+  device guard、拓樸測試）；記憶體公式補進 `design/gpu_mem_consumption.md`。
+- FIFO 最壞 O(K) 的說明原本只在 `architecture.md`；README 的 O(1) 描述隨 API 段落移到
+  api_guide，並指向 architecture 與 cache_policies。
+
+驗證：所有 Markdown 內部連結檢查 0 個壞連結；以 8 字為單位比對舊 README 與現有文件，
+未找到的片段經人工檢視，皆為已改寫或已併入 architecture 的內容。
+
+### #12 archive 描述
+
+README 的 Design references 改為 Documentation：列出現行契約，archive 單獨列為
+「僅供背景，可能描述已被取代的 API」，與 `archive/README.md` 一致。
+
+### #13 追蹤與語言
+
+- 尚未完成的 review 項目（CI、#7、#15–#18）集中列在
+  [open_issues.md](../open_issues.md) 的「Review follow-ups」；已修正項目不重複列出。
+- 語言不翻譯：`docs/README.md` 說明預設為英文，並在中文文件旁標註 **(中文)**；
+  `open_issues.md`、兩份 review 與 AOI 整合筆記維持中文，視為工作紀錄。
+
+### #14 本機路徑
+
+`results/` 內 6 個檔案的 `/home/ptl/project/GPUInfra` 以 `<repo>` 取代（`commands.json`
+仍可解析）；數據未變。`results/README.md` 說明這個佔位符。
+
 ### #8 `docs/README.md` 索引
 
 補上 [cache_policies.md](../cache_policies.md)，並加入本文件。
@@ -203,22 +240,6 @@ error 仍會讓整個 context 不可用，依舊需要 framework 重建。
 README 卻說 production caller 連結 `gpuinfra`；`build.sh` 的 `CUDA_ARCHITECTURES`
 環境變數未記載，預設 sm_86 寫死。
 
-### 文件
-
-**#11**：README（663 行）與 `architecture.md` 重複冷路徑、ownership 表與驗證清單，已出現漂移：
-`architecture.md` §12 缺 FIFO、Discard、result cache 與並行 reader 測試；README 對 victim
-選擇只寫 O(1)，未註明 FIFO 最壞 O(K)（`architecture.md` 有寫）。建議 README 縮成入口，
-細節只留一份。
-
-**#12**：README 的 Design references 把 archive 計畫寫成「specifies the implemented
-one-GPU cache」，但 [archive/README.md](../archive/README.md) 說它們不是目前 API 契約。
-
-**#13**：09-24 review 的 F2／F3 沒有進 `open_issues.md`；`open_issues.md` 與 review 為中文，
-其餘文件為英文。本次只在 `open_issues.md` 加入指向本文件的指標。
-
-**#14**：`results/profiling/20260920-nvtx/*.stats.log` 含 `/home/ptl/project/...`。
-洩漏程度低，但 repository 已有防洩漏 hook，建議一併清理。
-
 ### 設計與可維護性
 
 **#15** [GpuContextManager.cpp](../../src/Context/GpuContextManager.cpp)：全域 static 狀態
@@ -241,5 +262,5 @@ one-GPU cache」，但 [archive/README.md](../archive/README.md) 說它們不是
 ## 3. 建議順序
 
 1. CI：需要有 GPU 的 runner，視環境再決定。
-2. #11–#14：文件整併，一次處理以免再次漂移。
+2. #7：CMake 整合（cuFFT 依賴、`install()`、架構預設）。
 3. #15–#18：與真實 framework 整合後，依實際瓶頸與使用方式決定。

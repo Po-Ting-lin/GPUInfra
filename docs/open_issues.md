@@ -1,8 +1,18 @@
 # Open Issues
 
-最近一次程式碼與文件審查的項目、修正狀態與未處理清單見
-[gpuinfra_review_20261022.md](integration/gpuinfra_review_20261022.md)
-（含 09-24 review 的 F2 同步失敗契約與 F3 core-only 測試 target，皆已修正）。
+## Review follow-ups（2026-10-22）
+
+這是 [gpuinfra_review_20261022.md](integration/gpuinfra_review_20261022.md) 中尚未完成項目的
+唯一追蹤處；兩份 review（含 09-24）的已修正項目不再列於此。
+
+- CI：需要有 GPU 的 runner；目前測試需要真 GPU 與 NUMA（review #6 的剩餘部分）。
+- CMake（#7）：`gpuinfra` 以 PUBLIC 連結 `CUDA::cufft`；沒有 `install()`／export；
+  `CUDA_ARCHITECTURES` 預設寫死 sm_86。
+- `GpuContextManager`（#15）：全域 static 狀態；`shutdown()` 被擋住時無回傳值。
+- `GpuDataCache.cpp`（#16）：狀態重置重複、條件式過長。
+- Cache 鎖內 I/O 與 `notify_all`（#17）：需實測再決定。
+- `DummyGraph`（#18）：持 `schedulerLock` 執行 `executor.run()`。
+
 
 ## StaticData 與真實 graph 的整合點
 
