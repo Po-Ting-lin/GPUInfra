@@ -10,7 +10,7 @@
 驗證環境：單張 RTX 3080、Release、`-Wall -Wextra -Wpedantic -Wconversion`。
 
 - 審查前：建置 0 警告，CTest 7/7 通過。
-- 修正後：建置 0 警告，CTest 7/7 通過；新增測試在還原 #1 修正時會失敗
+- 修正後：建置 0 警告，CTest 通過（#6 之後共 8 項）；新增測試在還原 #1 修正時會失敗
   （`shutdown` 卡在關閉的 `PhaseGate`），套用修正後通過。
 - 本機只有一張 GPU、一個 NUMA node：多 GPU 的 device 還原路徑與多 NUMA graph
   沒有硬體驗證（見 #2、#6）。
@@ -27,7 +27,7 @@
 | 3 | `freeCacheData()` 遇不合法 `retention` 不釋放 lease | 程式 | 已修正 |
 | 4 | 同步失敗只記 log 仍清除 lease | 契約 | 已修正（同 09-24 F2） |
 | 5 | 測試為單一 executable／單一 ctest 項目，無 sanitizer | 測試 | 未處理 |
-| 6 | core 無獨立測試、無 CI | 測試 | 未處理（同 09-24 F3） |
+| 6 | core 無獨立測試、無 CI | 測試 | core 測試已拆出；CI 未處理（同 09-24 F3） |
 | 7 | CMake：PUBLIC 連結 cuFFT、無 `install()`、架構預設寫死 | 建置 | 未處理 |
 | 8 | `docs/README.md` 漏列 `cache_policies.md` | 文件 | 已修正 |
 | 9 | `old_vs_new.md` 與 header 註解過時 | 文件 | 已修正（同 09-24 F4） |
@@ -82,6 +82,34 @@ worker 領取 frame 後會等待 caller 持有的 `PhaseGate`。`shutdown()` 只
 - 單 GPU 機器上 guard 的「還原」分支無法被真正觸發（current device 與目標相同）。
   `testCudaDeviceGuard` 在單 GPU 時只驗證 no-op 與錯誤輸入；多 GPU 機器會真正驗證
   選擇與還原。這是已知的驗證缺口。
+
+### #6 core 測試獨立（09-24 review 的 F3）
+
+原本所有測試編進同一個 `gpuinfra_tests`，連結 `gpuinfra_demo_support`（含 demo 的 `.cu`、
+`DummyGraph`、`DummyTask`），因此 `-DGPUINFRA_BUILD_DEMO=OFF` 的 core-only 建置沒有任何
+可執行測試，AOI 舊工具鏈只能驗證到編譯與連結。
+
+修正：
+- 測試拆成兩個 executable、兩個 ctest 項目：
+  - `gpuinfra_core_tests`（`tests/core/`）：cache、policy、completion failure、result cache、
+    StaticData、device guard、logger／cuFFT、topology。只連結 `gpuinfra`，不含 demo 標頭。
+  - `gpuinfra_demo_tests`（`tests/demo/`，ctest 名稱 `gpuinfra_demo_protocol_tests`）：
+    DummyTask／DummyGraph 生命週期、graph 取消與 shutdown、A→CPU→B pipeline。
+- `core_test_support` 以獨立的 `gpuinfra_test_support` static library 提供，`makeRuntime()`
+  不再用 demo 的 `ImageSizing`（公式為 side = 8 × factor）。demo 測試新增
+  `testDemoRuntimeConsistency`，確認它與 `ImageSizing` 一致，避免兩邊漂移。
+- `NumaExecutor`（host-only，模擬 framework 的 NUMA affinity）獨立成
+  `gpuinfra_numa_executor` library，供 demo 與 core 測試共用；它不屬於 `gpuinfra`。
+- `testGpuTopologySelection` 原本放在 graph 測試，實為 core 邏輯，移到
+  `tests/core/topology_tests.cpp`。
+- `BUILD_TESTING` 開啟時，core-only 建置也會建立並註冊 `gpuinfra_core_tests`。
+
+驗證：完整建置 8/8 通過（原 7 項中的 protocol 測試拆成兩項）；`-DGPUINFRA_BUILD_DEMO=OFF`
+建置不呼叫 nvcc，`gpuinfra_core_tests` 通過。原有的每個測試函式都仍被呼叫（另增
+`testCudaDeviceGuard`、`testDemoRuntimeConsistency`）。
+
+限制：本機是 CUDA 13.1 單 GPU，未在 AOI 的舊 CUDA／編譯器上驗證；測試仍需真 GPU 與
+NUMA topology，因此仍不能在無 GPU 的 CI runner 上執行。
 
 ### #8 `docs/README.md` 索引
 
@@ -145,8 +173,8 @@ error 仍會讓整個 context 不可用，依舊需要 framework 重建。
 失敗時無法單獨篩選或重跑，也沒有 sanitizer／`compute-sanitizer` 設定，但 cache 的
 並行邏輯很重。
 
-**#6**：core 測試仍依賴 `gpuinfra_demo_support`（`BUILD_TESTING AND GPUINFRA_BUILD_DEMO`）。
-專案沒有 CI，測試需要真 GPU 與 NUMA，多 NUMA 路徑被跳過。
+**#6 的剩餘部分（CI）**：專案沒有 CI，測試需要真 GPU 與 NUMA，多 NUMA 路徑在單 GPU
+機器上被跳過。core 測試拆分已完成，見上節。
 
 **#7**：`gpuinfra` 以 PUBLIC 連結 `CUDA::cufft`（僅診斷使用）；沒有 `install()`／export，
 README 卻說 production caller 連結 `gpuinfra`；`build.sh` 的 `CUDA_ARCHITECTURES`
@@ -189,6 +217,6 @@ one-GPU cache」，但 [archive/README.md](../archive/README.md) 說它們不是
 
 ## 3. 建議順序
 
-1. #5、#6：拆出 core 測試 target，讓 AOI 工具鏈能執行；之後再評估 CI 與 sanitizer。
+1. #5：讓測試可單獨篩選執行，並評估 CI 與 sanitizer（core 測試已可在 AOI 工具鏈建置）。
 2. #11–#14：文件整併，一次處理以免再次漂移。
 3. #15–#18：與真實 framework 整合後，依實際瓶頸與使用方式決定。

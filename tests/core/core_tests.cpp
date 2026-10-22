@@ -1,11 +1,10 @@
-#include "test_support.h"
+#include "core/core_test_support.h"
 
 int main() {
     using namespace gpuinfra_tests;
     TestContext test;
     testGpuDiagnostics(test);
     testUnifiedGpuLogger(test);
-    testParameterRegistry(test);
     testGpuResidencyTable(test);
     testGpuTopologySelection(test);
 
@@ -23,8 +22,6 @@ int main() {
     }
 
     const bool callbacksRan = NumaExecutor(locations.front().numaNode).run([&test, &locations] {
-        testLifecycleAndResults(test, locations.front(), ExecutionModel::Batched, 1);
-        testLifecycleAndResults(test, locations.front(), ExecutionModel::Interleaved, 2);
         testCudaDeviceGuard(test, locations.front());
         testStaticDataValidation(test, locations.front());
         testGpuDataAccessState(test, locations.front());
@@ -34,7 +31,6 @@ int main() {
         testIndependentPayloadCaches(test, locations.front(), 1);
         testGpuResultCacheHandoff(test, locations.front());
         testGpuResultCacheHandoff(test, locations.front(), CacheEvictionPolicy::FIFO);
-        testResultPipeline(test, locations.front());
         testConcurrentCacheRequests(test, locations.front());
         for (int scenario = 0; scenario < 4; ++scenario) {
             testCacheWaitWakeup(test, locations.front(), scenario);
@@ -53,22 +49,15 @@ int main() {
         testCacheCompletionFailures(test, locations.front());
         testCacheDiscardWaiter(test, locations.front());
         testStaticDataCachePolicy(test, locations.front());
-        testFrameDataAcrossTaskInstances(test, locations.front());
-        testTaskFallbackExecution(test, locations.front());
         return true;
     });
-    test.expect(callbacksRan, "all direct task callbacks execute inside the graph NUMA environment");
-    testNumaExecutionBoundary(test, locations.front());
-    testIndependentPools(test, locations.front());
-    testConditionalNumaGraphs(test, locations);
-    testGraphShutdownReleasesPhaseGate(test, locations.front());
-    testGraphCancellation(test, locations.front());
+    test.expect(callbacksRan, "all core tests execute inside the NUMA environment");
 
     GpuContextManager::shutdown();
     if (test.failureCount() != 0) {
         std::cerr << test.failureCount() << " test assertion(s) failed\n";
         return 1;
     }
-    std::cout << "All GPUInfra tests passed\n";
+    std::cout << "All GPUInfra core tests passed\n";
     return 0;
 }

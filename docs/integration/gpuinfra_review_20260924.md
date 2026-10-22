@@ -59,6 +59,9 @@ AOI legacy 又有 deferred CUDA errors 與 getDefects early return，不能原�
 
 ### F3／P2：core-only build 沒有可執行的獨立測試 target
 
+修正進度（2026-10-22）：已修正。新增 `gpuinfra_core_tests`，core-only 建置也能執行，
+詳見 [gpuinfra_review_20261022.md](gpuinfra_review_20261022.md) #6。以下為修正前的 finding。
+
 位置：[CMakeLists.txt](../../CMakeLists.txt)，測試建立條件為
 `BUILD_TESTING AND GPUINFRA_BUILD_DEMO`；測試連結 gpuinfra_demo_support。
 

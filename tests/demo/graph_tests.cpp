@@ -1,6 +1,16 @@
-#include "test_support.h"
+#include "demo/demo_test_support.h"
 
 namespace gpuinfra_tests {
+
+void testDemoRuntimeConsistency(TestContext& test) {
+    const GraphConfig defaultGraphConfig;
+    test.expect(defaultGraphConfig.gpuCacheEntries == 4, "graph cache capacity defaults to four entries");
+    for (int factor : {ImageSizing::MIN_FACTOR, ImageSizing::DEFAULT_FACTOR, ImageSizing::MAX_FACTOR}) {
+        const AlgoRuntimeInfo runtime = makeRuntime(factor);
+        const int dimension = ImageSizing::scaledDimension(factor, ImageSizing::INPUT_MULTIPLIER);
+        test.expect(runtime.frameW == dimension && runtime.frameH == dimension && runtime.inBytes == ImageSizing::squareBytes(dimension, sizeof(std::uint8_t)), "shared test frame layout matches the demo image sizing");
+    }
+}
 
 void testParameterRegistry(TestContext& test) {
     ParameterRegistry registry;
@@ -209,29 +219,6 @@ void testLifecycleAndResults(TestContext& test, const GpuLocation& location, Exe
     test.expect(unloadTask(task, location), "unload task resources");
     test.expect(task.unload(), "repeated unload is harmless");
     test.expect(task.lifecycle() == TaskLifecycle::Unloaded && task.gpuId() == -1, "unload clears the task GPU binding");
-}
-
-void testGpuTopologySelection(TestContext& test) {
-    test.expect(GpuTopology::resolveGpuNumaNode(3, "0-3", true) == 3, "preserve known PCI NUMA placement on multi-node hosts");
-    test.expect(GpuTopology::resolveGpuNumaNode(3, "", true) == 3, "known PCI placement does not require fallback topology");
-    test.expect(GpuTopology::resolveGpuNumaNode(-1, "0\n", true) == 0, "infer node zero only from a confirmed singleton");
-    test.expect(GpuTopology::resolveGpuNumaNode(-1, "7\n", true) == 7, "infer actual singleton node without assuming zero");
-    test.expect(GpuTopology::resolveGpuNumaNode(-1, " 2-2\n", true) == 2, "accept a singleton range");
-    const std::vector<std::string> inconclusive = {"", " \n", "0-1", "0,2", "0-0,2", "-1", "+1", "garbage", "0junk", "0\n1", "2-", "2-1", "999999999999999999999", "0-999999999999999999999"};
-    for (const std::string& onlineNodes : inconclusive) {
-        test.expect(GpuTopology::resolveGpuNumaNode(-1, onlineNodes, true) == -1, "strict mode rejects ambiguous, unavailable or malformed NUMA topology");
-        test.expect(GpuTopology::resolveGpuNumaNode(-1, onlineNodes, false) == 0, "node zero guessing requires explicit non-strict mode");
-    }
-    test.expect(GpuTopology::resolveGpuNumaNode(-1, "7", false) == 7, "non-strict mode still prefers confirmed singleton placement");
-    const std::vector<GpuLocation> locations = {{7, 2}, {3, 0}, {8, 2}, {5, 1}};
-    std::vector<int> gpuIds = {99};
-    test.expect(!GpuTopology::resolveGpuIds(3, locations, gpuIds) && gpuIds.empty(), "reject a NUMA node with zero GPUs and clear stale results");
-    test.expect(!GpuTopology::resolveGpuIds(2, locations, gpuIds) && gpuIds.empty(), "reject multiple GPUs instead of selecting the first");
-    test.expect(GpuTopology::resolveGpuIds(1, locations, gpuIds) && gpuIds == std::vector<int>{5}, "resolve the sole local GPU without equating GPU and NUMA IDs");
-    test.expect(GpuTopology::resolveGpuIds(0, locations, gpuIds) && gpuIds == std::vector<int>{3}, "ignore GPUs belonging to other NUMA nodes");
-    test.expect(!GpuTopology::resolveGpuIds(-1, locations, gpuIds) && gpuIds.empty(), "reject failed NUMA detection");
-    test.expect(!GpuTopology::resolveGpuIds(0, {}, gpuIds) && gpuIds.empty(), "reject an empty GPU topology");
-    test.expect(!GpuContextManager::gpuIdsForCurrentNumaNode(gpuIds) && gpuIds.empty(), "reject lookup before infrastructure initialization");
 }
 
 void testNumaExecutionBoundary(TestContext& test, const GpuLocation& location) {

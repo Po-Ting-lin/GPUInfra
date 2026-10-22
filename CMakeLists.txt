@@ -76,6 +76,12 @@ foreach(cufft_error MISSING_DEPENDENCY NVRTC_FAILURE NVJITLINK_FAILURE NVSHMEM_F
     target_compile_definitions(gpuinfra PRIVATE GPUINFRA_HAS_CUFFT_${cufft_error}=$<BOOL:${GPUINFRA_HAS_CUFFT_${cufft_error}}>)
 endforeach()
 
+# Simulated framework NUMA affinity (host-only C++). Shared by the demo and the
+# core tests; it is not part of the gpuinfra library. Its include root is demo/.
+add_library(gpuinfra_numa_executor STATIC demo/Grape/NumaExecutor.cpp)
+target_include_directories(gpuinfra_numa_executor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/demo)
+target_link_libraries(gpuinfra_numa_executor PUBLIC Threads::Threads)
+
 if(GPUINFRA_BUILD_DEMO)
     add_library(gpuinfra_demo_support
         demo/Algo/Cel.cu
@@ -86,12 +92,11 @@ if(GPUINFRA_BUILD_DEMO)
         demo/ResultPipeline/ResultPipeline.cpp
         demo/DummyTask.cpp
         demo/Grape/DummyGraph.cpp
-        demo/Grape/NumaExecutor.cpp
         demo/Grape/FrameCpuAtom.cpp
         demo/ParameterRegistry.cpp
     )
     target_include_directories(gpuinfra_demo_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/demo)
-    target_link_libraries(gpuinfra_demo_support PUBLIC gpuinfra)
+    target_link_libraries(gpuinfra_demo_support PUBLIC gpuinfra gpuinfra_numa_executor)
     target_compile_definitions(gpuinfra_demo_support
         PUBLIC
             GPUINFRA_H2D_SIZE_MULTIPLIER=${GPUINFRA_H2D_SIZE_MULTIPLIER}
@@ -116,7 +121,7 @@ if(GPUINFRA_ENABLE_NVTX)
     target_link_libraries(gpuinfra PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
-set(gpuinfra_warning_targets gpuinfra)
+set(gpuinfra_warning_targets gpuinfra gpuinfra_numa_executor)
 if(GPUINFRA_BUILD_DEMO)
     list(APPEND gpuinfra_warning_targets gpuinfra_demo_support)
 endif()
@@ -147,21 +152,36 @@ if(GPUINFRA_BUILD_DEMO)
 endif()
 
 include(CTest)
-if(BUILD_TESTING AND GPUINFRA_BUILD_DEMO)
-    add_executable(gpuinfra_tests
-        tests/gpuinfra_tests.cpp
-        tests/test_support.cpp
-        tests/cache_tests.cpp
-        tests/cache_policy_tests.cpp
-        tests/result_cache_tests.cpp
-        tests/result_pipeline_tests.cpp
-        tests/static_data_tests.cpp
-        tests/diagnostics_tests.cpp
-        tests/graph_tests.cpp
-    )
-    target_link_libraries(gpuinfra_tests PRIVATE gpuinfra_demo_support)
+if(BUILD_TESTING)
+    # Core tests need only the gpuinfra library, so they also build with
+    # -DGPUINFRA_BUILD_DEMO=OFF and a host C++17 compiler.
+    add_library(gpuinfra_test_support STATIC tests/core/core_test_support.cpp)
+    target_include_directories(gpuinfra_test_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_link_libraries(gpuinfra_test_support PUBLIC gpuinfra gpuinfra_numa_executor)
 
-    add_test(NAME gpuinfra_protocol_tests COMMAND gpuinfra_tests)
+    add_executable(gpuinfra_core_tests
+        tests/core/core_tests.cpp
+        tests/core/cache_tests.cpp
+        tests/core/cache_policy_tests.cpp
+        tests/core/result_cache_tests.cpp
+        tests/core/static_data_tests.cpp
+        tests/core/diagnostics_tests.cpp
+        tests/core/topology_tests.cpp
+    )
+    target_link_libraries(gpuinfra_core_tests PRIVATE gpuinfra_test_support)
+    add_test(NAME gpuinfra_core_tests COMMAND gpuinfra_core_tests)
+endif()
+
+if(BUILD_TESTING AND GPUINFRA_BUILD_DEMO)
+    add_executable(gpuinfra_demo_tests
+        tests/demo/demo_tests.cpp
+        tests/demo/demo_test_support.cpp
+        tests/demo/graph_tests.cpp
+        tests/demo/result_pipeline_tests.cpp
+    )
+    target_link_libraries(gpuinfra_demo_tests PRIVATE gpuinfra_demo_support gpuinfra_test_support)
+
+    add_test(NAME gpuinfra_demo_protocol_tests COMMAND gpuinfra_demo_tests)
     add_test(NAME gpuinfra_demo_runs COMMAND gpuinfra_demo)
     add_test(NAME gpuinfra_demo_interleaved_runs COMMAND gpuinfra_demo 2 1 interleaved)
     add_test(NAME gpuinfra_demo_min_factor_runs COMMAND gpuinfra_demo 2 1 batched 16)

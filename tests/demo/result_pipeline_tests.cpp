@@ -1,4 +1,4 @@
-#include "test_support.h"
+#include "demo/demo_test_support.h"
 #include "ResultPipeline/ResultPipeline.h"
 
 namespace gpuinfra_tests {

@@ -138,7 +138,10 @@ still skipped on a cache hit. The defaults reproduce the previous one H2D,
 one D2H, and three compute repetitions.
 
 For AOI integration, `-DGPUINFRA_BUILD_DEMO=OFF` builds only the C++17 host
-core, without enabling CUDA-language compilation or building demo tests.
+core, without enabling CUDA-language compilation or building the demo tests. It
+still builds and registers `gpuinfra_core_tests` (cache, StaticData, logger,
+topology and result-cache tests) unless `-DBUILD_TESTING=OFF` is given. These
+tests need a CUDA GPU and its NUMA topology but not nvcc.
 See [toolchain compatibility](docs/toolchain_compatibility.md) for toolkit
 selection, optional cuFFT enum detection and the remaining production matrix.
 
@@ -626,16 +629,21 @@ demo/                      gpuinfra_demo_support library and demo executable
   ImageSizing.h            synthetic image dimensions
   WorkloadSizing.h         demo-only workload multipliers
   main.cpp                 simulation entry point
-tests/                     one test runner, split by responsibility
-  gpuinfra_tests.cpp        test invocation and infrastructure lifetime
-  cache_tests.cpp          leases, waits, fallback, LRU and statistics
-  cache_policy_tests.cpp   LRU/FIFO ordering, last-use Discard and wait wakeup
-  result_cache_tests.cpp   D2D handoff, CPU-backed recovery and terminal Discard
-  result_pipeline_tests.cpp A/CPU/B interleaving, recovery and policy outcomes
-  static_data_tests.cpp    layout validation and read-only GPU data
-  diagnostics_tests.cpp    logger and cuFFT integration
-  graph_tests.cpp          task/framework lifecycle and NUMA boundaries
-  test_support.*           shared fixtures and declarations
+tests/                     two test runners; core tests do not depend on the demo
+  core/                    gpuinfra_core_tests (links only gpuinfra)
+    core_tests.cpp         test invocation and infrastructure lifetime
+    cache_tests.cpp        leases, waits, fallback, LRU and statistics
+    cache_policy_tests.cpp LRU/FIFO ordering, Discard, completion failures
+    result_cache_tests.cpp D2D handoff, CPU-backed recovery and terminal Discard
+    static_data_tests.cpp  layout validation, device guard and read-only GPU data
+    diagnostics_tests.cpp  logger and cuFFT integration
+    topology_tests.cpp     NUMA placement and unique-GPU selection
+    core_test_support.*    shared fixtures (no demo headers)
+  demo/                    gpuinfra_demo_tests (links gpuinfra_demo_support)
+    demo_tests.cpp         test invocation and infrastructure lifetime
+    graph_tests.cpp        task/framework lifecycle and NUMA boundaries
+    result_pipeline_tests.cpp A/CPU/B interleaving, recovery and policy outcomes
+    demo_test_support.*    task, graph and output-verification fixtures
 docs/                      documentation index and current contracts
   integration/             legacy behavior and migration comparison
   design/                  design rationale and capacity analysis

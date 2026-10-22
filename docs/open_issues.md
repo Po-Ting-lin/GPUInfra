@@ -2,7 +2,7 @@
 
 最近一次程式碼與文件審查的項目、修正狀態與未處理清單見
 [gpuinfra_review_20261022.md](integration/gpuinfra_review_20261022.md)
-（含 09-24 review 的 F2 同步失敗契約與 F3 core-only 測試 target）。
+（含 09-24 review 的 F2 同步失敗契約與 F3 core-only 測試 target，皆已修正）。
 
 ## StaticData 與真實 graph 的整合點
 

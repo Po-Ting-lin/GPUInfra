@@ -20,7 +20,10 @@ cmake --build cmake-build-core --parallel 4
 ```
 
 This mode links CUDA Runtime, Driver and cuFFT libraries but does not enable
-nvcc or build demo-dependent integration tests. When using `add_subdirectory`,
+nvcc or build the demo-dependent tests. Remove `-DBUILD_TESTING=OFF` to also
+build `gpuinfra_core_tests`: it links only `gpuinfra` and compiles as host C++17,
+so it runs the cache, StaticData, logger, topology and result-cache tests on
+the AOI toolchain (it needs a CUDA GPU and its NUMA topology at run time). When using `add_subdirectory`,
 set `GPUINFRA_BUILD_DEMO=OFF` before adding GPUInfra and link `gpuinfra`.
 AOI's host compiler, standard-library ABI and CUDA library selection must remain
 consistent with the surrounding application.

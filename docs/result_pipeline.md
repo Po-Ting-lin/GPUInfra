@@ -50,7 +50,7 @@ and wake blocked workers; all threads join before cleanup.
 
 ## Correctness tests
 
-`tests/result_pipeline_tests.cpp` runs through `gpuinfra_protocol_tests`:
+`tests/demo/result_pipeline_tests.cpp` runs through `gpuinfra_demo_protocol_tests`:
 
 - For both policies and both retention settings, fixed ordering
   `A1 → A2 → CPU1 → B1 → A3 → CPU2 → B2` with capacity 2 verifies which result

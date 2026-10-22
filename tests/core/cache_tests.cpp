@@ -1,4 +1,4 @@
-#include "test_support.h"
+#include "core/core_test_support.h"
 
 #include <type_traits>
 #include <utility>
@@ -60,7 +60,7 @@ void testPayloadIdentity(TestContext& test, const GpuLocation& location) {
     std::size_t entryIndex = 0;
     test.expect(table.erase(variants[0], 0) && table.find(variants[1], entryIndex) && entryIndex == 1 && table.find(variants[2], entryIndex) && entryIndex == 2, "erasing raw identity preserves colliding processed variants");
 
-    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    const AlgoRuntimeInfo runtime = makeRuntime(TEST_FRAME_FACTOR);
     FrameMetadata raw = makeFrameMetadata(42, runtime, 7);
     FrameMetadata processed = raw;
     processed.key.variantId = variants[1].variantId;
@@ -113,7 +113,7 @@ void testPayloadIdentity(TestContext& test, const GpuLocation& location) {
 }
 
 void testGpuDataAccessState(TestContext& test, const GpuLocation& location) {
-    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    const AlgoRuntimeInfo runtime = makeRuntime(TEST_FRAME_FACTOR);
     const FrameMetadata firstMetadata = makeFrameMetadata(0, runtime);
     const FrameMetadata secondMetadata = makeFrameMetadata(1, runtime);
     GpuDataCache cache;
@@ -210,7 +210,7 @@ void testGpuDataAccessMoves(TestContext& test, const GpuLocation& location) {
     static_assert(!std::is_copy_assignable<GpuDataAccess>::value, "leases must not be copy assigned");
     static_assert(std::is_nothrow_move_constructible<GpuDataAccess>::value, "lease transfer must not throw");
     static_assert(std::is_nothrow_move_assignable<GpuDataAccess>::value, "lease assignment must not throw");
-    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    const AlgoRuntimeInfo runtime = makeRuntime(TEST_FRAME_FACTOR);
     const FrameMetadata metadata = makeFrameMetadata(70, runtime);
     const FrameMetadata otherMetadata = makeFrameMetadata(71, runtime);
     TaskGpuResources resources;
@@ -645,7 +645,7 @@ void testCacheWaitTimeout(TestContext& test, const GpuLocation& location) {
 }
 
 void testCacheStatistics(TestContext& test, const GpuLocation& location) {
-    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    const AlgoRuntimeInfo runtime = makeRuntime(TEST_FRAME_FACTOR);
     TaskGpuResources resources;
     GpuDataCache cache;
     GpuDataCache independent;
@@ -695,7 +695,7 @@ void testCacheStatistics(TestContext& test, const GpuLocation& location) {
 }
 
 void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location) {
-    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    const AlgoRuntimeInfo runtime = makeRuntime(TEST_FRAME_FACTOR);
     const FrameMetadata firstCamera = makeFrameMetadata(47, runtime, 3);
     const FrameMetadata secondCamera = makeFrameMetadata(47, runtime, 4);
     const FrameMetadata arbitraryIncoming = makeFrameMetadata(700003, runtime, 91);
@@ -762,7 +762,7 @@ void testGpuCacheResetBoundaries(TestContext& test, const GpuLocation& location)
 }
 
 void testGpuDataCacheLru(TestContext& test, const GpuLocation& location) {
-    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    const AlgoRuntimeInfo runtime = makeRuntime(TEST_FRAME_FACTOR);
     const FrameMetadata firstMetadata = makeFrameMetadata(10, runtime);
     const FrameMetadata secondMetadata = makeFrameMetadata(11, runtime);
     const FrameMetadata thirdMetadata = makeFrameMetadata(12, runtime);

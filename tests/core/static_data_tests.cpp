@@ -1,4 +1,4 @@
-#include "test_support.h"
+#include "core/core_test_support.h"
 
 namespace gpuinfra_tests {
 
@@ -27,7 +27,7 @@ void testCudaDeviceGuard(TestContext& test, const GpuLocation& location) {
     int after = -1;
     test.expect(cudaGetDevice(&after) == cudaSuccess && after == otherGpu, "device guard restores the caller current device");
 
-    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    const AlgoRuntimeInfo runtime = makeRuntime(TEST_FRAME_FACTOR);
     StaticData staticData;
     test.expect(initializeStaticData(staticData, location, runtime, 2), "initialize StaticData with a different caller current device");
     int afterInit = -1;
@@ -38,9 +38,7 @@ void testCudaDeviceGuard(TestContext& test, const GpuLocation& location) {
 }
 
 void testStaticDataValidation(TestContext& test, const GpuLocation& location) {
-    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
-    const GraphConfig defaultGraphConfig;
-    test.expect(defaultGraphConfig.gpuCacheEntries == 4, "graph cache capacity defaults to four entries");
+    const AlgoRuntimeInfo runtime = makeRuntime(TEST_FRAME_FACTOR);
 
     const FrameMetadata arbitraryFrame = makeFrameMetadata(900001, runtime, 27);
     const FrameMetadata anotherArbitraryFrame = makeFrameMetadata(17, runtime, 81);
@@ -137,7 +135,7 @@ void testStaticGpuData(TestContext& test, const GpuLocation& location) {
 }
 
 void testStaticDataRegions(TestContext& test, const GpuLocation& location) {
-    const AlgoRuntimeInfo runtime = makeRuntime(ImageSizing::MIN_FACTOR);
+    const AlgoRuntimeInfo runtime = makeRuntime(TEST_FRAME_FACTOR);
     const FrameMetadata metadata = makeFrameMetadata(812, runtime);
     StaticDataConfig config;
     config.runtime = runtime;
